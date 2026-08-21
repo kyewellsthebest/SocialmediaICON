@@ -1,0 +1,49 @@
+[project]
+name = "clip-engine"
+version = "0.1.0"
+description = "Autonomous short-form clip engine: ingest -> transcribe -> detect -> rank -> render"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.1",
+  "alembic>=1.13",
+  "redis>=5.0",
+  "rq>=1.16",
+  "boto3>=1.34",
+  "anthropic>=0.40",
+  "httpx>=0.27",
+  "yt-dlp>=2024.8.6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["api", "core", "worker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]  # FastAPI Depends() in defaults
+
+[tool.ruff.lint.per-file-ignores]
+# ASS format lines and alembic column definitions do not wrap.
+"core/captions.py" = ["E501"]
+"migrations/*" = ["E501"]

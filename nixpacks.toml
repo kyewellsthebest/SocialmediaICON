@@ -1,0 +1,10 @@
+# Railway build config. ffmpeg is a system binary and is NOT a pip dependency,
+# so it has to be declared here or render/ingest will fail at runtime.
+[phases.setup]
+nixPkgs = ["python311", "ffmpeg-full"]
+
+[phases.install]
+cmds = ["pip install --upgrade pip", "pip install -e '.[dev]'"]
+
+[start]
+cmd = "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
