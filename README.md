@@ -140,15 +140,17 @@ skill problem.
 
 ## Deploying Phase 0 (Railway)
 
-Services: `api`, `worker`, Postgres, Redis. `nixpacks.toml` installs ffmpeg —
-without it, render and ingest fail at runtime.
+Services: `web`, `worker`, `scheduler`, Postgres, Redis — all three app
+services build from the same `Dockerfile`, which installs ffmpeg (render and
+ingest need it at runtime).
 
 ```bash
 alembic upgrade head          # create the schema
 ```
 
-- `web`: `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+- `web`: `alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port $PORT`
 - `worker`: `python -m worker.queue` (all queues; pass names to narrow)
+- `scheduler`: `python -m worker.scheduler`
 
 Acceptance check — writes and reads a throwaway Postgres row and R2 object:
 

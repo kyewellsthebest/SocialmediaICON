@@ -106,8 +106,17 @@ Then in the Railway dashboard, create **three services from this repo**:
 | `worker` | `python -m worker.queue` | Runs the pipeline jobs |
 | `scheduler` | `python -m worker.scheduler` | Fires scout, metrics and autopost on time |
 
-`nixpacks.toml` installs ffmpeg — without it, ingest and render fail at runtime.
-Only `web` needs a public domain.
+All three build from the same **Dockerfile** (Railway picks it up automatically;
+if a service was created before the Dockerfile existed, set
+**Settings → Build → Builder = Dockerfile**). The image installs ffmpeg, which
+ingest and render need at runtime.
+
+Only `web` needs a public domain — `worker` and `scheduler` stay private.
+
+> **Build failing with `pip: command not found`?** That's the Nixpacks builder,
+> not the Dockerfile. Nixpacks' setup phase replaces its own Python provider
+> package list when you add a system package like ffmpeg, which takes pip off
+> PATH. Switch the service's builder to Dockerfile.
 
 ### Environment variables
 
