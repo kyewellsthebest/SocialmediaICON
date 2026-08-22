@@ -3,13 +3,17 @@
 Takes a long source video **you have the right to use**, finds the best
 moments, and cuts them into captioned 9:16 clips.
 
-**Built so far: Phase 0 (scaffold) + Phase 1 (core clip quality, CLI only).**
-No dashboard, no auto-posting, no ranking/ML layer — those are Phases 2, 3 and
-4 and are deliberately not started. See [Phase status](#phase-status).
+**Built: the full loop.** Finds source videos, clips them, queues them for a
+human, posts the approved ones, and pulls the numbers back in — with a dashboard
+over the top.
 
 ```
-ingest → transcribe → detect moments → rank → render → ./out/*.mp4
+scout → ingest → transcribe → detect moments → rank → render → review → publish → metrics
 ```
+
+Deploying it: **[docs/DEPLOY.md](docs/DEPLOY.md)** — every service you need to
+sign up to, what each key is for, and the monthly bill (~$47–73, inside a $100
+budget).
 
 ---
 
@@ -72,13 +76,46 @@ worthless until it passes.
 |---|---|---|
 | 0 | Scaffold: schema, migrations, api + worker, R2/Postgres/Redis wiring | done |
 | 1 | Core clip quality, CLI only — **the go/no-go** | done |
-| 2 | Review dashboard (Next.js): watch, edit metadata, approve/reject | not started (`dashboard/`) |
-| 3 | Publishing (YouTube Shorts → IG Reels) + metric snapshots | not started (stubs only) |
-| 4 | Intelligence layer — only after ~100 posted clips | not started |
+| 2 | Review dashboard: watch, edit metadata, approve/reject | done |
+| 3 | Publishing (YouTube Shorts, or a reseller) + metric snapshots | done |
+| 4 | Trend scouting: what's winning, and which moment inside it | done |
 
-`worker/tasks/publish.py` and `worker/tasks/collect_metrics.py` raise
-`NotImplementedError` on purpose. Phases 1–2 are human-in-the-loop: the bot
-renders and writes the metadata, a human approves and posts.
+Publishing stays **off** until you turn it on (`PUBLISHER=manual`,
+`AUTOPOST_ENABLED=false`). Nothing is ever posted without a human approving the
+clip in the review queue first.
+
+## The dashboard
+
+Six tabs, served by the same FastAPI service — no second deploy, no build step.
+
+| Tab | What's on it |
+|---|---|
+| **Overview** | Clips awaiting review, posts in 24h, views tracked, YouTube quota used, spend vs your $100 budget, average views per platform, live activity feed |
+| **Trending** | What the scout found: score, views, views/hour, like rate, a views sparkline, the most-replayed curve and the hot moment inside each video. One click sends a video into the pipeline |
+| **Review** | Play each clip, edit title and hashtags, approve or reject |
+| **Posts** | Every post with its metric snapshots; click a row for views-over-time |
+| **Sources** | Add a URL with a licence, watch it move through the pipeline |
+| **Settings** | Which services are connected, the operating config, niche keywords, and the accounts clips get posted to |
+
+Gated behind `DASHBOARD_TOKEN` — set it, or anyone with the URL can drive your
+pipeline. Charts are hand-rolled SVG on a colourblind-validated palette, and the
+whole thing works in light and dark.
+
+## Where the trend data comes from
+
+All free, no scrapers, no vendor:
+
+- **YouTube Data API** — search and public counters. 10,000 units/day; a search
+  costs 100, so the scout batches keywords and runs every 6 hours by default.
+  `core/youtube.py` refuses a call that would blow the daily budget.
+- **yt-dlp `heatmap`** — YouTube's most-replayed curve, ~100 segments with a 0–1
+  intensity, for any public video. This is what "which bit do I clip" runs on.
+- **Your own posts** — metric snapshots at 5m/15m/30m/1h/3h/6h/12h/24h/48h.
+  The best signal you will ever have, because it is measured on your audience.
+
+Other people's retention and watch time are not obtainable at any price — they
+are never sent to a viewer's browser. That is the ceiling, and it is not a
+skill problem.
 
 ---
 
@@ -150,7 +187,9 @@ when they are not configured.
 ## Layout
 
 ```
-api/          FastAPI app + routes (sources, clips, review, analytics)
+api/          FastAPI app, JSON API under /api
+  static/         the dashboard (vanilla JS + SVG charts, no build step)
+  routes/         overview, trending, sources, clips, review, analytics, settings
 core/
   config.py       env (everything optional; each subsystem is probed)
   db.py           SQLAlchemy session, engine created lazily
@@ -161,13 +200,20 @@ core/
   captions.py     word timestamps -> .ass karaoke captions    (pure, tested)
   ffmpeg_ops.py   probe, audio extract, smart center crop, render
   transcription.py  AssemblyAI / Deepgram word-level timestamps
+  youtube.py      YouTube Data API + daily quota accounting
+  heatmap.py      most-replayed curve via yt-dlp
+  scoring.py      velocity, like-rate, composite score, hot-segment finder
+  publishers/     manual | youtube (native OAuth) | upload_post (reseller)
 worker/
   queue.py        RQ queues, one per stage
-  tasks/          ingest, transcribe, detect_moments, rank, render,
-                  publish (Phase 3 stub), collect_metrics (Phase 3 stub)
+  scheduler.py    the 24/7 heartbeat: scout, metrics, autopost
+  tasks/          scout, ingest, transcribe, detect_moments, rank, render,
+                  publish, collect_metrics
 migrations/     alembic
-scripts/        run_pipeline.py (Phase 1 CLI), check_infra.py (Phase 0 check)
-dashboard/      Phase 2, not started
+scripts/        run_pipeline.py (one video, end to end)
+                check_infra.py (Postgres + R2 + ffmpeg + Redis)
+                check_publisher.py (publishing credentials)
+                seed_demo.py (fake data so the dashboard has something to draw)
 tests/          pure-logic tests + ffmpeg-gated render/CLI integration tests
 ```
 
@@ -203,17 +249,24 @@ so the same code path serves both the weekend CLI and the deployed worker.
 | `ANTHROPIC_API_KEY` | Phase 1 (detection, ranking, metadata) |
 | `ASSEMBLYAI_API_KEY` *or* `DEEPGRAM_API_KEY` | Phase 1 (transcription) |
 | `ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT`, `TRANSCRIBE_PROVIDER` | optional overrides |
-| `DATABASE_URL`, `REDIS_URL` | Phase 0 deploy / queued pipeline |
+| `YOUTUBE_API_KEY` | trend scouting (free) |
+| `DASHBOARD_TOKEN` | **required in prod** — the dashboard is public without it |
+| `DATABASE_URL`, `REDIS_URL` | deploy / queued pipeline |
+| `SCOUT_KEYWORDS`, `SCOUT_INTERVAL_MINUTES` | what the scout looks for, how often |
+| `PUBLISHER`, `AUTOPOST_ENABLED` | `manual` / `youtube` / `upload_post` |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | object storage (else local dir) |
 | `ENV` | `prod` refuses `license=none` on ingest |
-| `YOUTUBE_CLIENT_ID/SECRET/REFRESH`, `IG_APP_ID/SECRET/TOKEN` | Phase 3 |
+| `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN` | posting Shorts yourself (free) |
+| `UPLOAD_POST_API_KEY`, `UPLOAD_POST_USER` | TikTok / Instagram / Facebook via a reseller |
+
+Full setup, including how to get each one: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 ---
 
 ## Tests
 
 ```bash
-pytest          # 46 tests; render/CLI integration tests skip without ffmpeg
+pytest          # 66 tests; render/CLI integration tests skip without ffmpeg
 ruff check .
 ```
 

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip engine</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎬</text></svg>">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<div id="gate" class="gate" hidden>
+  <h1>Clip engine</h1>
+  <p style="color: var(--ink-2); margin: 0;">Enter the dashboard token (the <code>DASHBOARD_TOKEN</code> you set in Railway).</p>
+  <input type="password" id="gate-token" placeholder="dashboard token" autocomplete="current-password">
+  <button class="btn btn-primary" id="gate-go">Unlock</button>
+  <p id="gate-error" style="color: var(--critical); margin: 0;" hidden>That token was rejected.</p>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand"><h1>Clip engine</h1><small id="env-label"></small></div>
+    <nav class="tabs" id="tabs">
+      <a href="#/overview" data-view="overview">Overview</a>
+      <a href="#/trending" data-view="trending">Trending</a>
+      <a href="#/review" data-view="review">Review <span class="count" id="review-count" hidden>0</span></a>
+      <a href="#/posts" data-view="posts">Posts</a>
+      <a href="#/sources" data-view="sources">Sources</a>
+      <a href="#/settings" data-view="settings">Settings</a>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn btn-sm" id="refresh">Refresh</button>
+      <button class="btn btn-sm" id="theme" title="Switch theme" aria-label="Switch theme">◐</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- OVERVIEW -->
+    <section class="view" id="view-overview" hidden>
+      <div class="view-head">
+        <div>
+          <h2>Overview</h2>
+          <p>Everything the pipeline has done, and what it is costing. Numbers come from your own database, not an estimate of the market.</p>
+        </div>
+      </div>
+      <div class="grid grid-kpi" id="kpis"></div>
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="chart-head">
+            <h3>Average views per post</h3>
+            <span class="hint">latest reading per post</span>
+          </div>
+          <div id="platform-chart"></div>
+        </div>
+        <div class="card">
+          <div class="chart-head"><h3>Recent activity</h3></div>
+          <div id="activity"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TRENDING -->
+    <section class="view" id="view-trending" hidden>
+      <div class="view-head">
+        <div>
+          <h2>Trending sources</h2>
+          <p>Videos the scout found in your niche, ranked by how fast they are moving, how well they are liked, and how strong their most-replayed peak is. Only clip what you have the rights to.</p>
+        </div>
+        <div class="row">
+          <select id="trending-filter" style="width: auto;">
+            <option value="">All</option>
+            <option value="new" selected>Not yet clipped</option>
+            <option value="queued">Queued</option>
+            <option value="clipped">Clipped</option>
+            <option value="ignored">Ignored</option>
+          </select>
+          <button class="btn btn-primary btn-sm" id="scan-now">Scan now</button>
+        </div>
+      </div>
+      <div id="trending-body"></div>
+    </section>
+
+    <!-- REVIEW -->
+    <section class="view" id="view-review" hidden>
+      <div class="view-head">
+        <div>
+          <h2>Review queue</h2>
+          <p>Watch it, fix the caption, approve or bin it. Nothing is posted until you approve it here.</p>
+        </div>
+      </div>
+      <div id="review-body"></div>
+    </section>
+
+    <!-- POSTS -->
+    <section class="view" id="view-posts" hidden>
+      <div class="view-head">
+        <div>
+          <h2>Posts</h2>
+          <p>Every clip that went out, with the metric snapshots pulled back in. Click a row to see how its views built up.</p>
+        </div>
+      </div>
+      <div id="posts-body"></div>
+      <div class="card" id="post-detail" hidden></div>
+    </section>
+
+    <!-- SOURCES -->
+    <section class="view" id="view-sources" hidden>
+      <div class="view-head">
+        <div>
+          <h2>Sources</h2>
+          <p>Long-form videos in the pipeline. The licence field is not decoration — <code>none</code> is refused in production.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="align-items: flex-end;">
+          <div class="field" style="flex: 3 1 320px;">
+            <label for="src-url">Video URL</label>
+            <input type="text" id="src-url" placeholder="https://www.youtube.com/watch?v=...">
+          </div>
+          <div class="field" style="flex: 1 1 150px;">
+            <label for="src-licence">Licence</label>
+            <select id="src-licence">
+              <option value="campaign">Clipping campaign</option>
+              <option value="own">My own footage</option>
+              <option value="licensed">Licensed</option>
+              <option value="permitted">Permission given</option>
+              <option value="none">None (dev only)</option>
+            </select>
+          </div>
+          <div class="field" style="flex: 1 1 150px;">
+            <label for="src-niche">Niche</label>
+            <input type="text" id="src-niche" placeholder="optional">
+          </div>
+          <button class="btn btn-primary" id="src-add">Add to pipeline</button>
+        </div>
+      </div>
+      <div id="sources-body"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings" hidden>
+      <div class="view-head">
+        <div>
+          <h2>Settings</h2>
+          <p>Secrets live in Railway's environment and are never shown here — this only reports whether each one is present.</p>
+        </div>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="chart-head"><h3>Connections</h3><span class="hint">what is wired up</span></div>
+          <div class="checklist" id="connections"></div>
+        </div>
+        <div class="card">
+          <div class="chart-head"><h3>Operating config</h3><span class="hint">set via environment variables</span></div>
+          <div class="checklist" id="env-config"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="chart-head"><h3>Niche &amp; scout keywords</h3><span class="hint">what the scout searches for</span></div>
+        <div class="row" style="align-items: flex-end;">
+          <div class="field" style="flex: 1 1 200px;">
+            <label for="niche-name">Niche</label>
+            <input type="text" id="niche-name" placeholder="e.g. fitness">
+          </div>
+          <div class="field" style="flex: 3 1 340px;">
+            <label for="niche-keywords">Keywords (comma separated)</label>
+            <input type="text" id="niche-keywords" placeholder="kettlebell form, home workout mistakes">
+          </div>
+          <button class="btn btn-primary" id="niche-save">Save niche</button>
+        </div>
+        <div id="niches-body" style="margin-top: 14px;"></div>
+      </div>
+      <div class="card">
+        <div class="chart-head"><h3>Accounts</h3><span class="hint">where approved clips get posted</span></div>
+        <div class="row" style="align-items: flex-end;">
+          <div class="field" style="flex: 1 1 160px;">
+            <label for="acct-platform">Platform</label>
+            <select id="acct-platform">
+              <option value="youtube">YouTube</option>
+              <option value="tiktok">TikTok</option>
+              <option value="instagram">Instagram</option>
+              <option value="facebook">Facebook</option>
+              <option value="snapchat">Snapchat</option>
+            </select>
+          </div>
+          <div class="field" style="flex: 2 1 200px;">
+            <label for="acct-handle">Handle</label>
+            <input type="text" id="acct-handle" placeholder="@yourhandle">
+          </div>
+          <button class="btn btn-primary" id="acct-add">Add account</button>
+        </div>
+        <div id="accounts-body" style="margin-top: 14px;"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="tooltip" id="tooltip" hidden></div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

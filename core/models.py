@@ -7,17 +7,20 @@ faster than it is worth writing migrations for native enums.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -170,6 +173,8 @@ class Post(TimestampMixin, Base):
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"))
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
     platform_post_id: Mapped[str | None] = mapped_column(String(200))
+    platform_url: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
@@ -208,3 +213,84 @@ class Job(TimestampMixin, Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     error: Mapped[str | None] = mapped_column(Text)
+
+
+# --- Phase 4: trend scouting -------------------------------------------------
+
+TRACKED_STATUSES = ("new", "queued", "clipped", "ignored")
+
+
+class TrackedVideo(TimestampMixin, Base):
+    """A public video we are watching because it is performing well.
+
+    One row per source video per platform. The performance numbers here are the
+    latest reading; the history lives in `tracked_snapshots`.
+    """
+
+    __tablename__ = "tracked_videos"
+    __table_args__ = (UniqueConstraint("platform", "external_id", name="uq_tracked_platform_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    niche_id: Mapped[int | None] = mapped_column(ForeignKey("niches.id", ondelete="SET NULL"))
+    platform: Mapped[str] = mapped_column(String(32), nullable=False, default="youtube")
+    external_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    channel_id: Mapped[str | None] = mapped_column(String(120))
+    channel_title: Mapped[str | None] = mapped_column(Text)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_s: Mapped[float | None] = mapped_column(Float)
+
+    views: Mapped[int | None] = mapped_column(BigInteger)
+    likes: Mapped[int | None] = mapped_column(BigInteger)
+    comments: Mapped[int | None] = mapped_column(BigInteger)
+
+    # views per hour, measured between the last two snapshots where possible
+    velocity_vph: Mapped[float | None] = mapped_column(Float)
+    like_rate: Mapped[float | None] = mapped_column(Float)
+    # composite 0-100 used to order the trending table
+    score: Mapped[float | None] = mapped_column(Float)
+
+    # raw most-replayed curve from yt-dlp: [{"start","end","value"}]
+    heatmap: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    # peaks worth clipping: [{"start_s","end_s","value"}]
+    hot_segments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="new")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    snapshots: Mapped[list[TrackedSnapshot]] = relationship(
+        back_populates="video", cascade="all, delete-orphan"
+    )
+
+
+class TrackedSnapshot(Base):
+    """One reading of a tracked video's counters. Append only."""
+
+    __tablename__ = "tracked_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tracked_video_id: Mapped[int] = mapped_column(
+        ForeignKey("tracked_videos.id", ondelete="CASCADE"), nullable=False
+    )
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    views: Mapped[int | None] = mapped_column(BigInteger)
+    likes: Mapped[int | None] = mapped_column(BigInteger)
+    comments: Mapped[int | None] = mapped_column(BigInteger)
+
+    video: Mapped[TrackedVideo] = relationship(back_populates="snapshots")
+
+
+class ApiQuota(Base):
+    """Daily API spend, so a scout run can refuse to blow the free tier."""
+
+    __tablename__ = "api_quota"
+    __table_args__ = (UniqueConstraint("day", "service", name="uq_quota_day_service"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    service: Mapped[str] = mapped_column(String(32), nullable=False)
+    units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

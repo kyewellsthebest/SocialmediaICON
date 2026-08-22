@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from core.config import settings
 from core.db import get_db
 from core.models import Candidate, Clip
 from core.storage import get_storage
@@ -39,7 +42,14 @@ def serialise(clip: Clip, db: Session, with_url: bool = True) -> ClipOut:
         out.end_s = candidate.end_s
         out.predicted_score = candidate.predicted_score
     if with_url and clip.storage_key:
-        out.url = get_storage().url_for(clip.storage_key)
+        storage = get_storage()
+        # A file:// URI is useless to a browser, so local files are streamed
+        # back through the API instead.
+        out.url = (
+            f"/api/clips/{clip.id}/file"
+            if storage.kind == "local"
+            else storage.url_for(clip.storage_key)
+        )
     return out
 
 
@@ -58,3 +68,23 @@ def get_clip(clip_id: int, db: Session = Depends(get_db)) -> Any:
     if clip is None:
         raise HTTPException(404, "clip not found")
     return serialise(clip, db)
+
+
+@router.get("/{clip_id}/file")
+def clip_file(clip_id: int, db: Session = Depends(get_db)):
+    """Stream the rendered mp4 so the review tab can play it.
+
+    Local storage is served from disk; R2 redirects to a signed URL.
+    """
+    clip = db.get(Clip, clip_id)
+    if clip is None or not clip.storage_key:
+        raise HTTPException(404, "clip file not found")
+
+    storage = get_storage()
+    if storage.kind != "local":
+        return RedirectResponse(storage.url_for(clip.storage_key))
+
+    path = Path(settings.local_storage_dir) / clip.storage_key
+    if not path.exists():
+        raise HTTPException(404, f"file missing on disk: {clip.storage_key}")
+    return FileResponse(path, media_type="video/mp4", filename=path.name)

@@ -41,13 +41,37 @@ class Settings(BaseSettings):
     assemblyai_api_key: str | None = None
     deepgram_api_key: str | None = None
 
-    # publishing (Phase 3)
+    # trend scouting
+    youtube_api_key: str | None = None
+
+    # publishing
+    publisher: str = "manual"  # manual | upload_post | youtube
+    upload_post_api_key: str | None = None
+    upload_post_user: str | None = None
+    upload_post_base_url: str = "https://api.upload-post.com"
+
     youtube_client_id: str | None = None
     youtube_client_secret: str | None = None
     youtube_refresh_token: str | None = None
     ig_app_id: str | None = None
     ig_app_secret: str | None = None
     ig_token: str | None = None
+
+    # dashboard access (the app is public on Railway unless this is set)
+    dashboard_token: str | None = None
+
+    # automation cadence
+    scout_enabled: bool = True
+    scout_interval_minutes: int = 360      # every 6h - hourly is a waste of quota
+    scout_keywords: str = ""               # comma separated, per niche
+    scout_region: str | None = None
+    scout_video_duration: str = "medium"   # short | medium | long
+    scout_max_keywords: int = 4
+    scout_track_limit: int = 30
+
+    metrics_interval_minutes: int = 60
+    autopost_enabled: bool = False
+    autopost_per_day: int = 10
 
     # pipeline defaults
     default_niche: str = "general"
@@ -93,6 +117,14 @@ class Settings(BaseSettings):
     @property
     def r2_endpoint_url(self) -> str:
         return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+
+    @property
+    def has_youtube_read(self) -> bool:
+        return bool(self.youtube_api_key)
+
+    @property
+    def keywords(self) -> list[str]:
+        return [k.strip() for k in self.scout_keywords.split(",") if k.strip()]
 
     @property
     def transcription_key(self) -> str | None:
