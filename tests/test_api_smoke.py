@@ -49,3 +49,25 @@ def test_token_gate(client, monkeypatch):
 def test_health_stays_public_when_a_token_is_set(client, monkeypatch):
     monkeypatch.setattr(settings, "dashboard_token", "sekrit")
     assert client.get("/health").status_code == 200
+
+
+def test_worker_refuses_to_start_without_redis(monkeypatch, capsys):
+    """A missing REDIS_URL is a config mistake — it should print one actionable
+    line, not a traceback on every restart."""
+    from worker import queue
+
+    monkeypatch.setattr(settings, "redis_url", None)
+    assert queue.main([]) == 1
+    err = capsys.readouterr().err
+    assert "REDIS_URL is not set" in err
+    assert "${{Redis.REDIS_URL}}" in err
+    assert "Traceback" not in err
+
+
+def test_scheduler_refuses_to_run_jobs_inline_in_prod(monkeypatch, capsys):
+    from worker import scheduler
+
+    monkeypatch.setattr(settings, "redis_url", None)
+    monkeypatch.setattr(settings, "env", "prod")
+    assert scheduler.main() == 1
+    assert "REDIS_URL is not set" in capsys.readouterr().err

@@ -13,12 +13,13 @@ from __future__ import annotations
 import logging
 import math
 import signal
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from core.config import settings
-from worker.queue import enqueue, get_redis
+from worker.queue import MISSING_REDIS, enqueue, get_redis
 
 log = logging.getLogger("scheduler")
 
@@ -116,6 +117,15 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+
+    # Without Redis the scheduler runs jobs inline, which is fine on a laptop
+    # and wrong in production: renders would run inside the scheduler process
+    # and one slow job would stall every other schedule.
+    if not settings.has_redis:
+        if settings.is_prod:
+            print(MISSING_REDIS, file=sys.stderr)
+            return 1
+        log.warning("REDIS_URL is not set - running jobs inline (development only)")
 
     enabled = [j.name for j in _jobs() if j.enabled]
     log.info("scheduler up. active jobs: %s", ", ".join(enabled) or "none")

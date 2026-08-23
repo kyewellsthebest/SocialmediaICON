@@ -61,10 +61,25 @@ def enqueue(name: str, func: Callable[..., Any] | str, *args: Any, **kwargs: Any
     return get_queue(name).enqueue(func, *args, job_timeout=timeout, **kwargs)
 
 
+MISSING_REDIS = """FATAL: REDIS_URL is not set, and the worker has nothing to take jobs from.
+
+       In Railway: add a Redis database, then set this service's variable to:
+
+           REDIS_URL=${{Redis.REDIS_URL}}
+
+       Set it on every service, not just this one."""
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     names = argv or list(QUEUE_NAMES)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    # Checked before anything else: a missing URL is a config mistake, and a
+    # stack trace repeated every restart buries the one line that says so.
+    if not settings.has_redis:
+        print(MISSING_REDIS, file=sys.stderr)
+        return 1
 
     from rq import Worker
 
