@@ -2,134 +2,156 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#171716" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>Clip engine</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎬</text></svg>">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></symbol>
+  <symbol id="i-trend" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></symbol>
+  <symbol id="i-review" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 9 5 3-5 3z"/></symbol>
+  <symbol id="i-posts" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+    <circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+  <symbol id="i-source" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h12"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+    <circle cx="12" cy="12" r="8"/><path d="M12 4v16" /><path d="M12 4a8 8 0 0 1 0 16" fill="currentColor"/></symbol>
+</svg>
+
+<div id="progress" hidden><span></span></div>
+
+<!-- token gate -->
 <div id="gate" class="gate" hidden>
-  <h1>Clip engine</h1>
-  <p style="color: var(--ink-2); margin: 0;">Enter the dashboard token (the <code>DASHBOARD_TOKEN</code> you set in Railway).</p>
-  <input type="password" id="gate-token" placeholder="dashboard token" autocomplete="current-password">
+  <div class="brand"><span class="dot">🎬</span></div>
+  <h2>Clip engine</h2>
+  <p style="color: var(--ink-2)">Enter your dashboard token — the <code>DASHBOARD_TOKEN</code> you set in Railway.</p>
+  <input type="password" id="gate-token" placeholder="dashboard token" autocomplete="current-password" enterkeyhint="go">
   <button class="btn btn-primary" id="gate-go">Unlock</button>
-  <p id="gate-error" style="color: var(--critical); margin: 0;" hidden>That token was rejected.</p>
+  <p id="gate-error" style="color: var(--critical); font-size: 13px" hidden>That token was rejected.</p>
 </div>
 
 <div id="app" hidden>
   <header class="topbar">
-    <div class="brand"><h1>Clip engine</h1><small id="env-label"></small></div>
-    <nav class="tabs" id="tabs">
-      <a href="#/overview" data-view="overview">Overview</a>
-      <a href="#/trending" data-view="trending">Trending</a>
-      <a href="#/review" data-view="review">Review <span class="count" id="review-count" hidden>0</span></a>
-      <a href="#/posts" data-view="posts">Posts</a>
-      <a href="#/sources" data-view="sources">Sources</a>
-      <a href="#/settings" data-view="settings">Settings</a>
-    </nav>
-    <div class="topbar-actions">
-      <button class="btn btn-sm" id="refresh">Refresh</button>
-      <button class="btn btn-sm" id="theme" title="Switch theme" aria-label="Switch theme">◐</button>
+    <div class="brand">
+      <span class="dot">🎬</span>
+      <span class="who">
+        <h1>Clip engine</h1>
+        <small id="env-label">loading…</small>
+      </span>
     </div>
+
+    <nav class="tabs-top" id="tabs-top">
+      <a href="#/overview" data-view="overview"><svg><use href="#i-home"/></svg>Overview</a>
+      <a href="#/trending" data-view="trending"><svg><use href="#i-trend"/></svg>Trending</a>
+      <a href="#/review" data-view="review"><svg><use href="#i-review"/></svg>Review<span class="badge" id="badge-top" hidden>0</span></a>
+      <a href="#/posts" data-view="posts"><svg><use href="#i-posts"/></svg>Posts</a>
+      <a href="#/sources" data-view="sources"><svg><use href="#i-source"/></svg>Sources</a>
+      <a href="#/settings" data-view="settings"><svg><use href="#i-settings"/></svg>Settings</a>
+    </nav>
+
+    <button class="icon-btn" id="refresh" aria-label="Refresh"><svg><use href="#i-refresh"/></svg></button>
+    <button class="icon-btn" id="theme" aria-label="Switch theme"><svg><use href="#i-theme"/></svg></button>
   </header>
 
   <main>
-    <!-- OVERVIEW -->
     <section class="view" id="view-overview" hidden>
       <div class="view-head">
-        <div>
-          <h2>Overview</h2>
-          <p>Everything the pipeline has done, and what it is costing. Numbers come from your own database, not an estimate of the market.</p>
-        </div>
+        <h2>Overview</h2>
+        <p>What the pipeline has done, and what it is costing.</p>
       </div>
-      <div class="grid grid-kpi" id="kpis"></div>
-      <div class="grid grid-2">
+      <div class="grid kpis" id="kpis"></div>
+      <div class="grid cols">
         <div class="card">
-          <div class="chart-head">
-            <h3>Average views per post</h3>
-            <span class="hint">latest reading per post</span>
-          </div>
+          <div class="card-head"><h3>Average views per post</h3><span class="hint">latest reading</span></div>
           <div id="platform-chart"></div>
         </div>
         <div class="card">
-          <div class="chart-head"><h3>Recent activity</h3></div>
+          <div class="card-head"><h3>Recent activity</h3></div>
           <div id="activity"></div>
         </div>
       </div>
     </section>
 
-    <!-- TRENDING -->
     <section class="view" id="view-trending" hidden>
       <div class="view-head">
         <div>
-          <h2>Trending sources</h2>
-          <p>Videos the scout found in your niche, ranked by how fast they are moving, how well they are liked, and how strong their most-replayed peak is. Only clip what you have the rights to.</p>
+          <h2>Trending</h2>
+          <p>Ranked by speed, likes and how strong the most-replayed peak is. Only clip what you have the rights to.</p>
         </div>
         <div class="row">
-          <select id="trending-filter" style="width: auto;">
-            <option value="">All</option>
+          <select id="trending-filter" style="flex:1 1 150px">
             <option value="new" selected>Not yet clipped</option>
+            <option value="">All</option>
             <option value="queued">Queued</option>
             <option value="clipped">Clipped</option>
-            <option value="ignored">Ignored</option>
+            <option value="ignored">Hidden</option>
           </select>
-          <button class="btn btn-primary btn-sm" id="scan-now">Scan now</button>
+          <button class="btn btn-primary" id="scan-now">Scan now</button>
         </div>
       </div>
       <div id="trending-body"></div>
     </section>
 
-    <!-- REVIEW -->
     <section class="view" id="view-review" hidden>
       <div class="view-head">
-        <div>
-          <h2>Review queue</h2>
-          <p>Watch it, fix the caption, approve or bin it. Nothing is posted until you approve it here.</p>
-        </div>
+        <h2>Review</h2>
+        <p>Watch it, fix the caption, approve or bin it. Nothing posts until you approve.</p>
       </div>
       <div id="review-body"></div>
     </section>
 
-    <!-- POSTS -->
     <section class="view" id="view-posts" hidden>
       <div class="view-head">
-        <div>
-          <h2>Posts</h2>
-          <p>Every clip that went out, with the metric snapshots pulled back in. Click a row to see how its views built up.</p>
-        </div>
+        <h2>Posts</h2>
+        <p>Everything that went out, with the numbers pulled back in.</p>
       </div>
       <div id="posts-body"></div>
       <div class="card" id="post-detail" hidden></div>
     </section>
 
-    <!-- SOURCES -->
     <section class="view" id="view-sources" hidden>
       <div class="view-head">
-        <div>
-          <h2>Sources</h2>
-          <p>Long-form videos in the pipeline. The licence field is not decoration — <code>none</code> is refused in production.</p>
-        </div>
+        <h2>Sources</h2>
+        <p>Long-form videos in the pipeline. <code>none</code> is refused in production.</p>
       </div>
       <div class="card">
-        <div class="row" style="align-items: flex-end;">
-          <div class="field" style="flex: 3 1 320px;">
+        <div class="grid" style="gap:10px">
+          <div class="field">
             <label for="src-url">Video URL</label>
-            <input type="text" id="src-url" placeholder="https://www.youtube.com/watch?v=...">
+            <input type="text" id="src-url" placeholder="https://youtube.com/watch?v=…" inputmode="url">
           </div>
-          <div class="field" style="flex: 1 1 150px;">
-            <label for="src-licence">Licence</label>
-            <select id="src-licence">
-              <option value="campaign">Clipping campaign</option>
-              <option value="own">My own footage</option>
-              <option value="licensed">Licensed</option>
-              <option value="permitted">Permission given</option>
-              <option value="none">None (dev only)</option>
-            </select>
-          </div>
-          <div class="field" style="flex: 1 1 150px;">
-            <label for="src-niche">Niche</label>
-            <input type="text" id="src-niche" placeholder="optional">
+          <div class="row">
+            <div class="field" style="flex:1 1 140px">
+              <label for="src-licence">Licence</label>
+              <select id="src-licence">
+                <option value="campaign">Clipping campaign</option>
+                <option value="own">My own footage</option>
+                <option value="licensed">Licensed</option>
+                <option value="permitted">Permission given</option>
+                <option value="none">None (dev only)</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1 1 140px">
+              <label for="src-niche">Niche</label>
+              <input type="text" id="src-niche" placeholder="optional">
+            </div>
           </div>
           <button class="btn btn-primary" id="src-add">Add to pipeline</button>
         </div>
@@ -137,64 +159,72 @@
       <div id="sources-body"></div>
     </section>
 
-    <!-- SETTINGS -->
     <section class="view" id="view-settings" hidden>
       <div class="view-head">
-        <div>
-          <h2>Settings</h2>
-          <p>Secrets live in Railway's environment and are never shown here — this only reports whether each one is present.</p>
-        </div>
+        <h2>Settings</h2>
+        <p>Secrets live in Railway and are never shown here — this only reports what is present.</p>
       </div>
-      <div class="grid grid-2">
+      <div class="grid cols">
         <div class="card">
-          <div class="chart-head"><h3>Connections</h3><span class="hint">what is wired up</span></div>
+          <div class="card-head"><h3>Connections</h3><span class="hint">what is wired up</span></div>
           <div class="checklist" id="connections"></div>
         </div>
         <div class="card">
-          <div class="chart-head"><h3>Operating config</h3><span class="hint">set via environment variables</span></div>
+          <div class="card-head"><h3>Operating config</h3><span class="hint">from environment</span></div>
           <div class="checklist" id="env-config"></div>
         </div>
       </div>
       <div class="card">
-        <div class="chart-head"><h3>Niche &amp; scout keywords</h3><span class="hint">what the scout searches for</span></div>
-        <div class="row" style="align-items: flex-end;">
-          <div class="field" style="flex: 1 1 200px;">
+        <div class="card-head"><h3>Niche &amp; keywords</h3><span class="hint">what the scout searches</span></div>
+        <div class="grid" style="gap:10px">
+          <div class="field">
             <label for="niche-name">Niche</label>
             <input type="text" id="niche-name" placeholder="e.g. fitness">
           </div>
-          <div class="field" style="flex: 3 1 340px;">
+          <div class="field">
             <label for="niche-keywords">Keywords (comma separated)</label>
             <input type="text" id="niche-keywords" placeholder="kettlebell form, home workout mistakes">
           </div>
           <button class="btn btn-primary" id="niche-save">Save niche</button>
         </div>
-        <div id="niches-body" style="margin-top: 14px;"></div>
+        <div id="niches-body" style="margin-top:12px"></div>
       </div>
       <div class="card">
-        <div class="chart-head"><h3>Accounts</h3><span class="hint">where approved clips get posted</span></div>
-        <div class="row" style="align-items: flex-end;">
-          <div class="field" style="flex: 1 1 160px;">
-            <label for="acct-platform">Platform</label>
-            <select id="acct-platform">
-              <option value="youtube">YouTube</option>
-              <option value="tiktok">TikTok</option>
-              <option value="instagram">Instagram</option>
-              <option value="facebook">Facebook</option>
-              <option value="snapchat">Snapchat</option>
-            </select>
-          </div>
-          <div class="field" style="flex: 2 1 200px;">
-            <label for="acct-handle">Handle</label>
-            <input type="text" id="acct-handle" placeholder="@yourhandle">
+        <div class="card-head"><h3>Accounts</h3><span class="hint">where approved clips go</span></div>
+        <div class="grid" style="gap:10px">
+          <div class="row">
+            <div class="field" style="flex:1 1 130px">
+              <label for="acct-platform">Platform</label>
+              <select id="acct-platform">
+                <option value="youtube">YouTube</option>
+                <option value="tiktok">TikTok</option>
+                <option value="instagram">Instagram</option>
+                <option value="facebook">Facebook</option>
+                <option value="snapchat">Snapchat</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1 1 150px">
+              <label for="acct-handle">Handle</label>
+              <input type="text" id="acct-handle" placeholder="@yourhandle">
+            </div>
           </div>
           <button class="btn btn-primary" id="acct-add">Add account</button>
         </div>
-        <div id="accounts-body" style="margin-top: 14px;"></div>
+        <div id="accounts-body" style="margin-top:12px"></div>
       </div>
     </section>
   </main>
+
+  <nav class="tabbar" id="tabbar">
+    <a href="#/overview" data-view="overview"><svg><use href="#i-home"/></svg>Overview</a>
+    <a href="#/trending" data-view="trending"><svg><use href="#i-trend"/></svg>Trending</a>
+    <a href="#/review" data-view="review"><svg><use href="#i-review"/></svg>Review<span class="badge" id="badge" hidden>0</span></a>
+    <a href="#/posts" data-view="posts"><svg><use href="#i-posts"/></svg>Posts</a>
+    <button id="more-btn" aria-label="More"><svg><use href="#i-more"/></svg>More</button>
+  </nav>
 </div>
 
+<div id="sheet-root"></div>
 <div class="tooltip" id="tooltip" hidden></div>
 <div class="toast" id="toast" hidden></div>
 

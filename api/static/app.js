@@ -1,19 +1,16 @@
-/* Clip engine dashboard.
-   Vanilla JS + SVG: no build step, no CDN, one Railway service.
-   Charts follow the data-viz rules - one axis per chart, thin marks, a legend
-   whenever two series share a plot, hover on everything. */
+/* Clip engine dashboard — vanilla JS, no build step.
+   Mobile first: bottom tabs, stacked cards, skeletons while loading. Charts are
+   hand-rolled SVG on the validated palette — one axis per chart, thin marks,
+   hover everywhere. */
 
 const TOKEN_KEY = "clipengine.token";
-const state = { token: localStorage.getItem(TOKEN_KEY) || "", view: "overview", data: {}, openPost: null };
-
-/* ---------- helpers ---------- */
+const state = { token: localStorage.getItem(TOKEN_KEY) || "", view: "overview", data: {}, openPost: null, inflight: 0 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-const esc = (value) =>
-  String(value ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 const fmt = (n) => {
   if (n === null || n === undefined) return "—";
@@ -23,47 +20,38 @@ const fmt = (n) => {
   if (abs >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
   return String(Math.round(n));
 };
-
-const pct = (v, digits = 1) => (v === null || v === undefined ? "—" : (v * 100).toFixed(digits) + "%");
-
+const pct = (v, d = 1) => (v === null || v === undefined ? "—" : (v * 100).toFixed(d) + "%");
 const clock = (s) => {
   if (!s && s !== 0) return "—";
   const m = Math.floor(s / 60);
-  const sec = Math.round(s % 60);
-  return `${m}:${String(sec).padStart(2, "0")}`;
+  return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 };
-
 const ago = (iso) => {
   if (!iso) return "—";
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-};
-
-/** Media served by our own API needs the token in the query string:
- *  a <video src> cannot carry a header. */
-const media = (url) => {
-  if (!url || !url.startsWith("/api/") || !state.token) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(state.token)}`;
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (d < 60) return "just now";
+  if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
+  return `${Math.floor(d / 86400)}d ago`;
 };
 
 const STATUS_STATE = {
   posted: "good", approved: "good", done: "good", active: "good", rendered: "good", clipped: "good",
   queued: "warning", new: "warning", registered: "warning", downloading: "warning",
   transcribing: "warning", detecting: "warning", ranking: "warning", rendering: "warning",
-  failed: "critical", rejected: "critical", error: "critical",
-  ignored: "serious",
+  failed: "critical", rejected: "critical", error: "critical", ignored: "serious",
+};
+const pill = (s) => `<span class="pill" data-state="${STATUS_STATE[s] || ""}">${esc(s)}</span>`;
+
+const media = (url) => {
+  if (!url || !url.startsWith("/api/") || !state.token) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(state.token)}`;
 };
 
-const pill = (status) =>
-  `<span class="pill" data-state="${STATUS_STATE[status] || ""}">${esc(status)}</span>`;
-
-function toast(message, state = "") {
+function toast(message, kind = "") {
   const el = $("#toast");
   el.textContent = message;
-  el.dataset.state = state;
+  el.dataset.state = kind;
   el.hidden = false;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => (el.hidden = true), 4200);
@@ -72,702 +60,594 @@ function toast(message, state = "") {
 /* ---------- api ---------- */
 
 async function api(path, options = {}) {
-  const response = await fetch(`/api${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(state.token ? { "X-Dashboard-Token": state.token } : {}),
-      ...(options.headers || {}),
-    },
-  });
-  if (response.status === 401) {
-    showGate(true);
-    throw new Error("unauthorised");
+  state.inflight++;
+  $("#progress").hidden = false;
+  try {
+    const res = await fetch(`/api${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(state.token ? { "X-Dashboard-Token": state.token } : {}),
+        ...(options.headers || {}),
+      },
+    });
+    if (res.status === 401) { showGate(true); throw new Error("unauthorised"); }
+    if (!res.ok) throw new Error((await res.text()).slice(0, 200) || `HTTP ${res.status}`);
+    return res.status === 204 ? null : res.json();
+  } finally {
+    if (--state.inflight <= 0) { state.inflight = 0; $("#progress").hidden = true; }
   }
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail.slice(0, 300) || `HTTP ${response.status}`);
-  }
-  return response.status === 204 ? null : response.json();
 }
+
+/* ---------- skeletons ---------- */
+
+const skelCards = (n = 3) =>
+  `<div class="list">${Array.from({ length: n }, () => `<div class="skel skel-card"></div>`).join("")}</div>`;
+const skelKpis = (n = 6) =>
+  Array.from({ length: n }, () => `<div class="card"><div class="skel skel-line" style="width:55%"></div>
+    <div class="skel" style="height:26px;width:45%;margin:8px 0"></div>
+    <div class="skel skel-line" style="width:70%"></div></div>`).join("");
+const skelLines = (n = 5) =>
+  Array.from({ length: n }, (_, i) => `<div class="skel skel-line" style="width:${90 - i * 9}%"></div>`).join("");
 
 /* ---------- charts ---------- */
 
-const svgNS = "http://www.w3.org/2000/svg";
 const HEAT_STEPS = ["--heat-100", "--heat-250", "--heat-400", "--heat-550", "--heat-700"];
 
 function tip(html, event) {
   const el = $("#tooltip");
   el.innerHTML = html;
   el.hidden = false;
-  const pad = 14;
-  const rect = el.getBoundingClientRect();
-  let x = event.clientX + pad;
-  let y = event.clientY + pad;
-  if (x + rect.width > window.innerWidth) x = event.clientX - rect.width - pad;
-  if (y + rect.height > window.innerHeight) y = event.clientY - rect.height - pad;
-  el.style.left = `${Math.max(4, x)}px`;
-  el.style.top = `${Math.max(4, y)}px`;
+  const r = el.getBoundingClientRect();
+  let x = event.clientX + 14, y = event.clientY + 14;
+  if (x + r.width > innerWidth) x = event.clientX - r.width - 14;
+  if (y + r.height > innerHeight) y = event.clientY - r.height - 14;
+  el.style.left = `${Math.max(6, x)}px`;
+  el.style.top = `${Math.max(6, y)}px`;
 }
 const untip = () => ($("#tooltip").hidden = true);
 
-/** Sparkline: bare trend line for a table cell. */
-function sparkline(series, width = 108, height = 28) {
-  const points = (series || []).map((p) => p.views || 0);
-  if (points.length < 2) return `<span class="heat-empty">—</span>`;
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const span = max - min || 1;
-  const step = width / (points.length - 1);
-  const d = points
-    .map((v, i) => `${i ? "L" : "M"}${(i * step).toFixed(1)},${(height - 3 - ((v - min) / span) * (height - 6)).toFixed(1)}`)
-    .join(" ");
-  const last = points[points.length - 1];
-  const lastY = height - 3 - ((last - min) / span) * (height - 6);
-  return `<svg class="chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img"
-      aria-label="views trend, latest ${fmt(last)}">
+function sparkline(series, w = 96, h = 26) {
+  const pts = (series || []).map((p) => p.views || 0);
+  if (pts.length < 2) return `<span class="heat-empty">—</span>`;
+  const min = Math.min(...pts), max = Math.max(...pts), span = max - min || 1;
+  const step = w / (pts.length - 1);
+  const d = pts.map((v, i) => `${i ? "L" : "M"}${(i * step).toFixed(1)},${(h - 3 - ((v - min) / span) * (h - 6)).toFixed(1)}`).join(" ");
+  const lastY = h - 3 - ((pts.at(-1) - min) / span) * (h - 6);
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="views trend">
     <path d="${d}" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="${width}" cy="${lastY.toFixed(1)}" r="2.5" fill="var(--s1)"/>
-  </svg>`;
+    <circle cx="${w}" cy="${lastY.toFixed(1)}" r="2.5" fill="var(--s1)"/></svg>`;
 }
 
-/** Most-replayed strip: sequential blue, one hue, light to dark. */
 function heatStrip(heat, duration) {
-  if (!heat || !heat.length) return `<span class="heat-empty">no heatmap</span>`;
-  const buckets = 40;
-  const total = duration || heat[heat.length - 1].end || 1;
+  if (!heat || !heat.length) return `<span class="heat-empty">no heatmap yet</span>`;
+  const buckets = 44;
+  const total = duration || heat.at(-1).end || 1;
   const cells = [];
   for (let i = 0; i < buckets; i++) {
-    const from = (i / buckets) * total;
-    const to = ((i + 1) / buckets) * total;
+    const from = (i / buckets) * total, to = ((i + 1) / buckets) * total;
     const inside = heat.filter((m) => m.end > from && m.start < to);
     const value = inside.length ? Math.max(...inside.map((m) => m.value)) : 0;
-    const step = HEAT_STEPS[Math.min(HEAT_STEPS.length - 1, Math.floor(value * HEAT_STEPS.length))];
-    cells.push(
-      `<i style="background: var(${step})" data-tip="${clock(from)} · replay ${Math.round(value * 100)}%"></i>`
-    );
+    const step = HEAT_STEPS[Math.min(4, Math.floor(value * 5))];
+    cells.push(`<i style="background:var(${step})" data-tip="${clock(from)} · replay ${Math.round(value * 100)}%"></i>`);
   }
   return `<div class="heat" role="img" aria-label="most replayed moments">${cells.join("")}</div>`;
 }
 
-/** Horizontal bars: one series, direct labels, 2px gaps. */
-function barChart(rows, { valueKey = "value", labelKey = "label", format = fmt } = {}) {
+function barChart(rows) {
   if (!rows.length) return `<div class="empty">Nothing posted yet.</div>`;
-  const max = Math.max(...rows.map((r) => r[valueKey] || 0)) || 1;
-  const barH = 22;
-  const gap = 10;
-  const labelW = 96;
+  const max = Math.max(...rows.map((r) => r.value || 0)) || 1;
+  const barH = 20, gap = 12, labelW = 78, width = 460;
+  const track = width - labelW - 62;
+  const bars = rows.map((row, i) => {
+    const w = Math.max(3, ((row.value || 0) / max) * track), y = i * (barH + gap);
+    return `<g class="bar" data-label="${esc(row.label)}" data-value="${fmt(row.value)}">
+      <text x="0" y="${y + barH / 2 + 4}" font-size="12.5" fill="var(--ink-2)">${esc(row.label)}</text>
+      <rect x="${labelW}" y="${y + 2}" width="${w}" height="${barH - 4}" rx="4" fill="var(--s1)"/>
+      <text x="${labelW + w + 8}" y="${y + barH / 2 + 4}" font-size="12.5" font-variant-numeric="tabular-nums"
+        fill="var(--ink)">${fmt(row.value)}</text></g>`;
+  }).join("");
   const height = rows.length * (barH + gap);
-  const width = 520;
-  const trackW = width - labelW - 66;
-
-  const bars = rows
-    .map((row, i) => {
-      const value = row[valueKey] || 0;
-      const w = Math.max(3, (value / max) * trackW);
-      const y = i * (barH + gap);
-      return `<g class="bar" data-label="${esc(row[labelKey])}" data-value="${format(value)}">
-        <text x="0" y="${y + barH / 2 + 4}" font-size="12.5" fill="var(--ink-2)">${esc(row[labelKey])}</text>
-        <rect x="${labelW}" y="${y + 2}" width="${w}" height="${barH - 4}" rx="4" fill="var(--s1)"/>
-        <text x="${labelW + w + 8}" y="${y + barH / 2 + 4}" font-size="12.5"
-          font-variant-numeric="tabular-nums" fill="var(--ink)">${format(value)}</text>
-      </g>`;
-    })
-    .join("");
-
   return `<svg class="chart" viewBox="0 0 ${width} ${height}" height="${height}" role="img"
-      aria-label="average views per platform">${bars}</svg>`;
+    aria-label="average views per platform">${bars}</svg>`;
 }
 
-/** Views over time: single series, crosshair + tooltip, last point labelled. */
-function lineChart(series, { height = 210, label = "views" } = {}) {
+function lineChart(series) {
   if (!series || series.length < 2) {
-    return `<div class="empty">Not enough snapshots yet — readings are taken at 5m, 15m, 30m, 1h, 3h, 6h, 12h, 24h and 48h after posting.</div>`;
+    return `<div class="empty">Not enough snapshots yet — readings land at 5m, 15m, 30m, 1h, 3h, 6h, 12h, 24h and 48h after posting.</div>`;
   }
-  const width = 640;
-  const pad = { top: 14, right: 54, bottom: 26, left: 46 };
-  const plotW = width - pad.left - pad.right;
-  const plotH = height - pad.top - pad.bottom;
-
+  const width = 560, height = 200, pad = { t: 12, r: 48, b: 22, l: 44 };
+  const pw = width - pad.l - pad.r, ph = height - pad.t - pad.b;
   const times = series.map((p) => new Date(p.t).getTime());
-  const values = series.map((p) => p.views || 0);
-  const t0 = times[0];
-  const t1 = times[times.length - 1] || t0 + 1;
-  const vMax = Math.max(...values) || 1;
+  const vals = series.map((p) => p.views || 0);
+  const t0 = times[0], t1 = times.at(-1) || t0 + 1, vMax = Math.max(...vals) || 1;
+  const x = (t) => pad.l + ((t - t0) / (t1 - t0 || 1)) * pw;
+  const y = (v) => pad.t + ph - (v / vMax) * ph;
 
-  const x = (t) => pad.left + ((t - t0) / (t1 - t0 || 1)) * plotW;
-  const y = (v) => pad.top + plotH - (v / vMax) * plotH;
+  const ticks = [0, 0.5, 1].map((f) => `<g>
+    <line x1="${pad.l}" x2="${pad.l + pw}" y1="${y(vMax * f)}" y2="${y(vMax * f)}" stroke="var(--grid)"/>
+    <text x="${pad.l - 7}" y="${y(vMax * f) + 4}" text-anchor="end" font-size="11"
+      font-variant-numeric="tabular-nums" fill="var(--muted)">${fmt(vMax * f)}</text></g>`).join("");
 
-  const ticks = [0, 0.5, 1].map((f) => {
-    const value = vMax * f;
-    return `<g>
-      <line x1="${pad.left}" x2="${pad.left + plotW}" y1="${y(value)}" y2="${y(value)}"
-        stroke="var(--grid)" stroke-width="1"/>
-      <text x="${pad.left - 8}" y="${y(value) + 4}" text-anchor="end" font-size="11"
-        font-variant-numeric="tabular-nums" fill="var(--muted)">${fmt(value)}</text>
-    </g>`;
-  }).join("");
+  const d = series.map((p, i) => `${i ? "L" : "M"}${x(times[i]).toFixed(1)},${y(vals[i]).toFixed(1)}`).join(" ");
+  const area = `${d} L${x(t1).toFixed(1)},${pad.t + ph} L${x(t0).toFixed(1)},${pad.t + ph} Z`;
+  const dots = series.map((p, i) => `<circle class="pt" cx="${x(times[i]).toFixed(1)}" cy="${y(vals[i]).toFixed(1)}"
+    r="10" fill="transparent" data-t="${esc(p.t)}" data-v="${vals[i]}" data-l="${p.likes || 0}"/>`).join("");
 
-  const d = series.map((p, i) => `${i ? "L" : "M"}${x(times[i]).toFixed(1)},${y(values[i]).toFixed(1)}`).join(" ");
-  const area = `${d} L${x(t1).toFixed(1)},${(pad.top + plotH).toFixed(1)} L${x(t0).toFixed(1)},${(pad.top + plotH).toFixed(1)} Z`;
-
-  const dots = series
-    .map((p, i) => `<circle class="pt" cx="${x(times[i]).toFixed(1)}" cy="${y(values[i]).toFixed(1)}" r="9"
-        fill="transparent" data-t="${esc(p.t)}" data-v="${values[i]}" data-l="${p.likes || 0}"/>`)
-    .join("");
-
-  const lastX = x(times[times.length - 1]);
-  const lastY = y(values[values.length - 1]);
-
-  return `<svg class="chart js-line" viewBox="0 0 ${width} ${height}" height="${height}" role="img"
-      aria-label="${esc(label)} over time">
+  return `<svg class="chart js-line" viewBox="0 0 ${width} ${height}" height="${height}" role="img" aria-label="views over time">
     ${ticks}
     <path d="${area}" fill="var(--s1)" opacity=".10"/>
     <path d="${d}" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
-    <text x="${(lastX + 8).toFixed(1)}" y="${(lastY + 4).toFixed(1)}" font-size="12"
-      font-variant-numeric="tabular-nums" fill="var(--ink)">${fmt(values[values.length - 1])}</text>
-    <line class="crosshair" y1="${pad.top}" y2="${pad.top + plotH}" stroke="var(--axis)" stroke-width="1" opacity="0"/>
+    <circle cx="${x(times.at(-1)).toFixed(1)}" cy="${y(vals.at(-1)).toFixed(1)}" r="4" fill="var(--s1)"
+      stroke="var(--surface)" stroke-width="2"/>
+    <text x="${(x(times.at(-1)) + 8).toFixed(1)}" y="${(y(vals.at(-1)) + 4).toFixed(1)}" font-size="12"
+      font-variant-numeric="tabular-nums" fill="var(--ink)">${fmt(vals.at(-1))}</text>
+    <line class="crosshair" y1="${pad.t}" y2="${pad.t + ph}" stroke="var(--axis)" opacity="0"/>
     ${dots}
-    <line x1="${pad.left}" x2="${pad.left + plotW}" y1="${pad.top + plotH}" y2="${pad.top + plotH}"
-      stroke="var(--axis)" stroke-width="1"/>
-  </svg>`;
+    <line x1="${pad.l}" x2="${pad.l + pw}" y1="${pad.t + ph}" y2="${pad.t + ph}" stroke="var(--axis)"/></svg>`;
 }
 
 /* ---------- views ---------- */
 
-async function renderOverview() {
+async function renderOverview(first) {
+  if (first) {
+    $("#kpis").innerHTML = skelKpis();
+    $("#activity").innerHTML = skelLines();
+    $("#platform-chart").innerHTML = skelLines(3);
+  }
   const [data, feed, platforms] = await Promise.all([
-    api("/overview"),
-    api("/overview/activity?limit=12"),
-    api("/analytics/platforms"),
+    api("/overview"), api("/overview/activity?limit=10"), api("/analytics/platforms"),
   ]);
-  state.data.overview = data;
 
   const quotaState = data.quota.pct > 85 ? "critical" : data.quota.pct > 60 ? "warning" : "";
   const spendPct = Math.min(100, (data.spend.estimate_month / data.spend.budget) * 100);
-  const spendState = spendPct > 90 ? "critical" : spendPct > 70 ? "warning" : "";
 
   const kpis = [
-    { label: "Awaiting review", value: data.clips.awaiting_review, sub: `${data.clips.approved} approved and ready` },
+    { label: "Awaiting review", value: data.clips.awaiting_review, sub: `${data.clips.approved} approved` },
     { label: "Posted (24h)", value: data.posts.last_24h, sub: `${data.posts.total} all time` },
-    { label: "Views tracked", value: fmt(data.posts.total_views), sub: "latest snapshot per post" },
-    { label: "Videos tracked", value: data.tracking.total, sub: `${data.tracking.new} not yet clipped` },
-    {
-      label: "YouTube quota today",
-      value: `${data.quota.pct}%`,
-      sub: `${fmt(data.quota.youtube_used)} of ${fmt(data.quota.youtube_limit)} units`,
-      meter: data.quota.pct,
-      state: quotaState,
-    },
-    {
-      label: "Spend this month",
-      value: `$${data.spend.estimate_month}`,
-      sub: `estimate against a $${data.spend.budget} budget`,
-      meter: spendPct,
-      state: spendState,
-    },
+    { label: "Views tracked", value: fmt(data.posts.total_views), sub: "latest per post" },
+    { label: "Videos tracked", value: data.tracking.total, sub: `${data.tracking.new} to clip` },
+    { label: "YouTube quota", value: `${data.quota.pct}%`, sub: `${fmt(data.quota.youtube_used)} / ${fmt(data.quota.youtube_limit)}`, meter: data.quota.pct, state: quotaState },
+    { label: "Spend / month", value: `$${data.spend.estimate_month}`, sub: `of $${data.spend.budget}`, meter: spendPct, state: spendPct > 90 ? "critical" : spendPct > 70 ? "warning" : "" },
   ];
 
-  $("#kpis").innerHTML = kpis
-    .map(
-      (k) => `<div class="card kpi">
-        <span class="label">${esc(k.label)}</span>
-        <span class="value">${esc(k.value)}</span>
-        <span class="sub">${esc(k.sub)}</span>
-        ${k.meter !== undefined ? `<div class="meter"><span style="width:${Math.min(100, k.meter)}%" data-state="${k.state}"></span></div>` : ""}
-      </div>`
-    )
-    .join("");
+  $("#kpis").innerHTML = kpis.map((k) => `<div class="card kpi">
+    <span class="label">${esc(k.label)}</span>
+    <span class="value">${esc(k.value)}</span>
+    <span class="sub">${esc(k.sub)}</span>
+    ${k.meter !== undefined ? `<div class="meter"><span style="width:${Math.min(100, k.meter)}%" data-state="${k.state}"></span></div>` : ""}
+  </div>`).join("");
 
-  $("#platform-chart").innerHTML = barChart(
-    platforms.map((p) => ({ label: p.platform, value: p.avg_views })),
-    {}
-  );
+  $("#platform-chart").innerHTML = barChart(platforms.map((p) => ({ label: p.platform, value: p.avg_views })));
 
   $("#activity").innerHTML = feed.length
-    ? `<div class="checklist">${feed
-        .map(
-          (e) => `<div class="check-row">
-            <div class="what"><span>${esc(e.text)}</span><small>${esc(e.kind)} · ${ago(e.at)}</small></div>
-            ${pill(e.status)}
-          </div>`
-        )
-        .join("")}</div>`
+    ? `<div class="checklist">${feed.map((e) => `<div class="check-row">
+        <div class="what"><span>${esc(e.text)}</span><small>${esc(e.kind)} · ${ago(e.at)}</small></div>
+        ${pill(e.status)}</div>`).join("")}</div>`
     : `<div class="empty">Nothing has run yet.</div>`;
 
-  $("#env-label").textContent = `${data.config.env} · ${data.config.publisher} · storage ${data.config.storage}`;
+  setEnvLabel(data);
 }
 
-async function renderTrending() {
+async function renderTrending(first) {
+  if (first) $("#trending-body").innerHTML = skelCards(4);
   const filter = $("#trending-filter").value;
   const rows = await api(`/trending${filter ? `?status=${filter}` : ""}`);
   state.data.trending = rows;
 
-  if (!rows.length) {
-    $("#trending-body").innerHTML = `<div class="empty">Nothing tracked yet. Set your keywords in Settings, then hit <strong>Scan now</strong>.</div>`;
-    return;
-  }
-
-  $("#trending-body").innerHTML = `<div class="table-wrap"><table>
-    <thead><tr>
-      <th>Video</th><th class="num">Score</th><th class="num">Views</th>
-      <th class="num">Views/hr</th><th class="num">Like rate</th>
-      <th>Trend</th><th>Most replayed</th><th>Hot moment</th><th></th>
-    </tr></thead>
-    <tbody>${rows.map(trendingRow).join("")}</tbody>
-  </table></div>`;
+  $("#trending-body").innerHTML = rows.length
+    ? `<div class="list">${rows.map(trendingItem).join("")}</div>`
+    : `<div class="empty"><strong>Nothing tracked yet.</strong><br>Set your keywords in Settings, then tap <strong>Scan now</strong>.</div>`;
 }
 
-function trendingRow(v) {
+function trendingItem(v) {
   const hot = (v.hot_segments || [])[0];
-  return `<tr data-id="${v.id}">
-    <td>
-      <div class="title-cell">
-        ${v.thumbnail_url ? `<img src="${esc(v.thumbnail_url)}" alt="" loading="lazy">` : ""}
-        <div>
-          <div class="t"><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a></div>
-          <div class="c">${esc(v.channel_title || "")} · ${clock(v.duration_s)} · ${ago(v.published_at)}</div>
-        </div>
+  return `<article class="item" data-id="${v.id}">
+    <div class="item-top">
+      ${v.thumbnail_url ? `<img src="${esc(v.thumbnail_url)}" alt="" loading="lazy">` : ""}
+      <div style="min-width:0;flex:1">
+        <div class="item-title"><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a></div>
+        <div class="item-sub">${esc(v.channel_title || "")} · ${clock(v.duration_s)} · ${ago(v.published_at)}</div>
       </div>
-    </td>
-    <td class="num"><strong>${v.score ?? "—"}</strong></td>
-    <td class="num">${fmt(v.views)}</td>
-    <td class="num">${fmt(v.velocity_vph)}</td>
-    <td class="num">${pct(v.like_rate)}</td>
-    <td>${sparkline(v.series)}</td>
-    <td>${v.has_heatmap
-      ? `<button class="btn btn-sm js-heat" data-id="${v.id}">show curve</button>`
-      : `<span class="heat-empty">none yet</span>`}</td>
-    <td class="hot-seg">${hot ? `${clock(hot.start_s)}–${clock(hot.end_s)}` : "—"}</td>
-    <td>
-      <div class="row" style="gap: 6px; flex-wrap: nowrap;">
-        <button class="btn btn-sm btn-primary js-clip" data-id="${v.id}" ${v.status !== "new" ? "disabled" : ""}>Clip</button>
-        <button class="btn btn-sm js-ignore" data-id="${v.id}">Hide</button>
-      </div>
-    </td>
-  </tr>`;
+      <div class="score"><b>${v.score ?? "—"}</b><small>score</small></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="k">Views</span><span class="v">${fmt(v.views)}</span></div>
+      <div class="stat"><span class="k">Views/hr</span><span class="v">${fmt(v.velocity_vph)}</span></div>
+      <div class="stat"><span class="k">Like rate</span><span class="v">${pct(v.like_rate)}</span></div>
+    </div>
+    <div class="row" style="gap:10px">
+      <div style="flex:1 1 130px;min-width:0">${v.has_heatmap
+        ? `<button class="btn btn-sm js-heat" data-id="${v.id}" style="width:100%">Show replay curve</button>`
+        : `<span class="heat-empty">no heatmap yet</span>`}</div>
+      <div style="flex:0 0 auto">${sparkline(v.series)}</div>
+    </div>
+    <div class="item-foot">
+      <span class="grow item-sub">${hot ? `hot moment ${clock(hot.start_s)}–${clock(hot.end_s)}` : "no hot moment found"}</span>
+      <button class="btn btn-sm js-ignore" data-id="${v.id}">Hide</button>
+      <button class="btn btn-sm btn-primary js-clip" data-id="${v.id}" ${v.status !== "new" ? "disabled" : ""}>Clip</button>
+    </div>
+  </article>`;
 }
 
-async function renderReview() {
+async function renderReview(first) {
+  if (first) $("#review-body").innerHTML = skelCards(2);
   const clips = await api("/review/queue");
-  $("#review-count").textContent = clips.length;
-  $("#review-count").hidden = clips.length === 0;
+  setBadge(clips.length);
 
-  if (!clips.length) {
-    $("#review-body").innerHTML = `<div class="empty">Queue is empty. Clips land here once a source finishes rendering.</div>`;
-    return;
-  }
-
-  $("#review-body").innerHTML = `<div class="review-grid">${clips
-    .map(
-      (c) => `<div class="card review-card" data-id="${c.id}">
-        ${c.url ? `<video controls preload="metadata" src="${esc(media(c.url))}"></video>` : `<div class="empty">No file</div>`}
-        <div class="meta">
+  $("#review-body").innerHTML = clips.length
+    ? `<div class="grid cols">${clips.map((c) => `<div class="card clip-card" data-id="${c.id}">
+        ${c.url ? `<video controls preload="metadata" playsinline src="${esc(media(c.url))}"></video>` : `<div class="empty">No file</div>`}
+        <div class="row" style="margin:10px 0 4px;font-size:11.5px;color:var(--muted)">
           <span>${clock(c.duration_s)}</span>
           <span>${c.start_s !== null ? `${clock(c.start_s)}–${clock(c.end_s)}` : ""}</span>
-          <span>score ${c.predicted_score === null || c.predicted_score === undefined ? "—" : Math.round(c.predicted_score)}</span>
+          <span>score ${c.predicted_score == null ? "—" : Math.round(c.predicted_score)}</span>
           ${pill(c.status)}
         </div>
-        <div class="field">
-          <label for="title-${c.id}">Title</label>
-          <input type="text" id="title-${c.id}" value="${esc(c.title || "")}">
-        </div>
-        <div class="field">
-          <label for="tags-${c.id}">Hashtags</label>
-          <input type="text" id="tags-${c.id}" value="${esc((c.hashtags || []).join(" "))}">
-        </div>
-        <div class="row">
+        <div class="field"><label for="title-${c.id}">Title</label>
+          <input type="text" id="title-${c.id}" value="${esc(c.title || "")}"></div>
+        <div class="field" style="margin-top:8px"><label for="tags-${c.id}">Hashtags</label>
+          <input type="text" id="tags-${c.id}" value="${esc((c.hashtags || []).join(" "))}"></div>
+        <div class="row" style="margin-top:10px">
           <button class="btn btn-sm js-save" data-id="${c.id}">Save</button>
-          <button class="btn btn-sm btn-primary js-approve" data-id="${c.id}">Approve</button>
           <button class="btn btn-sm js-reject" data-id="${c.id}">Reject</button>
-        </div>
-      </div>`
-    )
-    .join("")}</div>`;
+          <button class="btn btn-sm btn-primary js-approve" data-id="${c.id}" style="flex:1">Approve</button>
+        </div></div>`).join("")}</div>`
+    : `<div class="empty"><strong>Queue is empty.</strong><br>Clips land here once a source finishes rendering.</div>`;
 }
 
-async function renderPosts() {
+async function renderPosts(first) {
+  if (first) $("#posts-body").innerHTML = skelCards(3);
   const posts = await api("/analytics/posts");
   state.data.posts = posts;
 
-  if (!posts.length) {
-    $("#posts-body").innerHTML = `<div class="empty">Nothing posted yet. Approve a clip, then either post it by hand or turn on autopost.</div>`;
-    $("#post-detail").hidden = true;
-    return;
-  }
-
-  $("#posts-body").innerHTML = `<div class="table-wrap"><table>
-    <thead><tr>
-      <th>Clip</th><th>Platform</th><th>Status</th>
-      <th class="num">Views</th><th class="num">Like rate</th><th>Posted</th><th>Trend</th>
-    </tr></thead>
-    <tbody>${posts
-      .map(
-        (p) => `<tr data-post="${p.id}" style="cursor: pointer;">
-          <td>${esc(p.title || `clip ${p.clip_id}`)}${p.url ? ` <a href="${esc(p.url)}" target="_blank" rel="noopener">↗</a>` : ""}</td>
-          <td>${esc(p.platform)}</td>
-          <td>${pill(p.status)}${p.error ? `<div class="c" style="font-size:12px;color:var(--muted)">${esc(p.error.slice(0, 90))}</div>` : ""}</td>
-          <td class="num">${fmt(p.views)}</td>
-          <td class="num">${pct(p.like_rate)}</td>
-          <td>${ago(p.posted_at)}</td>
-          <td>${sparkline(p.series)}</td>
-        </tr>`
-      )
-      .join("")}</tbody>
-  </table></div>`;
+  $("#posts-body").innerHTML = posts.length
+    ? `<div class="list">${posts.map((p) => `<article class="item js-post" data-post="${p.id}">
+        <div class="item-top">
+          <div style="min-width:0;flex:1">
+            <div class="item-title">${esc(p.title || `clip ${p.clip_id}`)}</div>
+            <div class="item-sub">${esc(p.platform)} · ${ago(p.posted_at)}</div>
+          </div>
+          ${pill(p.status)}
+        </div>
+        <div class="stats">
+          <div class="stat"><span class="k">Views</span><span class="v">${fmt(p.views)}</span></div>
+          <div class="stat"><span class="k">Like rate</span><span class="v">${pct(p.like_rate)}</span></div>
+          <div class="stat"><span class="k">Trend</span><span class="v">${sparkline(p.series, 70, 20)}</span></div>
+        </div>
+        ${p.error ? `<div class="item-sub" style="color:var(--critical)">${esc(p.error.slice(0, 120))}</div>` : ""}
+      </article>`).join("")}</div>`
+    : `<div class="empty"><strong>Nothing posted yet.</strong><br>Approve a clip, then post it by hand or turn on autopost.</div>`;
 
   if (state.openPost) showPostDetail(state.openPost);
 }
 
-function showPostDetail(postId) {
-  const post = (state.data.posts || []).find((p) => p.id === postId);
+function showPostDetail(id) {
+  const post = (state.data.posts || []).find((p) => p.id === id);
   if (!post) return;
-  state.openPost = postId;
-  $("#post-detail").hidden = false;
-  $("#post-detail").innerHTML = `
-    <div class="chart-head">
-      <h3>${esc(post.title || `clip ${post.clip_id}`)} — views over time</h3>
-      <span class="hint">${esc(post.platform)} · posted ${ago(post.posted_at)}</span>
-    </div>
+  state.openPost = id;
+  const el = $("#post-detail");
+  el.hidden = false;
+  el.innerHTML = `<div class="card-head"><h3>${esc(post.title || `clip ${post.clip_id}`)}</h3>
+      <span class="hint">${esc(post.platform)} · ${ago(post.posted_at)}</span></div>
     ${lineChart(post.series)}
-    <div class="legend">
-      <span>likes ${fmt(post.likes)}</span>
-      <span>comments ${fmt(post.comments)}</span>
+    <div class="legend"><span>likes ${fmt(post.likes)}</span><span>comments ${fmt(post.comments)}</span>
       <span>${post.series.length} snapshots</span>
-    </div>`;
+      ${post.url ? `<a href="${esc(post.url)}" target="_blank" rel="noopener">open post ↗</a>` : ""}</div>`;
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-async function renderSources() {
+async function renderSources(first) {
+  if (first) $("#sources-body").innerHTML = skelCards(2);
   const rows = await api("/sources");
   $("#sources-body").innerHTML = rows.length
-    ? `<div class="table-wrap"><table>
-        <thead><tr><th>Source</th><th>Licence</th><th>Status</th><th class="num">Length</th><th>Added</th></tr></thead>
-        <tbody>${rows
-          .map(
-            (s) => `<tr>
-              <td><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a></td>
-              <td>${esc(s.license)}</td>
-              <td>${pill(s.status)}${s.error ? `<div style="font-size:12px;color:var(--critical)">${esc(s.error.slice(0, 120))}</div>` : ""}</td>
-              <td class="num">${clock(s.duration_s)}</td>
-              <td>${ago(s.created_at)}</td>
-            </tr>`
-          )
-          .join("")}</tbody>
-      </table></div>`
-    : `<div class="empty">No sources yet. Add one above, or clip something from the Trending tab.</div>`;
+    ? `<div class="list">${rows.map((s) => `<article class="item">
+        <div class="item-top">
+          <div style="min-width:0;flex:1">
+            <div class="item-title"><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a></div>
+            <div class="item-sub">${esc(s.license)} · ${clock(s.duration_s)} · ${ago(s.created_at)}</div>
+          </div>
+          ${pill(s.status)}
+        </div>
+        ${s.error ? `<div class="item-sub" style="color:var(--critical)">${esc(s.error.slice(0, 160))}</div>` : ""}
+      </article>`).join("")}</div>`
+    : `<div class="empty"><strong>No sources yet.</strong><br>Add one above, or clip something from Trending.</div>`;
 }
 
-async function renderSettings() {
+async function renderSettings(first) {
+  if (first) { $("#connections").innerHTML = skelLines(8); $("#env-config").innerHTML = skelLines(8); }
   const data = await api("/settings");
   state.data.settings = data;
 
   const CONNECTIONS = [
     ["database", "Postgres", "pipeline state and analytics"],
-    ["redis", "Redis", "job queue and scheduler locks"],
-    ["r2", "Cloudflare R2", "clip storage (falls back to local disk)"],
-    ["anthropic", "Anthropic", "moment detection, ranking, captions"],
+    ["redis", "Redis", "job queue and scheduler"],
+    ["r2", "Cloudflare R2", "clip storage"],
+    ["anthropic", "Anthropic", "moment detection and captions"],
     ["transcription", "Transcription", "word-level timestamps"],
     ["youtube_read", "YouTube Data API", "trend scouting — free"],
     ["youtube_upload", "YouTube OAuth", "posting Shorts yourself"],
-    ["upload_post", "Upload-Post", "TikTok, Instagram, Facebook, Snapchat"],
+    ["upload_post", "Upload-Post", "TikTok, Instagram, Facebook"],
   ];
+  $("#connections").innerHTML = CONNECTIONS.map(([k, name, why]) => `<div class="check-row">
+    <div class="what"><span>${esc(name)}</span><small>${esc(why)}</small></div>
+    <span class="pill" data-state="${data.connected[k] ? "good" : "warning"}">${data.connected[k] ? "connected" : "not set"}</span>
+  </div>`).join("");
 
-  $("#connections").innerHTML = CONNECTIONS.map(([key, name, why]) => {
-    const on = data.connected[key];
-    return `<div class="check-row">
-      <div class="what"><span>${esc(name)}</span><small>${esc(why)}</small></div>
-      <span class="pill" data-state="${on ? "good" : "warning"}">${on ? "connected" : "not set"}</span>
-    </div>`;
-  }).join("");
-
-  const env = data.env;
-  const ENV_ROWS = [
-    ["Niche", env.default_niche],
-    ["Scout", env.scout_enabled ? `every ${env.scout_interval_minutes} min` : "off"],
-    ["Scout keywords (env)", (env.scout_keywords || []).join(", ") || "none"],
-    ["Source length filter", env.scout_video_duration],
-    ["Metrics", `every ${env.metrics_interval_minutes} min`],
-    ["Autopost", env.autopost_enabled ? `${env.autopost_per_day}/day` : "off — approve and post by hand"],
-    ["Publisher", env.publisher],
-    ["Clips per source", env.top_n_clips],
-    ["Clip length", `${env.clip_length_s[0]}–${env.clip_length_s[1]}s`],
-    ["Transcription", env.transcribe_provider],
-    ["Model", env.model],
-  ];
-  $("#env-config").innerHTML = ENV_ROWS.map(
-    ([k, v]) => `<div class="check-row"><div class="what"><span>${esc(k)}</span></div>
-      <span class="mono" style="color: var(--ink-2)">${esc(v)}</span></div>`
-  ).join("");
+  const e = data.env;
+  $("#env-config").innerHTML = [
+    ["Niche", e.default_niche],
+    ["Scout", e.scout_enabled ? `every ${e.scout_interval_minutes} min` : "off"],
+    ["Keywords", (e.scout_keywords || []).join(", ") || "none set"],
+    ["Metrics", `every ${e.metrics_interval_minutes} min`],
+    ["Autopost", e.autopost_enabled ? `${e.autopost_per_day}/day` : "off"],
+    ["Publisher", e.publisher],
+    ["Clips per source", e.top_n_clips],
+    ["Clip length", `${e.clip_length_s[0]}–${e.clip_length_s[1]}s`],
+    ["Model", e.model],
+  ].map(([k, v]) => `<div class="check-row"><div class="what"><span>${esc(k)}</span></div>
+      <span class="mono" style="color:var(--ink-2);font-size:12.5px;text-align:right">${esc(v)}</span></div>`).join("");
 
   $("#niches-body").innerHTML = data.niches.length
-    ? `<div class="checklist">${data.niches
-        .map(
-          (n) => `<div class="check-row">
-            <div class="what"><span>${esc(n.name)}</span><small>${esc((n.keywords || []).join(", ") || "no keywords")}</small></div>
-            <button class="btn btn-sm js-edit-niche" data-name="${esc(n.name)}"
-              data-keywords="${esc((n.keywords || []).join(", "))}">Edit</button>
-          </div>`
-        )
-        .join("")}</div>`
+    ? `<div class="checklist">${data.niches.map((n) => `<div class="check-row">
+        <div class="what"><span>${esc(n.name)}</span><small>${esc((n.keywords || []).join(", ") || "no keywords")}</small></div>
+        <button class="btn btn-sm js-edit-niche" data-name="${esc(n.name)}"
+          data-keywords="${esc((n.keywords || []).join(", "))}">Edit</button></div>`).join("")}</div>`
     : `<div class="empty">No niches yet.</div>`;
 
   $("#accounts-body").innerHTML = data.accounts.length
-    ? `<div class="checklist">${data.accounts
-        .map(
-          (a) => `<div class="check-row">
-            <div class="what"><span>${esc(a.platform)}</span><small>${esc(a.handle)}</small></div>
-            <div class="row">${pill(a.status)}
-              <button class="btn btn-sm js-del-account" data-id="${a.id}">Remove</button></div>
-          </div>`
-        )
-        .join("")}</div>`
-    : `<div class="empty">No accounts yet. Approved clips need at least one to know where to go.</div>`;
+    ? `<div class="checklist">${data.accounts.map((a) => `<div class="check-row">
+        <div class="what"><span>${esc(a.platform)}</span><small>${esc(a.handle)}</small></div>
+        <button class="btn btn-sm js-del-account" data-id="${a.id}">Remove</button></div>`).join("")}</div>`
+    : `<div class="empty">No accounts yet. Approved clips need one to know where to go.</div>`;
 }
 
 const RENDERERS = {
-  overview: renderOverview,
-  trending: renderTrending,
-  review: renderReview,
-  posts: renderPosts,
-  sources: renderSources,
-  settings: renderSettings,
+  overview: renderOverview, trending: renderTrending, review: renderReview,
+  posts: renderPosts, sources: renderSources, settings: renderSettings,
 };
+const seen = new Set();
 
-/* ---------- routing ---------- */
+function setEnvLabel(data) {
+  $("#env-label").textContent = `${data.config.env} · ${data.config.publisher} · ${data.config.storage}`;
+}
+
+function setBadge(n) {
+  for (const id of ["#badge", "#badge-top"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.textContent = n;
+    el.hidden = n === 0;
+  }
+}
 
 async function show(view) {
   if (!RENDERERS[view]) view = "overview";
   state.view = view;
   $$(".view").forEach((el) => (el.hidden = el.id !== `view-${view}`));
-  $$("#tabs a").forEach((a) =>
-    a.dataset.view === view ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")
-  );
+  $$("[data-view]").forEach((a) =>
+    a.dataset.view === view ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
+  scrollTo({ top: 0, behavior: "instant" });
   try {
-    await RENDERERS[view]();
+    await RENDERERS[view](!seen.has(view));
+    seen.add(view);
   } catch (err) {
     if (err.message !== "unauthorised") toast(`Could not load ${view}: ${err.message}`, "critical");
   }
 }
-
 const route = () => show((location.hash || "#/overview").replace("#/", ""));
+
+/* ---------- sheet ---------- */
+
+function openSheet() {
+  $("#sheet-root").innerHTML = `<div class="sheet-back" data-close></div>
+    <div class="sheet" role="dialog" aria-label="More">
+      <div class="handle"></div>
+      <a href="#/sources" data-close><svg><use href="#i-source"/></svg>Sources</a>
+      <a href="#/settings" data-close><svg><use href="#i-settings"/></svg>Settings</a>
+      <button id="sheet-theme"><svg><use href="#i-theme"/></svg>Switch theme</button>
+      <button id="sheet-signout"><svg><use href="#i-exit"/></svg>Sign out of this device</button>
+    </div>`;
+}
+const closeSheet = () => ($("#sheet-root").innerHTML = "");
 
 /* ---------- gate ---------- */
 
-function showGate(show) {
-  $("#gate").hidden = !show;
-  $("#app").hidden = show;
-  if (show) $("#gate-token").focus();
+function showGate(on) {
+  $("#gate").hidden = !on;
+  $("#app").hidden = on;
+  if (on) $("#gate-token").focus();
 }
 
 async function unlock() {
-  const token = $("#gate-token").value.trim();
-  state.token = token;
-  localStorage.setItem(TOKEN_KEY, token);
+  state.token = $("#gate-token").value.trim();
+  localStorage.setItem(TOKEN_KEY, state.token);
   try {
     await api("/overview");
     $("#gate-error").hidden = true;
     showGate(false);
     route();
-  } catch {
-    $("#gate-error").hidden = false;
-  }
+  } catch { $("#gate-error").hidden = false; }
 }
 
 /* ---------- events ---------- */
 
+async function withBusy(btn, fn) {
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>`;
+  try { return await fn(); }
+  finally { btn.disabled = false; btn.innerHTML = original; }
+}
+
 document.addEventListener("click", async (event) => {
-  const target = event.target.closest("button, tr[data-post], .js-edit-niche");
-  if (!target) return;
+  if (event.target.closest("[data-close]")) {
+    closeSheet();
+    if (event.target.closest("a")) return;
+  }
+  const t = event.target.closest("button, .js-post, .js-edit-niche");
+  if (!t) return;
 
   try {
-    if (target.id === "refresh") return route();
-    if (target.id === "theme") {
-      const now = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-      document.documentElement.dataset.theme = now;
-      localStorage.setItem("clipengine.theme", now);
-      return;
+    if (t.id === "refresh") {
+      t.classList.add("spinning");
+      await route();
+      return setTimeout(() => t.classList.remove("spinning"), 400);
     }
-    if (target.id === "gate-go") return unlock();
+    if (t.id === "theme" || t.id === "sheet-theme") {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      localStorage.setItem("clipengine.theme", next);
+      return closeSheet();
+    }
+    if (t.id === "more-btn") return openSheet();
+    if (t.id === "sheet-signout") {
+      localStorage.removeItem(TOKEN_KEY);
+      state.token = "";
+      closeSheet();
+      return showGate(true);
+    }
+    if (t.id === "gate-go") return unlock();
 
-    if (target.id === "scan-now") {
-      target.disabled = true;
-      const result = await api("/trending/scan", { method: "POST" });
-      toast(result.queued ? "Scan queued — results appear as the worker finishes." : `Scan done: ${result.discovered} videos.`);
-      target.disabled = false;
+    if (t.id === "scan-now") {
+      const r = await withBusy(t, () => api("/trending/scan", { method: "POST" }));
+      toast(r.queued ? "Scan queued — results appear as the worker finishes." : `Scan done: ${r.discovered} videos.`);
       return renderTrending();
     }
 
-    if (target.classList.contains("js-clip")) {
-      const licence = prompt(
-        "Licence for this source — you must have the right to clip it.\n\nown / licensed / campaign / permitted",
-        "campaign"
-      );
+    if (t.classList.contains("js-clip")) {
+      const licence = prompt("Licence — you must have the right to clip this.\n\nown / licensed / campaign / permitted", "campaign");
       if (!licence) return;
-      await api(`/trending/${target.dataset.id}/clip`, {
-        method: "POST",
-        body: JSON.stringify({ license: licence.trim() }),
-      });
-      toast("Sent to the pipeline. Watch the Sources tab.");
+      await withBusy(t, () => api(`/trending/${t.dataset.id}/clip`, {
+        method: "POST", body: JSON.stringify({ license: licence.trim() }),
+      }));
+      toast("Sent to the pipeline — watch the Sources tab.");
       return renderTrending();
     }
-
-    if (target.classList.contains("js-ignore")) {
-      await api(`/trending/${target.dataset.id}/ignore`, { method: "POST" });
+    if (t.classList.contains("js-ignore")) {
+      await api(`/trending/${t.dataset.id}/ignore`, { method: "POST" });
       return renderTrending();
     }
-
-    if (target.classList.contains("js-heat")) {
-      const video = await api(`/trending/${target.dataset.id}`);
-      const cell = target.closest("td");
-      cell.innerHTML = heatStrip(video.heatmap, video.duration_s);
+    if (t.classList.contains("js-heat")) {
+      const v = await withBusy(t, () => api(`/trending/${t.dataset.id}`));
+      t.outerHTML = heatStrip(v.heatmap, v.duration_s);
       return;
     }
 
-    if (target.classList.contains("js-save") || target.classList.contains("js-approve")) {
-      const id = target.dataset.id;
-      const title = $(`#title-${id}`).value;
-      const hashtags = $(`#tags-${id}`).value.split(/\s+/).filter(Boolean);
-      await api(`/review/${id}`, { method: "PATCH", body: JSON.stringify({ title, hashtags }) });
-      if (target.classList.contains("js-approve")) {
-        await api(`/review/${id}/approve`, { method: "POST" });
-        toast("Approved.");
-        return renderReview();
-      }
+    if (t.classList.contains("js-save") || t.classList.contains("js-approve")) {
+      const id = t.dataset.id;
+      const body = JSON.stringify({
+        title: $(`#title-${id}`).value,
+        hashtags: $(`#tags-${id}`).value.split(/\s+/).filter(Boolean),
+      });
+      await withBusy(t, async () => {
+        await api(`/review/${id}`, { method: "PATCH", body });
+        if (t.classList.contains("js-approve")) await api(`/review/${id}/approve`, { method: "POST" });
+      });
+      if (t.classList.contains("js-approve")) { toast("Approved."); return renderReview(); }
       return toast("Saved.");
     }
-
-    if (target.classList.contains("js-reject")) {
-      await api(`/review/${target.dataset.id}/reject`, { method: "POST" });
+    if (t.classList.contains("js-reject")) {
+      await withBusy(t, () => api(`/review/${t.dataset.id}/reject`, { method: "POST" }));
       return renderReview();
     }
 
-    if (target.id === "src-add") {
+    if (t.id === "src-add") {
       const url = $("#src-url").value.trim();
       if (!url) return toast("Paste a video URL first.", "critical");
-      await api("/sources", {
+      await withBusy(t, () => api("/sources", {
         method: "POST",
         body: JSON.stringify({
-          url,
-          license: $("#src-licence").value,
-          kind: "youtube",
+          url, license: $("#src-licence").value, kind: "youtube",
           niche: $("#src-niche").value.trim() || null,
         }),
-      });
+      }));
       $("#src-url").value = "";
       toast("Queued for ingest.");
       return renderSources();
     }
 
-    if (target.id === "niche-save") {
+    if (t.id === "niche-save") {
       const name = $("#niche-name").value.trim();
       if (!name) return toast("Name the niche first.", "critical");
-      await api("/settings/niches", {
+      await withBusy(t, () => api("/settings/niches", {
         method: "POST",
-        body: JSON.stringify({
-          name,
-          keywords: $("#niche-keywords").value.split(",").map((k) => k.trim()).filter(Boolean),
-        }),
-      });
-      toast("Saved. Set SCOUT_KEYWORDS in Railway to make the scheduler use them.");
+        body: JSON.stringify({ name, keywords: $("#niche-keywords").value.split(",").map((k) => k.trim()).filter(Boolean) }),
+      }));
+      toast("Saved. Set SCOUT_KEYWORDS in Railway to use them on the schedule.");
       return renderSettings();
     }
-
-    if (target.classList.contains("js-edit-niche")) {
-      $("#niche-name").value = target.dataset.name;
-      $("#niche-keywords").value = target.dataset.keywords;
+    if (t.classList.contains("js-edit-niche")) {
+      $("#niche-name").value = t.dataset.name;
+      $("#niche-keywords").value = t.dataset.keywords;
       return $("#niche-keywords").focus();
     }
-
-    if (target.id === "acct-add") {
+    if (t.id === "acct-add") {
       const handle = $("#acct-handle").value.trim();
       if (!handle) return toast("Add the handle.", "critical");
-      await api("/settings/accounts", {
-        method: "POST",
-        body: JSON.stringify({ platform: $("#acct-platform").value, handle }),
-      });
+      await withBusy(t, () => api("/settings/accounts", {
+        method: "POST", body: JSON.stringify({ platform: $("#acct-platform").value, handle }),
+      }));
       $("#acct-handle").value = "";
       return renderSettings();
     }
-
-    if (target.classList.contains("js-del-account")) {
-      await api(`/settings/accounts/${target.dataset.id}`, { method: "DELETE" });
+    if (t.classList.contains("js-del-account")) {
+      await withBusy(t, () => api(`/settings/accounts/${t.dataset.id}`, { method: "DELETE" }));
       return renderSettings();
     }
 
-    if (target.dataset.post) return showPostDetail(Number(target.dataset.post));
+    if (t.dataset.post) return showPostDetail(Number(t.dataset.post));
   } catch (err) {
     if (err.message !== "unauthorised") toast(err.message, "critical");
   }
 });
 
-document.addEventListener("change", (event) => {
-  if (event.target.id === "trending-filter") renderTrending();
-});
+document.addEventListener("change", (e) => { if (e.target.id === "trending-filter") renderTrending(); });
 
-/* hover layer: heat cells, bars, line points */
 document.addEventListener("mouseover", (event) => {
   const cell = event.target.closest("[data-tip]");
   if (cell) return tip(esc(cell.dataset.tip), event);
-
   const bar = event.target.closest(".bar");
-  if (bar) {
-    return tip(
-      `<div class="tt-title">${esc(bar.dataset.label)}</div>
-       <div class="tt-row"><span>avg views</span><span>${esc(bar.dataset.value)}</span></div>`,
-      event
-    );
-  }
-
-  const point = event.target.closest(".pt");
-  if (point) {
-    const svg = point.closest("svg");
-    const crosshair = svg.querySelector(".crosshair");
-    if (crosshair) {
-      crosshair.setAttribute("x1", point.getAttribute("cx"));
-      crosshair.setAttribute("x2", point.getAttribute("cx"));
-      crosshair.setAttribute("opacity", "1");
+  if (bar) return tip(`<div class="tt-title">${esc(bar.dataset.label)}</div>
+    <div class="tt-row"><span>avg views</span><span>${esc(bar.dataset.value)}</span></div>`, event);
+  const pt = event.target.closest(".pt");
+  if (pt) {
+    const cross = pt.closest("svg").querySelector(".crosshair");
+    if (cross) {
+      cross.setAttribute("x1", pt.getAttribute("cx"));
+      cross.setAttribute("x2", pt.getAttribute("cx"));
+      cross.setAttribute("opacity", "1");
     }
-    return tip(
-      `<div class="tt-title">${new Date(point.dataset.t).toLocaleString()}</div>
-       <div class="tt-row"><span>views</span><span>${fmt(Number(point.dataset.v))}</span></div>
-       <div class="tt-row"><span>likes</span><span>${fmt(Number(point.dataset.l))}</span></div>`,
-      event
-    );
+    return tip(`<div class="tt-title">${new Date(pt.dataset.t).toLocaleString()}</div>
+      <div class="tt-row"><span>views</span><span>${fmt(Number(pt.dataset.v))}</span></div>
+      <div class="tt-row"><span>likes</span><span>${fmt(Number(pt.dataset.l))}</span></div>`, event);
   }
 });
-
-document.addEventListener("mouseout", (event) => {
-  if (event.target.closest("[data-tip], .bar, .pt")) {
+document.addEventListener("mouseout", (e) => {
+  if (e.target.closest("[data-tip], .bar, .pt")) {
     untip();
     $$(".crosshair").forEach((c) => c.setAttribute("opacity", "0"));
   }
 });
-
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !$("#gate").hidden) unlock();
-  if (event.key === "Escape") untip();
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !$("#gate").hidden) unlock();
+  if (e.key === "Escape") { untip(); closeSheet(); }
 });
-
-window.addEventListener("hashchange", route);
+addEventListener("hashchange", () => { closeSheet(); route(); });
 
 /* ---------- boot ---------- */
 
 (async function boot() {
-  const savedTheme = localStorage.getItem("clipengine.theme");
-  if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+  const theme = localStorage.getItem("clipengine.theme");
+  if (theme) document.documentElement.dataset.theme = theme;
 
   try {
-    await api("/overview");
+    const data = await api("/overview");
+    setEnvLabel(data);
     showGate(false);
     route();
-    // Keep the review badge live without a full re-render.
     setInterval(async () => {
-      try {
-        const clips = await api("/review/queue");
-        $("#review-count").textContent = clips.length;
-        $("#review-count").hidden = clips.length === 0;
-      } catch { /* ignore polling errors */ }
+      try { setBadge((await api("/review/queue")).length); } catch { /* ignore */ }
     }, 60000);
   } catch {
     showGate(true);
