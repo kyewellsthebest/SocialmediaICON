@@ -89,3 +89,24 @@ def test_port_resolution_survives_every_way_it_arrives_wrong(raw, expected):
     from api.serve import resolve_port
 
     assert resolve_port(raw) == expected
+
+
+def test_procfile_commands_contain_no_shell_syntax():
+    """Railway reads the Procfile and it overrides the Dockerfile CMD. Process
+    commands are not run through a shell, so a `${PORT:-8000}` in here reaches
+    the program as literal text and the service never binds."""
+    import re
+    from pathlib import Path
+
+    procfile = Path(__file__).resolve().parent.parent / "Procfile"
+    commands = {}
+    for line in procfile.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            role, cmd = line.split(":", 1)
+            commands[role.strip()] = cmd.strip()
+
+    assert set(commands) == {"web", "worker", "scheduler"}
+    for role, cmd in commands.items():
+        assert not re.search(r"[$`]", cmd), f"{role} command has shell syntax: {cmd}"
+        assert cmd == f"./scripts/start.sh {role}", f"{role} should use the entrypoint"

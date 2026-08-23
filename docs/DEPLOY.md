@@ -213,7 +213,7 @@ railway run python scripts/check_publisher.py   # credentials for your backend
 | `FATAL: REDIS_URL is not set` | Same for Redis: `REDIS_URL=${{Redis.REDIS_URL}}`. Only `worker` and `scheduler` need it to run, but set it everywhere. |
 | `could not reach the database within 60s` | Postgres exists but this service cannot see it — check the variable reference points at the right database service. |
 | A long `alembic` traceback on `worker` or `scheduler` | Those services are running the web start command. Give each one its own (table above). |
-| `Invalid value for '--port': '${PORT:-8000}'` | A custom start command with shell syntax in it. Clear the start command (the image already does the right thing) or set it to `./scripts/start.sh web`. Changing the target port will not help — the process dies before it listens. |
+| `Invalid value for '--port': '${PORT:-8000}'` | Something is passing shell syntax as a start command. Railway reads the repo's **`Procfile` first, and it overrides the Dockerfile CMD** — check there before the UI. Changing the target port will not help; the process dies before it listens. |
 | Deploy says **successful** but the URL shows **"Application failed to respond"** | Nothing is listening on the port Railway targets. Find the `binding 0.0.0.0:NNNN` line in the deploy log — if it is absent the app never started, so read further up. If it is present, point **Settings → Networking → Public Networking** at that port. |
 | `Healthcheck failed` | The app never answered `/health` within 120s. Look further up the log — it is usually the database wait timing out. |
 
