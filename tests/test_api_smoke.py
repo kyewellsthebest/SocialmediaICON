@@ -110,3 +110,29 @@ def test_procfile_commands_contain_no_shell_syntax():
     for role, cmd in commands.items():
         assert not re.search(r"[$`]", cmd), f"{role} command has shell syntax: {cmd}"
         assert cmd == f"./scripts/start.sh {role}", f"{role} should use the entrypoint"
+
+
+def test_dashboard_assets_are_fingerprinted(client):
+    """A deploy must not leave a browser holding old CSS against new markup:
+    the asset URLs carry a content hash and the shell is never cached."""
+    response = client.get("/")
+    body = response.text
+
+    assert "__V__" not in body, "the version placeholder was not substituted"
+    assert "/static/app.css?v=" in body
+    assert "/static/app.js?v=" in body
+    assert "no-store" in response.headers.get("cache-control", "")
+
+
+def test_asset_version_changes_with_content(tmp_path, monkeypatch):
+    from api import main
+
+    first = main.asset_version()
+    css = main.STATIC_DIR / "app.css"
+    original = css.read_bytes()
+    try:
+        css.write_bytes(original + b"\n/* touched */\n")
+        assert main.asset_version() != first
+    finally:
+        css.write_bytes(original)
+    assert main.asset_version() == first

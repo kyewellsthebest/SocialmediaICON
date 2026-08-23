@@ -6,12 +6,13 @@ same API, which keeps the deploy to a single web process.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -89,9 +90,32 @@ def health() -> dict[str, object]:
     }
 
 
+def asset_version() -> str:
+    """Fingerprint of the dashboard assets.
+
+    It goes in the stylesheet and script URLs so a deploy cannot leave a browser
+    holding last week's CSS against this week's markup - which renders as an
+    unstyled page rather than an obvious error.
+    """
+    digest = hashlib.sha256()
+    for name in ("app.css", "app.js"):
+        path = STATIC_DIR / name
+        if path.exists():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    ASSET_VERSION = asset_version()
+    log.info("dashboard assets version %s", ASSET_VERSION)
 
     @app.get("/", include_in_schema=False)
-    def dashboard() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+    def dashboard() -> HTMLResponse:
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(
+            html.replace("__V__", ASSET_VERSION),
+            # The shell is tiny and must never be cached, or the versioned URLs
+            # inside it never reach the browser.
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
