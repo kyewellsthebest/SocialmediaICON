@@ -71,3 +71,21 @@ def test_scheduler_refuses_to_run_jobs_inline_in_prod(monkeypatch, capsys):
     monkeypatch.setattr(settings, "env", "prod")
     assert scheduler.main() == 1
     assert "REDIS_URL is not set" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("8080", 8080),
+        (" 8080 ", 8080),
+        ("", 8000),          # unset or empty
+        ("${PORT:-8000}", 8000),  # an unexpanded shell placeholder
+        ("not-a-port", 8000),
+        ("0", 8000),         # out of range
+        ("70000", 8000),
+    ],
+)
+def test_port_resolution_survives_every_way_it_arrives_wrong(raw, expected):
+    from api.serve import resolve_port
+
+    assert resolve_port(raw) == expected

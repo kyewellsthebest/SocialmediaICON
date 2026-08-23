@@ -35,4 +35,8 @@ EXPOSE 8000
 # Default is the web service. worker and scheduler override the argument:
 #   worker     -> ./scripts/start.sh worker
 #   scheduler  -> ./scripts/start.sh scheduler
+#
+# Leave the start command EMPTY in Railway to use this. A custom start command
+# containing shell syntax like ${PORT:-8000} is passed through literally and
+# will not expand.
 CMD ["./scripts/start.sh", "web"]

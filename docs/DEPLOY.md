@@ -107,7 +107,13 @@ Then in the Railway dashboard, create **three services from this repo**:
 | `scheduler` | `./scripts/start.sh scheduler` | Fires scout, metrics and autopost on time |
 
 Set these under **Settings → Deploy → Custom Start Command** on each service.
-`web` also works with no start command at all — it is the image's default.
+`web` also works with **no start command at all** — it is the image's default,
+and leaving it empty is the safer choice.
+
+> **Never put shell syntax in a Railway start command.** A command containing
+> `${PORT:-8000}` is handed to the program literally, not expanded, and uvicorn
+> dies with `Invalid value for '--port'` before it ever listens. Anything that
+> needs a variable belongs inside `scripts/start.sh`, which does run in a shell.
 
 Only `web` runs migrations. Three services racing on `alembic upgrade head` at
 boot is how you end up with a half-applied schema.
@@ -207,7 +213,8 @@ railway run python scripts/check_publisher.py   # credentials for your backend
 | `FATAL: REDIS_URL is not set` | Same for Redis: `REDIS_URL=${{Redis.REDIS_URL}}`. Only `worker` and `scheduler` need it to run, but set it everywhere. |
 | `could not reach the database within 60s` | Postgres exists but this service cannot see it — check the variable reference points at the right database service. |
 | A long `alembic` traceback on `worker` or `scheduler` | Those services are running the web start command. Give each one its own (table above). |
-| Deploy says **successful** but the URL shows **"Application failed to respond"** | The app is running; Railway is routing to the wrong port. Find the `binding 0.0.0.0:NNNN` line in the deploy log, then check **Settings → Networking → Public Networking** targets that same port. Removing and re-adding the domain makes Railway re-detect it. |
+| `Invalid value for '--port': '${PORT:-8000}'` | A custom start command with shell syntax in it. Clear the start command (the image already does the right thing) or set it to `./scripts/start.sh web`. Changing the target port will not help — the process dies before it listens. |
+| Deploy says **successful** but the URL shows **"Application failed to respond"** | Nothing is listening on the port Railway targets. Find the `binding 0.0.0.0:NNNN` line in the deploy log — if it is absent the app never started, so read further up. If it is present, point **Settings → Networking → Public Networking** at that port. |
 | `Healthcheck failed` | The app never answered `/health` within 120s. Look further up the log — it is usually the database wait timing out. |
 
 The container exits on a missing variable rather than crash-looping with a

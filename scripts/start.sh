@@ -75,15 +75,10 @@ case "$ROLE" in
     echo "running migrations..."
     alembic upgrade head
 
-    # Railway routes to whatever it thinks the port is; print what we actually
-    # bind so a mismatch is one line in the log rather than a guess.
-    BIND_PORT="${PORT:-8000}"
-    if [ -n "${PORT:-}" ]; then
-      echo "binding 0.0.0.0:${BIND_PORT} (from PORT)"
-    else
-      echo "binding 0.0.0.0:${BIND_PORT} (PORT was not set - Railway must target 8000)"
-    fi
-    exec uvicorn api.main:app --host 0.0.0.0 --port "${BIND_PORT}"
+    # The port is resolved in Python, not here: a start command carrying
+    # `--port ${PORT:-8000}` only works if a shell expands it, and when one
+    # does not, uvicorn gets the literal string and never listens.
+    exec python -m api.serve
     ;;
   worker)
     require_database
