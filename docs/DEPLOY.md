@@ -106,7 +106,11 @@ Then in the Railway dashboard, create **three services from this repo**:
 | `worker` | `./scripts/start.sh worker` | Runs the pipeline jobs |
 | `scheduler` | `./scripts/start.sh scheduler` | Fires scout, metrics and autopost on time |
 
-Set these under **Settings → Deploy → Custom Start Command** on each service.
+On **web** only, also set **Settings → Deploy → Healthcheck Path** to `/health`, so a
+web deploy that cannot be reached fails loudly instead of going live and serving
+502s. Leave it empty on worker and scheduler — they have no HTTP server.
+
+Set the start commands under **Settings → Deploy → Custom Start Command** on each service.
 `web` also works with **no start command at all** — it is the image's default,
 and leaving it empty is the safer choice.
 
@@ -215,7 +219,8 @@ railway run python scripts/check_publisher.py   # credentials for your backend
 | A long `alembic` traceback on `worker` or `scheduler` | Those services are running the web start command. Give each one its own (table above). |
 | `Invalid value for '--port': '${PORT:-8000}'` | Something is passing shell syntax as a start command. Railway reads the repo's **`Procfile` first, and it overrides the Dockerfile CMD** — check there before the UI. Changing the target port will not help; the process dies before it listens. |
 | Deploy says **successful** but the URL shows **"Application failed to respond"** | Nothing is listening on the port Railway targets. Find the `binding 0.0.0.0:NNNN` line in the deploy log — if it is absent the app never started, so read further up. If it is present, point **Settings → Networking → Public Networking** at that port. |
-| `Healthcheck failed` | The app never answered `/health` within 120s. Look further up the log — it is usually the database wait timing out. |
+| `Healthcheck failed` on **worker** or **scheduler** | Those are background processes with no HTTP server, so they can never answer a health probe. The healthcheck belongs on `web` only — set it per service in the UI, never in `railway.json`, which applies to all of them. |
+| `Healthcheck failed` on **web** | The app never answered `/health` in time. Look further up the log — usually the database wait timing out. |
 
 The container exits on a missing variable rather than crash-looping with a
 stack trace, so the first line of the deploy log tells you what to fix.

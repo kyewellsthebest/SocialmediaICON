@@ -136,3 +136,17 @@ def test_asset_version_changes_with_content(tmp_path, monkeypatch):
     finally:
         css.write_bytes(original)
     assert main.asset_version() == first
+
+
+def test_railway_config_has_no_global_healthcheck():
+    """railway.json applies to every service. worker and scheduler are
+    background processes with no HTTP server, so a healthcheck here fails their
+    deploys even though they started correctly. It belongs on web only, set per
+    service in the Railway UI."""
+    import json
+    from pathlib import Path
+
+    config = json.loads((Path(__file__).resolve().parent.parent / "railway.json").read_text())
+    deploy = config.get("deploy", {})
+    assert "healthcheckPath" not in deploy
+    assert "startCommand" not in deploy, "a start command here is inherited by every service"
