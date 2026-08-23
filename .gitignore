@@ -12,3 +12,6 @@ out/
 .work/
 dashboard/node_modules/
 dashboard/.next/
+
+# Redis snapshot, written into the working directory by a local redis-server
+dump.rdb
