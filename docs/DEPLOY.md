@@ -102,9 +102,15 @@ Then in the Railway dashboard, create **three services from this repo**:
 
 | Service | Start command | What it is |
 |---|---|---|
-| `web` | `alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port $PORT` | API + dashboard |
-| `worker` | `python -m worker.queue` | Runs the pipeline jobs |
-| `scheduler` | `python -m worker.scheduler` | Fires scout, metrics and autopost on time |
+| `web` | `./scripts/start.sh web` | Migrations, then the API + dashboard |
+| `worker` | `./scripts/start.sh worker` | Runs the pipeline jobs |
+| `scheduler` | `./scripts/start.sh scheduler` | Fires scout, metrics and autopost on time |
+
+Set these under **Settings → Deploy → Custom Start Command** on each service.
+`web` also works with no start command at all — it is the image's default.
+
+Only `web` runs migrations. Three services racing on `alembic upgrade head` at
+boot is how you end up with a half-applied schema.
 
 All three build from the same **Dockerfile** (Railway picks it up automatically;
 if a service was created before the Dockerfile existed, set
@@ -140,8 +146,17 @@ PUBLISHER=manual                            # switch to youtube / upload_post la
 AUTOPOST_ENABLED=false
 ```
 
-`DATABASE_URL` and `REDIS_URL` come from the Postgres and Redis plugins — 
-reference them as `${{Postgres.DATABASE_URL}}` and `${{Redis.REDIS_URL}}`.
+`DATABASE_URL` and `REDIS_URL` come from the databases you added in step 3.
+They are **not** injected automatically — you have to reference them on each
+service, under **Variables**:
+
+```
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+REDIS_URL=${{Redis.REDIS_URL}}
+```
+
+All three services need both. Without them the container exits immediately and
+tells you which one is missing.
 
 **Generate the token with something like:**
 
@@ -183,7 +198,20 @@ railway run python scripts/check_publisher.py   # credentials for your backend
 
 ---
 
-## 5. The monthly bill
+## 5. When a deploy fails
+
+| What the logs say | What it means |
+|---|---|
+| `pip: command not found` (exit 127) | The service is still on the Nixpacks builder. **Settings → Build → Builder → Dockerfile.** |
+| `FATAL: DATABASE_URL is not set` | Add a Postgres database to the project, then set `DATABASE_URL=${{Postgres.DATABASE_URL}}` on this service. |
+| `FATAL: REDIS_URL is not set` | Same for Redis: `REDIS_URL=${{Redis.REDIS_URL}}`. Only `worker` and `scheduler` need it to run, but set it everywhere. |
+| `could not reach the database within 60s` | Postgres exists but this service cannot see it — check the variable reference points at the right database service. |
+| A long `alembic` traceback on `worker` or `scheduler` | Those services are running the web start command. Give each one its own (table above). |
+
+The container exits on a missing variable rather than crash-looping with a
+stack trace, so the first line of the deploy log tells you what to fix.
+
+## 6. The monthly bill
 
 | Line | Cost |
 |---|---|
@@ -206,7 +234,7 @@ your $100 line so it can't creep up unnoticed.
 
 ---
 
-## 6. Local development
+## 7. Local development
 
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate

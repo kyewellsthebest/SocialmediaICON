@@ -148,9 +148,12 @@ ingest need it at runtime).
 alembic upgrade head          # create the schema
 ```
 
-- `web`: `alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port $PORT`
-- `worker`: `python -m worker.queue` (all queues; pass names to narrow)
-- `scheduler`: `python -m worker.scheduler`
+- `web`: `./scripts/start.sh web` — migrations, then the API and dashboard
+- `worker`: `./scripts/start.sh worker`
+- `scheduler`: `./scripts/start.sh scheduler`
+
+One entrypoint, three roles. Only `web` migrates; each role checks the
+variables it needs and exits with a one-line reason rather than a traceback.
 
 Acceptance check — writes and reads a throwaway Postgres row and R2 object:
 

@@ -32,7 +32,7 @@ COPY . .
 
 EXPOSE 8000
 
-# Default is the web service. worker and scheduler override this in Railway:
-#   worker     -> python -m worker.queue
-#   scheduler  -> python -m worker.scheduler
-CMD ["sh", "-c", "alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Default is the web service. worker and scheduler override the argument:
+#   worker     -> ./scripts/start.sh worker
+#   scheduler  -> ./scripts/start.sh scheduler
+CMD ["./scripts/start.sh", "web"]
