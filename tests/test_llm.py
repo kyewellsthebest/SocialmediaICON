@@ -44,3 +44,23 @@ def test_detect_schema_is_strict():
     item = DETECT_SCHEMA["properties"]["candidates"]["items"]
     assert item["additionalProperties"] is False
     assert set(item["required"]) == set(item["properties"])
+
+
+def test_metadata_prompt_bans_the_patterns_that_read_as_automated():
+    """The caption is the main thing a human sees before the video plays. These
+    are the tells that mark an account as a bot farm rather than a person."""
+    from core.llm import METADATA_SYSTEM, METADATA_USER
+
+    system = METADATA_SYSTEM.lower()
+    for tell in ("wait for it", "follow for more", "comment below", "emoji", "engagement bait"):
+        assert tell in system, f"prompt no longer warns against {tell!r}"
+
+    rendered = METADATA_USER.format(niche="metal detecting", clip_text="x", hashtag_count=4)
+    assert "#viral" in rendered and "#fyp" in rendered, "should steer away from spam tags"
+    assert "4 of them" in rendered
+
+
+def test_hashtag_count_is_a_handful_not_a_wall():
+    from core.config import settings
+
+    assert 3 <= settings.hashtag_count <= 8

@@ -68,9 +68,19 @@ Return JSON:
 Return exactly one entry per candidate id above."""
 
 METADATA_SYSTEM = (
-    "You write titles, captions and hashtags for vertical short-form video. "
-    "Titles are punchy and under 80 characters, no clickbait that the clip does "
-    "not deliver on, no emoji spam, no quotation marks wrapping the whole title. "
+    "You write titles and captions for vertical short-form video, in the voice of "
+    "someone who actually does this hobby and is posting their own footage.\n\n"
+    "Write the way a real person in the community writes:\n"
+    "- Say what happened, plainly. The clip is the content; the caption is not a pitch.\n"
+    "- Use the vocabulary insiders use, correctly. Getting a term wrong marks you as "
+    "an outsider faster than anything else.\n"
+    "- Understatement beats hype. A genuinely good find needs no exclamation marks.\n\n"
+    "Never do these, because they are what makes an account read as automated:\n"
+    "- Engagement bait: 'wait for it', 'you won't believe', 'comment below', "
+    "'follow for more', 'part 1'.\n"
+    "- Emoji strings, ALL CAPS words, or a wall of hashtags.\n"
+    "- Promising something the clip does not actually show.\n"
+    "- Describing the video to someone who is already watching it.\n\n"
     "Return STRICT JSON only, no preamble, no markdown."
 )
 
@@ -80,7 +90,13 @@ CLIP TRANSCRIPT:
 
 Return JSON:
 {{ "title": string, "caption": string, "hashtags": [string] }}
-5-8 hashtags, each starting with '#', lowercase, no spaces."""
+
+title: under 70 characters, sentence case, no trailing punctuation.
+caption: one or two short sentences in a normal speaking voice. A question is fine
+  only when it is one a real person would genuinely ask the community.
+hashtags: {hashtag_count} of them, lowercase, no spaces, each starting with '#'.
+  Prefer the specific tags this community actually follows over broad ones like
+  #viral or #fyp, which signal spam and reach nobody."""
 
 # --- output schemas -------------------------------------------------------
 
@@ -334,7 +350,9 @@ def rank_candidates(niche: str, candidates: list[Candidate], texts: list[str]) -
 def write_metadata(niche: str, clip_text: str) -> dict[str, Any]:
     payload = json_message(
         METADATA_SYSTEM,
-        METADATA_USER.format(niche=niche, clip_text=clip_text),
+        METADATA_USER.format(
+            niche=niche, clip_text=clip_text, hashtag_count=settings.hashtag_count
+        ),
         METADATA_SCHEMA,
         max_tokens=4000,
     )

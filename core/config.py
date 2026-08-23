@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # pipeline defaults
     default_niche: str = "general"
     top_n_clips: int = 3
+    # Platforms stopped rewarding hashtag walls; a handful of specific tags
+    # outperforms thirty broad ones and does not read as automated.
+    hashtag_count: int = 4
     min_clip_s: float = 15.0
     max_clip_s: float = 60.0
     window_minutes: int = 6
