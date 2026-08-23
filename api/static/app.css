@@ -97,11 +97,14 @@
 * { box-sizing: border-box; min-width: 0; }
 [hidden] { display: none !important; }
 
+/* `clip` not `hidden`: hidden makes the root a scroll container, and on
+   Chrome for Android touch gestures then land on a box that cannot scroll, so
+   the page appears frozen. `clip` prevents sideways scrolling without creating
+   a scroll port. Nothing overflows anyway — this is only a guard. */
 html, body {
   margin: 0;
   max-width: 100%;
-  overflow-x: hidden;           /* nothing may push the page sideways */
-  overscroll-behavior-y: contain;
+  overflow-x: clip;
 }
 
 body {
