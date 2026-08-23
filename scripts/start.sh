@@ -74,7 +74,16 @@ case "$ROLE" in
     wait_for_database
     echo "running migrations..."
     alembic upgrade head
-    exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8000}"
+
+    # Railway routes to whatever it thinks the port is; print what we actually
+    # bind so a mismatch is one line in the log rather than a guess.
+    BIND_PORT="${PORT:-8000}"
+    if [ -n "${PORT:-}" ]; then
+      echo "binding 0.0.0.0:${BIND_PORT} (from PORT)"
+    else
+      echo "binding 0.0.0.0:${BIND_PORT} (PORT was not set - Railway must target 8000)"
+    fi
+    exec uvicorn api.main:app --host 0.0.0.0 --port "${BIND_PORT}"
     ;;
   worker)
     require_database

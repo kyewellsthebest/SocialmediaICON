@@ -207,6 +207,8 @@ railway run python scripts/check_publisher.py   # credentials for your backend
 | `FATAL: REDIS_URL is not set` | Same for Redis: `REDIS_URL=${{Redis.REDIS_URL}}`. Only `worker` and `scheduler` need it to run, but set it everywhere. |
 | `could not reach the database within 60s` | Postgres exists but this service cannot see it — check the variable reference points at the right database service. |
 | A long `alembic` traceback on `worker` or `scheduler` | Those services are running the web start command. Give each one its own (table above). |
+| Deploy says **successful** but the URL shows **"Application failed to respond"** | The app is running; Railway is routing to the wrong port. Find the `binding 0.0.0.0:NNNN` line in the deploy log, then check **Settings → Networking → Public Networking** targets that same port. Removing and re-adding the domain makes Railway re-detect it. |
+| `Healthcheck failed` | The app never answered `/health` within 120s. Look further up the log — it is usually the database wait timing out. |
 
 The container exits on a missing variable rather than crash-looping with a
 stack trace, so the first line of the deploy log tells you what to fix.
