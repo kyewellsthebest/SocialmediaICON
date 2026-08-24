@@ -29,6 +29,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from core import credentials
 from core.config import settings
 from core.publishers import PublishRequest, PublishResult
 from core.storage import get_storage
@@ -87,41 +88,45 @@ class MetaPublisher:
     # ------------------------------------------------------------------ setup
 
     def _target(self, platform: str) -> _Target:
+        """Account id, token and host for one platform.
+
+        Tokens come from the credential store rather than straight off settings,
+        so a value the refresh job replaced is used on the next publish instead
+        of the stale one this process booted with.
+        """
         if platform == "instagram":
-            if not settings.has_instagram:
-                raise MetaError(
-                    "INSTAGRAM_USER_ID plus INSTAGRAM_ACCESS_TOKEN or META_ACCESS_TOKEN are not set"
-                )
+            if not settings.instagram_user_id:
+                raise MetaError("INSTAGRAM_USER_ID is not set")
             # Instagram Login reaches the account directly; Facebook Login
             # reaches it through the Page it is linked to. Same endpoints
             # either way, different host and different token.
-            if settings.instagram_via_instagram_login:
+            instagram_token = credentials.get("INSTAGRAM_ACCESS_TOKEN")
+            if instagram_token:
                 return _Target(
                     platform,
                     str(settings.instagram_user_id),
-                    str(settings.instagram_access_token),
+                    instagram_token,
                     INSTAGRAM_HOST,
                 )
-            return _Target(
-                platform,
-                str(settings.instagram_user_id),
-                str(settings.meta_access_token),
-                FACEBOOK_HOST,
-            )
+            meta_token = credentials.get("META_ACCESS_TOKEN")
+            if not meta_token:
+                raise MetaError("neither INSTAGRAM_ACCESS_TOKEN nor META_ACCESS_TOKEN is set")
+            return _Target(platform, str(settings.instagram_user_id), meta_token, FACEBOOK_HOST)
+
         if platform == "threads":
-            if not settings.has_threads:
+            threads_token = credentials.get("THREADS_ACCESS_TOKEN")
+            if not (settings.threads_user_id and threads_token):
                 raise MetaError("THREADS_USER_ID / THREADS_ACCESS_TOKEN are not set")
-            return _Target(
-                platform,
-                str(settings.threads_user_id),
-                str(settings.threads_access_token),
-                THREADS_HOST,
-            )
+            return _Target(platform, str(settings.threads_user_id), threads_token, THREADS_HOST)
+
         if platform == "facebook":
-            if not settings.has_facebook:
+            # The Page token carries no expiry, so it is never refreshed and
+            # reads straight off settings.
+            token = settings.facebook_page_token or credentials.get("META_ACCESS_TOKEN")
+            if not (settings.facebook_page_id and token):
                 raise MetaError("FACEBOOK_PAGE_ID / a page token are not set")
-            token = settings.facebook_page_token or settings.meta_access_token
-            return _Target(platform, str(settings.facebook_page_id), str(token), FACEBOOK_HOST)
+            return _Target(platform, str(settings.facebook_page_id), token, FACEBOOK_HOST)
+
         raise MetaError(f"{platform} is not a Meta platform")
 
     def _http(self) -> httpx.Client:

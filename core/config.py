@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     # Meta downloads and transcodes the file itself; a 60s 1080x1920 clip is
     # usually done inside a minute, but the queue is shared and can be slow.
     meta_publish_timeout_s: int = 420
+    # A quarter of the 60-day token life: three missed runs still leave a
+    # fortnight before anything lapses.
+    token_refresh_interval_days: int = 14
 
     # dashboard access (the app is public on Railway unless this is set)
     dashboard_token: str | None = None
@@ -157,6 +160,12 @@ class Settings(BaseSettings):
     @property
     def has_threads(self) -> bool:
         return bool(self.threads_user_id and self.threads_access_token)
+
+    @property
+    def has_meta_tokens(self) -> bool:
+        return bool(
+            self.meta_access_token or self.instagram_access_token or self.threads_access_token
+        )
 
     @property
     def has_youtube_read(self) -> bool:

@@ -78,6 +78,11 @@ python scripts/meta_token.py --page-token                 # -> a token with no t
 Derived from a long-lived user token, the Page token carries no expiry of its
 own — the one credential here that never needs renewing.
 
+**You only do the exchange once.** With `DATABASE_URL` set, the scheduler
+refreshes every Meta token fortnightly and stores the new value, so nothing
+lapses at 60 days — the environment variable is only the seed, and the way you
+rotate a token by hand.
+
 Then `python scripts/meta_token.py` shows what is configured, which account each
 id resolves to, and when the tokens expire; `--refresh` extends them by another
 60 days. Diary it, or posting stops two months after it last worked.

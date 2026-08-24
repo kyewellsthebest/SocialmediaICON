@@ -284,6 +284,27 @@ class TrackedSnapshot(Base):
     video: Mapped[TrackedVideo] = relationship(back_populates="snapshots")
 
 
+class Credential(Base):
+    """A token the process refreshes for itself.
+
+    Meta's tokens last 60 days and can be extended indefinitely, but only by
+    calling an endpoint before they lapse - and a process cannot rewrite its own
+    environment. So the current value lives here instead: seeded from the
+    environment on first use, then replaced by the refresh job. The environment
+    variable stays the fallback and the way you rotate a token by hand.
+    """
+
+    __tablename__ = "credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The environment variable this shadows, e.g. THREADS_ACCESS_TOKEN.
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
 class ApiQuota(Base):
     """Daily API spend, so a scout run can refuse to blow the free tier."""
 

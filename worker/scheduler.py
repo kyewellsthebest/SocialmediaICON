@@ -39,6 +39,7 @@ class Job:
 def _jobs() -> list[Job]:
     from worker.tasks.collect_metrics import collect_due
     from worker.tasks.publish import autopost
+    from worker.tasks.refresh_tokens import run as refresh_tokens
     from worker.tasks.scout import run as scout_run
 
     return [
@@ -54,6 +55,16 @@ def _jobs() -> list[Job]:
             queue="metrics",
             every_minutes=settings.metrics_interval_minutes,
             func=collect_due,
+        ),
+        Job(
+            name="refresh_tokens",
+            queue="metrics",
+            # Meta tokens die at 60 days and cannot be revived afterwards, so
+            # refresh at a quarter of that: three failed runs still leave a
+            # fortnight of slack.
+            every_minutes=settings.token_refresh_interval_days * 24 * 60,
+            func=refresh_tokens,
+            enabled=settings.has_meta_tokens,
         ),
         Job(
             name="autopost",
@@ -105,9 +116,7 @@ def tick(now: float | None = None) -> list[str]:
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     running = True
 
     def stop(signum, frame):  # noqa: ANN001, ARG001 - signal handler signature

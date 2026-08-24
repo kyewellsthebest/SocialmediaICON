@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx  # noqa: E402
 
+from core import credentials  # noqa: E402
 from core.config import settings  # noqa: E402
 from core.publishers.meta import (  # noqa: E402
     FACEBOOK_HOST,
@@ -57,6 +58,20 @@ def _describe() -> int:
 
     if settings.instagram_via_instagram_login:
         print("\nInstagram: using Instagram Login (no Facebook Page involved).")
+
+    stored = credentials.status()
+    if stored:
+        print("\nStored tokens (refreshed automatically by the scheduler):")
+        for row in stored:
+            left = f"{row['days_left']} days left" if row["days_left"] is not None else "no expiry"
+            print(f"  {row['name']:<24} {left}")
+            if row["last_error"]:
+                print(f"    last refresh failed: {row['last_error']}")
+    elif settings.has_db:
+        print(
+            "\nNo tokens stored yet - the scheduler seeds them from the environment "
+            "on its first refresh."
+        )
 
     # Ask Meta who the token belongs to and when it dies. `debug_token` needs
     # the app credentials as well, so skip it when those are absent.
