@@ -121,3 +121,40 @@ def test_hot_segments_accepts_yt_dlp_field_names():
 def test_peak_heat():
     assert peak_heat([{"value": 0.2}, {"value": 0.77}]) == 0.77
     assert peak_heat(None) is None
+
+
+class TestKeywordRotation:
+    """Every keyword must get searched eventually, not just the first few."""
+
+    def _window(self, keywords, size, slot):
+        from datetime import UTC, datetime
+
+        from core.config import settings
+        from worker.tasks.scout import keywords_for_run
+
+        # One slot per scout interval, counted from the epoch.
+        when = datetime.fromtimestamp(slot * settings.scout_interval_minutes * 60, tz=UTC)
+        return keywords_for_run(keywords, size, when)
+
+    def test_a_short_list_is_searched_whole(self):
+        words = ["a", "b", "c"]
+        assert self._window(words, 4, 0) == words
+
+    def test_the_window_walks_along_the_list(self):
+        words = list("abcdefgh")
+        assert self._window(words, 4, 0) == ["a", "b", "c", "d"]
+        assert self._window(words, 4, 1) == ["e", "f", "g", "h"]
+        assert self._window(words, 4, 2) == ["a", "b", "c", "d"]
+
+    def test_every_keyword_is_reached_when_the_list_does_not_divide_evenly(self):
+        words = list("abcdefg")
+        seen = set()
+        for slot in range(20):
+            seen.update(self._window(words, 3, slot))
+        assert seen == set(words)
+
+    def test_the_window_wraps_rather_than_running_short(self):
+        words = list("abcde")
+        window = self._window(words, 3, 1)
+        assert len(window) == 3
+        assert window == ["d", "e", "a"]

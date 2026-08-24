@@ -31,6 +31,27 @@ log = logging.getLogger(__name__)
 HEATMAP_BUDGET = 10
 
 
+def keywords_for_run(keywords: list[str], size: int, now: datetime) -> list[str]:
+    """The slice of the keyword list this run should search.
+
+    A search costs 100 of a 10,000/day quota, so a run can only afford a
+    handful. Taking the first N every time would mean anything past the cut
+    never gets searched at all - so the window walks along the list and wraps,
+    and every keyword comes up over a day or two.
+
+    The position is derived from the clock rather than stored, so it survives a
+    restart and needs no coordination between workers.
+    """
+    if size >= len(keywords):
+        return keywords
+
+    every = max(1, settings.scout_interval_minutes)
+    slot = int(now.timestamp() // 60 // every)
+    start = (slot * size) % len(keywords)
+    window = keywords + keywords  # wrap without modulo arithmetic per item
+    return window[start : start + size]
+
+
 def _niche_id(session, niche_name: str | None) -> int | None:
     if not niche_name:
         return None
@@ -57,12 +78,18 @@ def scout(
     limit = limit or settings.scout_track_limit
     now = datetime.now(UTC)
 
+    searching = keywords_for_run(keywords, settings.scout_max_keywords, now)
+    if len(searching) < len(keywords):
+        log.info(
+            "searching %d of %d keywords this run: %s", len(searching), len(keywords), searching
+        )
+
     video_ids: list[str] = []
-    for keyword in keywords[: settings.scout_max_keywords]:
+    for keyword in searching:
         try:
             found = youtube.search(
                 keyword,
-                max_results=max(10, limit // max(1, len(keywords[: settings.scout_max_keywords]))),
+                max_results=max(10, limit // max(1, len(searching))),
                 region_code=settings.scout_region,
                 video_duration=settings.scout_video_duration,
             )
