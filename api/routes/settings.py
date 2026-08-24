@@ -104,6 +104,24 @@ def meta_status() -> dict[str, Any]:
         "threads": env_settings.has_threads,
         "facebook": env_settings.has_facebook,
     }
+    # Naming the empty variables turns "it does not work" into a checklist. The
+    # usual cause is a shared variable that was never applied to this service,
+    # and that looks identical to a typo until you can see which name is blank.
+    present = {
+        "META_APP_ID": bool(env_settings.meta_app_id),
+        "META_APP_SECRET": bool(env_settings.meta_app_secret),
+        "META_ACCESS_TOKEN": bool(env_settings.meta_access_token),
+        "INSTAGRAM_USER_ID": bool(env_settings.instagram_user_id),
+        "INSTAGRAM_ACCESS_TOKEN": bool(env_settings.instagram_access_token),
+        "THREADS_USER_ID": bool(env_settings.threads_user_id),
+        "THREADS_ACCESS_TOKEN": bool(env_settings.threads_access_token),
+        "FACEBOOK_PAGE_ID": bool(env_settings.facebook_page_id),
+        "FACEBOOK_PAGE_TOKEN": bool(env_settings.facebook_page_token),
+        "R2_ACCOUNT_ID": bool(env_settings.r2_account_id),
+        "R2_ACCESS_KEY_ID": bool(env_settings.r2_access_key_id),
+        "R2_SECRET_ACCESS_KEY": bool(env_settings.r2_secret_access_key),
+        "R2_BUCKET": bool(env_settings.r2_bucket),
+    }
     payload: dict[str, Any] = {
         "publisher": env_settings.publisher,
         "graph_version": env_settings.meta_graph_version,
@@ -115,10 +133,16 @@ def meta_status() -> dict[str, Any]:
         "storage_ready": env_settings.has_r2,
         "accounts": {},
         "tokens": [],
+        "variables_set": sorted(name for name, ok in present.items() if ok),
+        "variables_missing": sorted(name for name, ok in present.items() if not ok),
     }
 
     if not any(configured.values()):
-        payload["hint"] = "No Meta credentials are set yet."
+        payload["hint"] = (
+            "No Meta credentials reached this service. If you set them as Railway "
+            "shared variables, they must also be applied to each service - check "
+            "the web service's own Variables tab, then redeploy."
+        )
         return payload
 
     from core.publishers.meta import describe_accounts

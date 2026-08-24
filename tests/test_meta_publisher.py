@@ -485,3 +485,32 @@ def test_meta_status_flags_missing_storage(meta_env, monkeypatch):
 
     assert payload["storage_ready"] is False
     assert "R2" in payload["hint"]
+
+
+def test_meta_status_names_the_variables_that_are_missing(monkeypatch):
+    """ "Nothing is configured" is unactionable; a list of blank names is not."""
+    for key in ("instagram_user_id", "threads_user_id", "facebook_page_id", "r2_bucket"):
+        monkeypatch.setattr(settings, key, None, raising=False)
+    monkeypatch.setattr(settings, "meta_app_id", "app-1", raising=False)
+
+    import api.routes.settings as settings_routes
+
+    payload = settings_routes.meta_status()
+
+    assert "META_APP_ID" in payload["variables_set"]
+    assert "FACEBOOK_PAGE_ID" in payload["variables_missing"]
+    assert "R2_BUCKET" in payload["variables_missing"]
+    assert "shared variables" in payload["hint"]
+
+
+def test_variables_lists_never_carry_a_value(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "database_url", None, raising=False)
+    monkeypatch.setattr("core.publishers.meta.describe_accounts", dict)
+
+    import api.routes.settings as settings_routes
+
+    payload = settings_routes.meta_status()
+    listed = payload["variables_set"] + payload["variables_missing"]
+
+    assert "fb-token" not in repr(listed)
+    assert all(name.isupper() for name in listed)
