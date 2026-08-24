@@ -421,6 +421,66 @@ def describe_accounts(client: httpx.Client | None = None) -> dict[str, str]:
 
 # ---------------------------------------------------------------- token care
 
+# Each platform swaps a short-lived token for a 60-day one at its own endpoint,
+# with its own grant type. The dashboard hands you the short-lived kind.
+EXCHANGE = {
+    "instagram": (INSTAGRAM_HOST + "/access_token", "ig_exchange_token"),
+    "threads": (THREADS_HOST + "/access_token", "th_exchange_token"),
+}
+
+
+def exchange_token(
+    platform: str,
+    short_lived: str,
+    app_secret: str | None = None,
+    client: httpx.Client | None = None,
+) -> str:
+    """Swap a token from the app dashboard for one that lasts 60 days.
+
+    The generators in Meta's UI give you roughly an hour. Putting that straight
+    into the environment produces a queue that works during setup and is broken
+    by morning, which is a confusing way to lose a day.
+    """
+    owns_client = client is None
+    client = client or httpx.Client(timeout=30.0)
+    secret = app_secret or settings.meta_app_secret
+    if not secret:
+        raise MetaError("META_APP_SECRET is not set - the exchange is signed with it")
+    try:
+        if platform == "facebook":
+            if not settings.meta_app_id:
+                raise MetaError("META_APP_ID is not set")
+            response = client.get(
+                f"{FACEBOOK_HOST}/{settings.meta_graph_version}/oauth/access_token",
+                params={
+                    "grant_type": "fb_exchange_token",
+                    "client_id": settings.meta_app_id,
+                    "client_secret": secret,
+                    "fb_exchange_token": short_lived,
+                },
+            )
+        elif platform in EXCHANGE:
+            url, grant = EXCHANGE[platform]
+            response = client.get(
+                url,
+                params={
+                    "grant_type": grant,
+                    "client_secret": secret,
+                    "access_token": short_lived,
+                },
+            )
+        else:
+            raise MetaError(f"{platform} does not exchange tokens")
+
+        payload = response.json()
+        token = payload.get("access_token")
+        if not token:
+            raise MetaError(f"exchange refused: {payload}")
+        return str(token)
+    finally:
+        if owns_client:
+            client.close()
+
 
 def refresh_tokens(client: httpx.Client | None = None) -> dict[str, str]:
     """Extend the long-lived tokens by another 60 days.

@@ -59,9 +59,16 @@ Run `python scripts/meta_token.py` afterwards — it prints the **username**
 behind each configured id, so a wrong account shows up before the queue posts
 to it.
 
-Tokens last 60 days. `python scripts/meta_token.py` shows what is configured and
-when it expires; `--refresh` extends it. Diary it, or posting stops two months
-after it last worked.
+**The tokens the dashboard generates last about an hour.** Exchange each one
+for a 60-day token before putting it anywhere:
+
+```bash
+python scripts/meta_token.py --exchange instagram=IGQ... threads=THQ... facebook=EAA...
+```
+
+Then `python scripts/meta_token.py` shows what is configured, which account each
+id resolves to, and when the tokens expire; `--refresh` extends them by another
+60 days. Diary it, or posting stops two months after it last worked.
 
 Meta downloads the clip from a URL rather than accepting an upload, so **R2 must
 be configured** before `PUBLISHER=meta` can work.

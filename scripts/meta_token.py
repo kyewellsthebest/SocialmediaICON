@@ -2,7 +2,11 @@
 """Check and extend the Meta tokens.
 
     python scripts/meta_token.py             # what is configured, and who it is
+    python scripts/meta_token.py --exchange instagram=IGQ...  # 1 hour -> 60 days
     python scripts/meta_token.py --refresh   # extend by another 60 days
+
+The tokens Meta's dashboard generates last about an hour. Run --exchange on
+each one first, or the queue works this afternoon and is dead by morning.
 
 Meta's long-lived tokens last 60 days and cannot be refreshed once expired, so
 this is a diary entry, not a fire-and-forget. Run it monthly and paste the new
@@ -23,7 +27,9 @@ from core.config import settings  # noqa: E402
 from core.publishers.meta import (  # noqa: E402
     FACEBOOK_HOST,
     THREADS_HOST,
+    MetaError,
     describe_accounts,
+    exchange_token,
     refresh_tokens,
 )
 
@@ -79,10 +85,51 @@ def _describe() -> int:
     return 0
 
 
+ENV_VAR = {
+    "instagram": "INSTAGRAM_ACCESS_TOKEN",
+    "threads": "THREADS_ACCESS_TOKEN",
+    "facebook": "META_ACCESS_TOKEN",
+}
+
+
+def _exchange(pairs: list[str]) -> int:
+    failed = False
+    out: dict[str, str] = {}
+    for pair in pairs:
+        platform, _, short = pair.partition("=")
+        platform = platform.strip().lower()
+        if not short or platform not in ENV_VAR:
+            print(f"skipping {pair!r} - expected one of {', '.join(ENV_VAR)}=<token>")
+            failed = True
+            continue
+        try:
+            out[ENV_VAR[platform]] = exchange_token(platform, short.strip())
+        except MetaError as exc:
+            print(f"{platform}: {exc}")
+            failed = True
+
+    if out:
+        print("Long-lived tokens - put these in Railway -> Variables:\n")
+        for key, value in out.items():
+            print(f"{key}={value}\n")
+        print("They expire in 60 days. Run --refresh before then.")
+    return 1 if failed else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--refresh", action="store_true", help="extend the tokens by 60 days")
+    parser.add_argument(
+        "--exchange",
+        nargs="+",
+        metavar="PLATFORM=TOKEN",
+        help="swap short-lived dashboard tokens for 60-day ones "
+        "(instagram=... threads=... facebook=...)",
+    )
     args = parser.parse_args()
+
+    if args.exchange:
+        return _exchange(args.exchange)
 
     if not args.refresh:
         return _describe()

@@ -330,3 +330,47 @@ def test_describe_accounts_reports_a_bad_id_instead_of_raising(meta_env):
     who = describe_accounts(client=httpx.Client(transport=httpx.MockTransport(handler)))
 
     assert all("could not resolve" in v for v in who.values())
+
+
+def test_exchange_uses_each_platforms_own_endpoint_and_grant(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "meta_app_id", "app-1", raising=False)
+    monkeypatch.setattr(settings, "meta_app_secret", "secret", raising=False)
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.host, request.url.params["grant_type"]))
+        return httpx.Response(200, json={"access_token": "long-lived"})
+
+    from core.publishers.meta import exchange_token
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    for platform in ("instagram", "threads", "facebook"):
+        assert exchange_token(platform, "short", client=client) == "long-lived"
+
+    assert seen == [
+        ("graph.instagram.com", "ig_exchange_token"),
+        ("graph.threads.net", "th_exchange_token"),
+        ("graph.facebook.com", "fb_exchange_token"),
+    ]
+
+
+def test_exchange_reports_a_refusal_rather_than_returning_junk(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "meta_app_secret", "secret", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "Invalid OAuth access token"}})
+
+    from core.publishers.meta import exchange_token
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(MetaError, match="Invalid OAuth"):
+        exchange_token("instagram", "expired", client=client)
+
+
+def test_exchange_needs_the_app_secret(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "meta_app_secret", None, raising=False)
+
+    from core.publishers.meta import exchange_token
+
+    with pytest.raises(MetaError, match="META_APP_SECRET"):
+        exchange_token("instagram", "short", client=httpx.Client())
