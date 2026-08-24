@@ -417,3 +417,71 @@ def test_page_tokens_need_a_user_token_first(monkeypatch, meta_env):
 
     with pytest.raises(MetaError, match="exchange a user token first"):
         list_page_tokens(client=httpx.Client())
+
+
+def test_meta_status_endpoint_never_returns_a_token(meta_env, monkeypatch):
+    """The page is behind a token, but a leaked credential is still a leak."""
+    monkeypatch.setattr(settings, "instagram_access_token", "ig-secret-token", raising=False)
+    monkeypatch.setattr(settings, "database_url", None, raising=False)
+
+    import api.routes.settings as settings_routes
+
+    monkeypatch.setattr(
+        settings_routes,
+        "describe_accounts",
+        lambda: {"instagram": "correct_account"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "core.publishers.meta.describe_accounts",
+        lambda: {"instagram": "correct_account"},
+    )
+
+    payload = settings_routes.meta_status()
+    body = repr(payload)
+
+    assert "ig-secret-token" not in body
+    assert "fb-token" not in body
+    assert "th-token" not in body
+    assert payload["accounts"] == {"instagram": "correct_account"}
+    assert payload["instagram_route"] == "instagram_login"
+
+
+def test_meta_status_says_so_when_nothing_is_configured(monkeypatch):
+    for key in ("instagram_user_id", "threads_user_id", "facebook_page_id"):
+        monkeypatch.setattr(settings, key, None, raising=False)
+
+    import api.routes.settings as settings_routes
+
+    payload = settings_routes.meta_status()
+
+    assert payload["configured"] == {"instagram": False, "threads": False, "facebook": False}
+    assert "No Meta credentials" in payload["hint"]
+
+
+def test_meta_status_survives_a_dead_token(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "database_url", None, raising=False)
+    monkeypatch.setattr(
+        "core.publishers.meta.describe_accounts",
+        lambda: (_ for _ in ()).throw(RuntimeError("Session has expired")),
+    )
+
+    import api.routes.settings as settings_routes
+
+    payload = settings_routes.meta_status()
+
+    assert payload["accounts"] == {}
+    assert "expired" in payload["error"]
+
+
+def test_meta_status_flags_missing_storage(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "r2_bucket", None, raising=False)
+    monkeypatch.setattr(settings, "database_url", None, raising=False)
+    monkeypatch.setattr("core.publishers.meta.describe_accounts", dict)
+
+    import api.routes.settings as settings_routes
+
+    payload = settings_routes.meta_status()
+
+    assert payload["storage_ready"] is False
+    assert "R2" in payload["hint"]

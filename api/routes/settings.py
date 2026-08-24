@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from core import credentials
 from core.config import settings as env_settings
 from core.db import get_db
 from core.models import Account, Niche
@@ -80,8 +81,69 @@ def read_settings(db: Session = Depends(get_db)) -> dict[str, Any]:
             "youtube_read": env_settings.has_youtube_read,
             "youtube_upload": bool(env_settings.youtube_refresh_token),
             "upload_post": bool(env_settings.upload_post_api_key),
+            "instagram": env_settings.has_instagram,
+            "threads": env_settings.has_threads,
+            "facebook": env_settings.has_facebook,
         },
     }
+
+
+@router.get("/meta")
+def meta_status() -> dict[str, Any]:
+    """Which Meta accounts the configured ids actually resolve to.
+
+    Setup is a chain of ids and tokens that all look alike, and the failure this
+    catches is posting to the wrong Instagram account - which nothing else will
+    tell you until it has already happened. So this asks Meta to name each
+    account rather than reporting that a variable is non-empty.
+
+    Never returns a token, only what one resolves to.
+    """
+    configured = {
+        "instagram": env_settings.has_instagram,
+        "threads": env_settings.has_threads,
+        "facebook": env_settings.has_facebook,
+    }
+    payload: dict[str, Any] = {
+        "publisher": env_settings.publisher,
+        "graph_version": env_settings.meta_graph_version,
+        "instagram_route": (
+            "instagram_login" if env_settings.instagram_via_instagram_login else "facebook_login"
+        ),
+        "configured": configured,
+        # Meta fetches the clip from a URL, so publishing needs public storage.
+        "storage_ready": env_settings.has_r2,
+        "accounts": {},
+        "tokens": [],
+    }
+
+    if not any(configured.values()):
+        payload["hint"] = "No Meta credentials are set yet."
+        return payload
+
+    from core.publishers.meta import describe_accounts
+
+    try:
+        payload["accounts"] = describe_accounts()
+    except Exception as exc:  # noqa: BLE001 - a dead token must not 500 the page
+        payload["accounts"] = {}
+        payload["error"] = str(exc)[:300]
+
+    payload["tokens"] = [
+        {
+            "name": row["name"],
+            "days_left": row["days_left"],
+            "refreshed_at": row["refreshed_at"].isoformat() if row["refreshed_at"] else None,
+            "last_error": row["last_error"],
+        }
+        for row in credentials.status()
+    ]
+    if not env_settings.has_r2:
+        payload["hint"] = (
+            "Meta downloads the clip from a URL, so R2 must be configured before "
+            "PUBLISHER=meta can post."
+        )
+    return payload
 
 
 @router.post("/niches")
