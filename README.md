@@ -258,11 +258,12 @@ so the same code path serves both the weekend CLI and the deployed worker.
 | `DASHBOARD_TOKEN` | **required in prod** — the dashboard is public without it |
 | `DATABASE_URL`, `REDIS_URL` | deploy / queued pipeline |
 | `SCOUT_KEYWORDS`, `SCOUT_INTERVAL_MINUTES` | what the scout looks for, how often |
-| `PUBLISHER`, `AUTOPOST_ENABLED` | `manual` / `youtube` / `upload_post` |
+| `PUBLISHER`, `AUTOPOST_ENABLED` | `manual` / `youtube` / `meta` / `upload_post` |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | object storage (else local dir) |
 | `ENV` | `prod` refuses `license=none` on ingest |
 | `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN` | posting Shorts yourself (free) |
-| `UPLOAD_POST_API_KEY`, `UPLOAD_POST_USER` | TikTok / Instagram / Facebook via a reseller |
+| `META_ACCESS_TOKEN`, `INSTAGRAM_USER_ID`, `THREADS_*`, `FACEBOOK_PAGE_ID` | posting Reels / Threads yourself (free) |
+| `UPLOAD_POST_API_KEY`, `UPLOAD_POST_USER` | TikTok / Snapchat via a reseller |
 
 Full setup, including how to get each one: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 

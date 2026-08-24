@@ -1,8 +1,9 @@
 """Stage 7 - post an approved clip.
 
 Which backend actually runs is `PUBLISHER` in the environment: manual (default,
-nothing is posted), youtube (your own OAuth app, free), or upload_post (a
-reseller, the only route to Snapchat and the way past TikTok's audit).
+nothing is posted), youtube (your own OAuth app, free), meta (your own Meta app
+- Instagram Reels, Threads, Facebook Reels, free), or upload_post (a reseller,
+the only route to Snapchat and the way past TikTok's audit).
 
 Nothing is posted unless a human approved the clip first, and the approval flow
 does not change when you switch backends.
@@ -74,6 +75,7 @@ def run(clip_id: int, platforms: list[str] | None = None) -> list[int]:
             description=title,
             hashtags=hashtags,
             platforms=targets,
+            storage_key=storage_key,
         )
     )
 

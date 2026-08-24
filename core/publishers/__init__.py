@@ -1,9 +1,10 @@
 """Publishing adapters.
 
-One interface, three backends: post nothing (manual), post everywhere through a
-reseller (upload_post), or post to YouTube yourself with your own OAuth app.
-Which one runs is a config switch, so you can start manual, add YouTube when the
-clips are good, and add the reseller when you want the other four platforms.
+One interface, four backends: post nothing (manual), post everywhere through a
+reseller (upload_post), post to YouTube yourself with your own OAuth app, or
+post to Instagram, Threads and Facebook yourself with your own Meta app.
+Which one runs is a config switch, so you can start manual, add YouTube and Meta
+when the clips are good, and add the reseller when you want TikTok and Snapchat.
 """
 
 from __future__ import annotations
@@ -23,6 +24,10 @@ class PublishRequest:
     hashtags: list[str] = field(default_factory=list)
     platforms: list[str] = field(default_factory=list)
     privacy: str = "public"
+    # Meta downloads the file rather than accepting an upload, so it needs a
+    # URL. Either is enough: a key to presign, or a URL already in hand.
+    storage_key: str | None = None
+    public_url: str | None = None
 
     @property
     def caption(self) -> str:
@@ -55,6 +60,10 @@ def get_publisher(name: str | None = None) -> Publisher:
         from core.publishers.youtube import YouTubePublisher
 
         return YouTubePublisher()
+    if choice == "meta":
+        from core.publishers.meta import MetaPublisher
+
+        return MetaPublisher()
     from core.publishers.manual import ManualPublisher
 
     return ManualPublisher()

@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     youtube_api_key: str | None = None
 
     # publishing
-    publisher: str = "manual"  # manual | upload_post | youtube
+    publisher: str = "manual"  # manual | upload_post | youtube | meta
     upload_post_api_key: str | None = None
     upload_post_user: str | None = None
     upload_post_base_url: str = "https://api.upload-post.com"
@@ -53,19 +53,32 @@ class Settings(BaseSettings):
     youtube_client_id: str | None = None
     youtube_client_secret: str | None = None
     youtube_refresh_token: str | None = None
-    ig_app_id: str | None = None
-    ig_app_secret: str | None = None
-    ig_token: str | None = None
+
+    # Meta — Instagram Reels, Facebook Reels, Threads.
+    # Pin the Graph version: Meta retires each one roughly two years after
+    # release, and an unpinned call silently follows whatever is current.
+    meta_graph_version: str = "v23.0"
+    meta_app_id: str | None = None
+    meta_app_secret: str | None = None
+    meta_access_token: str | None = None  # long-lived user or page token
+    instagram_user_id: str | None = None  # the IG *business* account id
+    facebook_page_id: str | None = None
+    facebook_page_token: str | None = None  # falls back to meta_access_token
+    threads_user_id: str | None = None
+    threads_access_token: str | None = None  # a separate token from the FB one
+    # Meta downloads and transcodes the file itself; a 60s 1080x1920 clip is
+    # usually done inside a minute, but the queue is shared and can be slow.
+    meta_publish_timeout_s: int = 420
 
     # dashboard access (the app is public on Railway unless this is set)
     dashboard_token: str | None = None
 
     # automation cadence
     scout_enabled: bool = True
-    scout_interval_minutes: int = 360      # every 6h - hourly is a waste of quota
-    scout_keywords: str = ""               # comma separated, per niche
+    scout_interval_minutes: int = 360  # every 6h - hourly is a waste of quota
+    scout_keywords: str = ""  # comma separated, per niche
     scout_region: str | None = None
-    scout_video_duration: str = "medium"   # short | medium | long
+    scout_video_duration: str = "medium"  # short | medium | long
     scout_max_keywords: int = 4
     scout_track_limit: int = 30
 
@@ -120,6 +133,18 @@ class Settings(BaseSettings):
     @property
     def r2_endpoint_url(self) -> str:
         return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+
+    @property
+    def has_instagram(self) -> bool:
+        return bool(self.instagram_user_id and self.meta_access_token)
+
+    @property
+    def has_facebook(self) -> bool:
+        return bool(self.facebook_page_id and (self.facebook_page_token or self.meta_access_token))
+
+    @property
+    def has_threads(self) -> bool:
+        return bool(self.threads_user_id and self.threads_access_token)
 
     @property
     def has_youtube_read(self) -> bool:

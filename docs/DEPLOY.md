@@ -32,11 +32,28 @@ The most-replayed heatmaps need no signup at all — yt-dlp reads them.
 | # | Service | What it does | What to copy | Cost |
 |---|---|---|---|---|
 | 5a | **Google Cloud OAuth** (same project as #4) | Posts Shorts to your own channel | `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN` | free |
-| 5b | **Upload-Post** — [upload-post.com](https://www.upload-post.com) | TikTok, Instagram, Facebook without the TikTok audit | `UPLOAD_POST_API_KEY`, `UPLOAD_POST_USER` | from ~$16/mo |
-| 5c | **Zernio / Mallary** | Only route to Snapchat Spotlight | — | ~$50+/mo |
+| 5b | **Meta for Developers** — [developers.facebook.com](https://developers.facebook.com/apps/) | Instagram Reels, Threads and Facebook Reels from your own app | `META_APP_ID`, `META_APP_SECRET`, `META_ACCESS_TOKEN`, `INSTAGRAM_USER_ID`, `THREADS_USER_ID`, `THREADS_ACCESS_TOKEN`, `FACEBOOK_PAGE_ID` | free |
+| 5c | **Upload-Post** — [upload-post.com](https://www.upload-post.com) | TikTok, Instagram, Facebook without the TikTok audit | `UPLOAD_POST_API_KEY`, `UPLOAD_POST_USER` | from ~$16/mo |
+| 5d | **Zernio / Mallary** | Only route to Snapchat Spotlight | — | ~$50+/mo |
 
 Start with 5a. It's free, it's the platform that also gives you trend data, and
-it proves the loop before you pay a reseller.
+it proves the loop before you pay a reseller. 5b is the other free one — three
+more platforms for the cost of an afternoon in Meta's dashboard.
+
+**Meta, in short.** Create an app at *developers.facebook.com* → use cases
+**Manage messaging & content on Instagram** and **Access the Threads API**
+(add **Manage everything on your Page** for Facebook Reels). Your Instagram
+account must be **Business or Creator** and linked to a Facebook Page, or every
+publish call fails on account type. In **Development mode** you can post to
+accounts you hold an app role on — that is enough for your own accounts,
+indefinitely, with no App Review.
+
+Tokens last 60 days. `python scripts/meta_token.py` shows what is configured and
+when it expires; `--refresh` extends it. Diary it, or posting stops two months
+after it last worked.
+
+Meta downloads the clip from a URL rather than accepting an upload, so **R2 must
+be configured** before `PUBLISHER=meta` can work.
 
 ### Optional
 
@@ -152,7 +169,7 @@ SCOUT_KEYWORDS=keyword one,keyword two,keyword three
 SCOUT_INTERVAL_MINUTES=360
 SCOUT_VIDEO_DURATION=medium
 
-PUBLISHER=manual                            # switch to youtube / upload_post later
+PUBLISHER=manual                            # switch to youtube / meta / upload_post later
 AUTOPOST_ENABLED=false
 ```
 
@@ -191,7 +208,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 Only once that's working:
 
 ```bash
-PUBLISHER=youtube          # or upload_post
+PUBLISHER=youtube          # or meta / upload_post
 AUTOPOST_ENABLED=true
 AUTOPOST_PER_DAY=10
 ```
