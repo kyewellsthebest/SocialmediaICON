@@ -374,3 +374,46 @@ def test_exchange_needs_the_app_secret(meta_env, monkeypatch):
 
     with pytest.raises(MetaError, match="META_APP_SECRET"):
         exchange_token("instagram", "short", client=httpx.Client())
+
+
+def test_page_tokens_come_back_with_ids_and_names(meta_env):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/me/accounts")
+        assert request.url.params["access_token"] == "fb-token"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "1122334455", "name": "Wilderness Page", "access_token": "page-tok"},
+                    {"id": "999", "name": "Other Page", "access_token": "other-tok"},
+                ]
+            },
+        )
+
+    from core.publishers.meta import list_page_tokens
+
+    pages = list_page_tokens(client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert [p["name"] for p in pages] == ["Wilderness Page", "Other Page"]
+    assert pages[0]["access_token"] == "page-tok"
+
+
+def test_page_tokens_surface_a_missing_permission(meta_env):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"error": {"message": "(#200) Requires pages_show_list permission"}}
+        )
+
+    from core.publishers.meta import list_page_tokens
+
+    with pytest.raises(MetaError, match="pages_show_list"):
+        list_page_tokens(client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_page_tokens_need_a_user_token_first(monkeypatch, meta_env):
+    monkeypatch.setattr(settings, "meta_access_token", None, raising=False)
+
+    from core.publishers.meta import list_page_tokens
+
+    with pytest.raises(MetaError, match="exchange a user token first"):
+        list_page_tokens(client=httpx.Client())

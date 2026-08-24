@@ -66,6 +66,18 @@ for a 60-day token before putting it anywhere:
 python scripts/meta_token.py --exchange instagram=IGQ... threads=THQ... facebook=EAA...
 ```
 
+The **Facebook Page** token is a two-step job, because a Page token inherits
+the expiry of whatever it was derived from:
+
+```bash
+python scripts/meta_token.py --exchange facebook=EAA...   # user token -> 60 days
+# put META_ACCESS_TOKEN in the environment, then:
+python scripts/meta_token.py --page-token                 # -> a token with no timer
+```
+
+Derived from a long-lived user token, the Page token carries no expiry of its
+own — the one credential here that never needs renewing.
+
 Then `python scripts/meta_token.py` shows what is configured, which account each
 id resolves to, and when the tokens expire; `--refresh` extends them by another
 60 days. Diary it, or posting stops two months after it last worked.

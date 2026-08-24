@@ -482,6 +482,43 @@ def exchange_token(
             client.close()
 
 
+def list_page_tokens(client: httpx.Client | None = None) -> list[dict[str, str]]:
+    """Every Page the long-lived user token can post to, with its own token.
+
+    Page tokens derived from a *long-lived* user token carry no expiry of their
+    own, so this is the one credential in the setup that does not need a diary
+    entry. Derive it from a short-lived user token and you get a short-lived
+    Page token instead - so run the exchange first.
+    """
+    if not settings.meta_access_token:
+        raise MetaError("META_ACCESS_TOKEN is not set - exchange a user token first")
+
+    owns_client = client is None
+    client = client or httpx.Client(timeout=30.0)
+    try:
+        response = client.get(
+            f"{FACEBOOK_HOST}/{settings.meta_graph_version}/me/accounts",
+            params={
+                "fields": "id,name,access_token",
+                "access_token": settings.meta_access_token,
+            },
+        )
+        payload = response.json()
+        if "error" in payload:
+            raise MetaError(str(payload["error"].get("message", payload["error"])))
+        return [
+            {
+                "id": str(page.get("id", "")),
+                "name": str(page.get("name", "")),
+                "access_token": str(page.get("access_token", "")),
+            }
+            for page in payload.get("data", [])
+        ]
+    finally:
+        if owns_client:
+            client.close()
+
+
 def refresh_tokens(client: httpx.Client | None = None) -> dict[str, str]:
     """Extend the long-lived tokens by another 60 days.
 

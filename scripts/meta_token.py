@@ -30,6 +30,7 @@ from core.publishers.meta import (  # noqa: E402
     MetaError,
     describe_accounts,
     exchange_token,
+    list_page_tokens,
     refresh_tokens,
 )
 
@@ -116,9 +117,40 @@ def _exchange(pairs: list[str]) -> int:
     return 1 if failed else 0
 
 
+def _page_tokens() -> int:
+    try:
+        pages = list_page_tokens()
+    except MetaError as exc:
+        print(exc)
+        return 1
+
+    if not pages:
+        print(
+            "No Pages came back. The token needs pages_show_list, and you must have\n"
+            "granted access to the Page itself in the login dialog."
+        )
+        return 1
+
+    print("Pages this token can post to:\n")
+    for page in pages:
+        print(f"  {page['name']} ({page['id']})")
+    print("\nFor the one you post from, set:\n")
+    for page in pages:
+        print(f"# {page['name']}")
+        print(f"FACEBOOK_PAGE_ID={page['id']}")
+        print(f"FACEBOOK_PAGE_TOKEN={page['access_token']}\n")
+    print("Page tokens derived this way do not expire on a timer.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--refresh", action="store_true", help="extend the tokens by 60 days")
+    parser.add_argument(
+        "--page-token",
+        action="store_true",
+        help="derive a non-expiring Page token from the long-lived user token",
+    )
     parser.add_argument(
         "--exchange",
         nargs="+",
@@ -130,6 +162,9 @@ def main() -> int:
 
     if args.exchange:
         return _exchange(args.exchange)
+
+    if args.page_token:
+        return _page_tokens()
 
     if not args.refresh:
         return _describe()
