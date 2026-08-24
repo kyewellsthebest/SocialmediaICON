@@ -261,3 +261,72 @@ def test_target_selection_prefers_the_page_token(meta_env, monkeypatch):
     assert publisher._target("instagram").token == "fb-token"
     with pytest.raises(MetaError):
         publisher._target("tiktok")
+
+
+def test_instagram_login_uses_its_own_host_and_token(meta_env, monkeypatch):
+    """The way out when the Page is linked to a different Instagram account."""
+    monkeypatch.setattr(settings, "instagram_access_token", "ig-token", raising=False)
+    hosts: list[str] = []
+    tokens: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        path = request.url.path
+        if path.endswith("/media"):
+            body = dict(httpx.QueryParams(request.content.decode()))
+            tokens.append(body["access_token"])
+            return httpx.Response(200, json={"id": "c"})
+        if path.endswith("/c"):
+            return httpx.Response(200, json={"status_code": "FINISHED"})
+        if path.endswith("/media_publish"):
+            return httpx.Response(200, json={"id": "p"})
+        return httpx.Response(200, json={"permalink": "https://instagram.com/reel/x"})
+
+    results = _publisher(handler, meta_env).publish(_request(["instagram"]))
+
+    assert results[0].ok is True
+    assert set(hosts) == {"graph.instagram.com"}
+    assert tokens == ["ig-token"]
+
+
+def test_facebook_login_is_still_the_default(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "instagram_access_token", None, raising=False)
+    publisher = MetaPublisher(client=httpx.Client(), sleep=lambda _s: None)
+    target = publisher._target("instagram")
+
+    assert target.host == "https://graph.facebook.com"
+    assert target.token == "fb-token"
+
+
+def test_describe_accounts_names_every_configured_account(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "instagram_access_token", "ig-token", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "graph.instagram.com":
+            return httpx.Response(200, json={"id": "1", "username": "correct_account"})
+        if request.url.host == "graph.threads.net":
+            return httpx.Response(200, json={"id": "2", "username": "threads_handle"})
+        return httpx.Response(200, json={"id": "3", "name": "The Page"})
+
+    from core.publishers.meta import describe_accounts
+
+    who = describe_accounts(client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert who == {
+        "instagram": "correct_account",
+        "threads": "threads_handle",
+        "facebook": "The Page",
+    }
+
+
+def test_describe_accounts_reports_a_bad_id_instead_of_raising(meta_env):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": {"message": "Unsupported get request", "code": 100}}
+        )
+
+    from core.publishers.meta import describe_accounts
+
+    who = describe_accounts(client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    assert all("could not resolve" in v for v in who.values())

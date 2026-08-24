@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 
 FACEBOOK_HOST = "https://graph.facebook.com"
 THREADS_HOST = "https://graph.threads.net"
+INSTAGRAM_HOST = "https://graph.instagram.com"
 
 PLATFORMS = ("instagram", "threads", "facebook")
 
@@ -88,7 +89,19 @@ class MetaPublisher:
     def _target(self, platform: str) -> _Target:
         if platform == "instagram":
             if not settings.has_instagram:
-                raise MetaError("INSTAGRAM_USER_ID / META_ACCESS_TOKEN are not set")
+                raise MetaError(
+                    "INSTAGRAM_USER_ID plus INSTAGRAM_ACCESS_TOKEN or META_ACCESS_TOKEN are not set"
+                )
+            # Instagram Login reaches the account directly; Facebook Login
+            # reaches it through the Page it is linked to. Same endpoints
+            # either way, different host and different token.
+            if settings.instagram_via_instagram_login:
+                return _Target(
+                    platform,
+                    str(settings.instagram_user_id),
+                    str(settings.instagram_access_token),
+                    INSTAGRAM_HOST,
+                )
             return _Target(
                 platform,
                 str(settings.instagram_user_id),
@@ -364,6 +377,48 @@ class MetaPublisher:
         )
 
 
+# ------------------------------------------------------- who am I posting as
+
+# What each platform calls the human-readable account name.
+NAME_FIELD = {"instagram": "username", "threads": "username", "facebook": "name"}
+
+
+def describe_accounts(client: httpx.Client | None = None) -> dict[str, str]:
+    """Ask each platform which account the configured id actually is.
+
+    An account id is eight digits of nothing, and having two Instagram accounts
+    on one app means a single wrong digit posts to the other one. This resolves
+    the ids to names so you can check before trusting the queue.
+    """
+    publisher = MetaPublisher(client=client)
+    owns_client = client is None
+    client = client or httpx.Client(timeout=30.0)
+    out: dict[str, str] = {}
+    try:
+        for platform in PLATFORMS:
+            try:
+                target = publisher._target(platform)
+            except MetaError:
+                continue
+            try:
+                payload = publisher._call(
+                    client,
+                    "GET",
+                    publisher._graph(target, target.account_id),
+                    params={
+                        "fields": f"id,{NAME_FIELD[platform]}",
+                        "access_token": target.token,
+                    },
+                )
+                out[platform] = str(payload.get(NAME_FIELD[platform]) or payload)
+            except (MetaError, httpx.HTTPError) as exc:
+                out[platform] = f"could not resolve: {exc}"
+    finally:
+        if owns_client:
+            client.close()
+    return out
+
+
 # ---------------------------------------------------------------- token care
 
 
@@ -393,6 +448,20 @@ def refresh_tokens(client: httpx.Client | None = None) -> dict[str, str]:
                 fresh["META_ACCESS_TOKEN"] = token
             else:
                 log.warning("could not refresh the Meta token: %s", payload)
+
+        if settings.instagram_access_token:
+            response = client.get(
+                f"{INSTAGRAM_HOST}/refresh_access_token",
+                params={
+                    "grant_type": "ig_refresh_token",
+                    "access_token": settings.instagram_access_token,
+                },
+            )
+            payload = response.json()
+            if token := payload.get("access_token"):
+                fresh["INSTAGRAM_ACCESS_TOKEN"] = token
+            else:
+                log.warning("could not refresh the Instagram token: %s", payload)
 
         if settings.threads_access_token:
             response = client.get(

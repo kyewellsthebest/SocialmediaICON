@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     meta_app_secret: str | None = None
     meta_access_token: str | None = None  # long-lived user or page token
     instagram_user_id: str | None = None  # the IG *business* account id
+    # Set this to use Instagram Login instead of Facebook Login. That route
+    # talks to graph.instagram.com and does not care which Page the account
+    # is linked to - the way out when the Page is tied to a different
+    # Instagram account than the one you post from.
+    instagram_access_token: str | None = None
     facebook_page_id: str | None = None
     facebook_page_token: str | None = None  # falls back to meta_access_token
     threads_user_id: str | None = None
@@ -136,7 +141,14 @@ class Settings(BaseSettings):
 
     @property
     def has_instagram(self) -> bool:
-        return bool(self.instagram_user_id and self.meta_access_token)
+        return bool(
+            self.instagram_user_id and (self.instagram_access_token or self.meta_access_token)
+        )
+
+    @property
+    def instagram_via_instagram_login(self) -> bool:
+        """True when Instagram is reached directly rather than through a Page."""
+        return bool(self.instagram_access_token)
 
     @property
     def has_facebook(self) -> bool:

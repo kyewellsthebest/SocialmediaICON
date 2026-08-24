@@ -20,7 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import httpx  # noqa: E402
 
 from core.config import settings  # noqa: E402
-from core.publishers.meta import FACEBOOK_HOST, THREADS_HOST, refresh_tokens  # noqa: E402
+from core.publishers.meta import (  # noqa: E402
+    FACEBOOK_HOST,
+    THREADS_HOST,
+    describe_accounts,
+    refresh_tokens,
+)
 
 
 def _describe() -> int:
@@ -36,6 +41,15 @@ def _describe() -> int:
     if not any(configured for _, configured, _ in rows):
         print("\nNothing to check. See docs/DEPLOY.md for which keys to set.")
         return 1
+
+    # The part worth checking before you trust the queue: an id is just digits,
+    # so confirm each one is the account you meant.
+    print("\nPosting as:")
+    for platform, who in describe_accounts().items():
+        print(f"  {platform:<10} {who}")
+
+    if settings.instagram_via_instagram_login:
+        print("\nInstagram: using Instagram Login (no Facebook Page involved).")
 
     # Ask Meta who the token belongs to and when it dies. `debug_token` needs
     # the app credentials as well, so skip it when those are absent.

@@ -48,6 +48,17 @@ publish call fails on account type. In **Development mode** you can post to
 accounts you hold an app role on — that is enough for your own accounts,
 indefinitely, with no App Review.
 
+**If your Facebook Page is linked to the wrong Instagram account**, don't
+relink anything. Set `INSTAGRAM_ACCESS_TOKEN` instead: that switches Instagram
+onto **Instagram Login**, which reaches the account directly and ignores Pages
+entirely. Facebook Reels still post through the Page as normal. Get the token
+from the app dashboard under *Instagram → API setup with Instagram business
+login → Generate token*, picking the account you actually post from.
+
+Run `python scripts/meta_token.py` afterwards — it prints the **username**
+behind each configured id, so a wrong account shows up before the queue posts
+to it.
+
 Tokens last 60 days. `python scripts/meta_token.py` shows what is configured and
 when it expires; `--refresh` extends it. Diary it, or posting stops two months
 after it last worked.
