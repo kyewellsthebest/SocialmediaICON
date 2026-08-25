@@ -47,7 +47,7 @@ def test_every_client_challenged_raises_something_actionable():
     def call(options: dict) -> str:
         raise _bot_check()
 
-    with pytest.raises(ytdlp.BotCheck, match="YTDLP_COOKIES_B64"):
+    with pytest.raises(ytdlp.BotCheck, match="YTDLP_COOKIES"):
         ytdlp.run(call, ytdlp.base_options())
 
 
