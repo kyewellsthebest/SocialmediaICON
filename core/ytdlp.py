@@ -231,4 +231,11 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
             log.warning("player client %r was challenged, trying the next", client)
             last = exc
 
-    raise BotCheck(BOT_CHECK_HELP) from last
+    state = describe()
+    raise BotCheck(
+        f"{BOT_CHECK_HELP} "
+        f"[this worker: cookies={'yes' if state['cookies_loaded'] else 'NO'}"
+        f" ({state['cookie_lines']} lines, {state['cookies_source']}),"
+        f" proxy={'yes' if state['proxy_set'] else 'no'},"
+        f" tried={','.join(clients)}]"
+    ) from last

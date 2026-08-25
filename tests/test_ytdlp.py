@@ -51,6 +51,32 @@ def test_every_client_challenged_raises_something_actionable():
         ytdlp.run(call, ytdlp.base_options())
 
 
+def test_the_failure_says_what_this_worker_actually_had(monkeypatch):
+    """The service that failed is the only one whose config matters."""
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+
+    def call(options: dict) -> str:
+        raise _bot_check()
+
+    with pytest.raises(ytdlp.BotCheck) as caught:
+        ytdlp.run(call, ytdlp.base_options())
+
+    message = str(caught.value)
+    assert "cookies=yes" in message
+    assert "2 lines" in message
+    assert "tried=web,tv,web_safari" in message
+
+
+def test_the_failure_calls_out_missing_cookies_loudly():
+    def call(options: dict) -> str:
+        raise _bot_check()
+
+    with pytest.raises(ytdlp.BotCheck) as caught:
+        ytdlp.run(call, ytdlp.base_options())
+
+    assert "cookies=NO" in str(caught.value)
+
+
 def test_a_real_error_is_raised_at_once_not_retried():
     calls: list[str] = []
 
