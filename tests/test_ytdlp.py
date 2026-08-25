@@ -339,7 +339,8 @@ def test_format_detection_does_not_catch_unrelated_errors():
     assert not ytdlp.is_worth_another_client(RuntimeError("Private video"))
 
 
-def test_missing_pot_formats_are_requested_by_default():
+def test_missing_pot_can_be_turned_on(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_allow_missing_pot", True, raising=False)
     seen: list[dict] = []
 
     def call(options: dict) -> str:
@@ -351,7 +352,7 @@ def test_missing_pot_formats_are_requested_by_default():
     assert seen[0]["formats"] == ["missing_pot"]
 
 
-def test_missing_pot_can_be_turned_off(monkeypatch):
+def test_missing_pot_stays_off_when_not_asked_for(monkeypatch):
     monkeypatch.setattr(settings, "ytdlp_allow_missing_pot", False, raising=False)
     seen: list[dict] = []
 
@@ -428,3 +429,31 @@ def test_problems_with_the_video_itself_are_not_retried(message):
     with pytest.raises(RuntimeError):
         ytdlp.run(call, ytdlp.base_options())
     assert len(calls) == 1
+
+
+def test_a_403_on_the_media_falls_through_to_the_next_client():
+    """A chosen format that will not fetch is this client's problem, not the video's."""
+    tried: list[str] = []
+
+    def call(options: dict) -> str:
+        client = options["extractor_args"]["youtube"]["player_client"][0]
+        tried.append(client)
+        if client == "tv":
+            raise RuntimeError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+        return "downloaded"
+
+    assert ytdlp.run(call, ytdlp.base_options()) == "downloaded"
+    assert tried == ["tv", "web_safari"]
+
+
+def test_missing_pot_formats_are_off_by_default():
+    """They can be selected and then 403, which wastes the attempt."""
+    seen: list[dict] = []
+
+    def call(options: dict) -> str:
+        seen.append(options["extractor_args"]["youtube"])
+        return "ok"
+
+    ytdlp.run(call, ytdlp.base_options())
+
+    assert "formats" not in seen[0]

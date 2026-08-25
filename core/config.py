@@ -53,9 +53,12 @@ class Settings(BaseSettings):
     ytdlp_cookiefile: str | None = None  # or a path, for local runs
     ytdlp_proxy: str | None = None  # residential proxy, if you have one
     # Accept formats that would normally be skipped for lacking a proof-of-
-    # origin token. Without this the web client authenticates and then offers
-    # nothing downloadable; with it, some formats work and some 403.
-    ytdlp_allow_missing_pot: bool = True
+    # origin token. They can be selected but often 403 when actually fetched,
+    # so this is off by default: a client offering nothing is a clean failure
+    # that falls through to the next one, while a client offering something
+    # unfetchable wastes the whole attempt. Only worth enabling with no proxy,
+    # where a doomed attempt still beats no attempt.
+    ytdlp_allow_missing_pot: bool = False
     # Residential proxies bill per gigabyte, and video is heavy: a 12 minute
     # 1080p source is 200-400 MB, 720p roughly half that. Since the render
     # crops 16:9 to 9:16 and upscales either way, this is the dial between

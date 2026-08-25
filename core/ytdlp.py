@@ -58,6 +58,12 @@ NO_FORMAT_MARKERS = (
 # succeed on the same URL a second later.
 CLIENT_FAILURE_MARKERS = (
     "the page needs to be reloaded",
+    # 403 on the media itself, after a format was chosen: the URL is bound to
+    # something this request no longer matches - a rotating proxy that moved
+    # IP, or a format that wanted a proof-of-origin token. Another client
+    # issues different URLs, so it is worth one.
+    "http error 403",
+    "unable to download video data",
     "unable to extract player response",
     "failed to extract any player response",
     "please sign in",
