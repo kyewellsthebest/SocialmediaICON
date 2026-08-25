@@ -44,9 +44,10 @@ BOT_CHECK_MARKERS = (
 
 BOT_CHECK_HELP = (
     "YouTube blocked the download with its bot check. This is about the IP "
-    "address, not the video: cloud hosts are challenged by default. Set "
-    "YTDLP_COOKIES_B64 (from a throwaway account), or YTDLP_PROXY to a "
-    "residential proxy, or try a different YTDLP_PLAYER_CLIENTS order."
+    "address, not the video: cloud hosts are challenged by default. Paste a "
+    "cookies.txt into YTDLP_COOKIES (from a throwaway account), or point "
+    "YTDLP_PROXY at a residential proxy. Check /api/settings/ytdlp to see "
+    "whether cookies actually reached the worker."
 )
 
 _cookiefile: Path | None = None
@@ -125,6 +126,51 @@ def cookiefile() -> str | None:
     _cookiefile.chmod(0o600)
     log.info("using cookies from the environment (%d bytes)", len(raw))
     return str(_cookiefile)
+
+
+def describe() -> dict[str, Any]:
+    """What yt-dlp is actually configured with, for the dashboard.
+
+    "I set the cookies" and "the worker is using the cookies" are different
+    claims, and the gap between them is invisible from the outside - a variable
+    that was never shared with the service looks exactly like a variable that
+    did not help. Returns counts and flags, never cookie contents.
+    """
+    path = cookiefile()
+    source = "none"
+    if settings.ytdlp_cookiefile:
+        source = "file"
+    elif settings.ytdlp_cookies:
+        source = "pasted text"
+    elif settings.ytdlp_cookies_b64:
+        source = "base64"
+
+    lines = 0
+    if path:
+        try:
+            lines = sum(
+                1
+                for line in Path(path).read_text(errors="replace").splitlines()
+                if line.strip() and not line.startswith("#")
+            )
+        except OSError:
+            lines = -1
+
+    try:
+        import yt_dlp
+
+        version = yt_dlp.version.__version__
+    except Exception:  # noqa: BLE001 - a version read must never break the page
+        version = "unknown"
+
+    return {
+        "yt_dlp_version": version,
+        "cookies_source": source,
+        "cookies_loaded": bool(path),
+        "cookie_lines": lines,
+        "player_clients": player_clients(),
+        "proxy_set": bool(settings.ytdlp_proxy),
+    }
 
 
 def base_options(**overrides: Any) -> dict[str, Any]:

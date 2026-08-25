@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from core import credentials
+from core import credentials, ytdlp
 from core.config import settings as env_settings
 from core.db import get_db
 from core.models import Account, Niche
@@ -166,6 +166,29 @@ def meta_status() -> dict[str, Any]:
         payload["hint"] = (
             "Meta downloads the clip from a URL, so R2 must be configured before "
             "PUBLISHER=meta can post."
+        )
+    return payload
+
+
+@router.get("/ytdlp")
+def ytdlp_status() -> dict[str, Any]:
+    """Whether the download config actually reached this service.
+
+    Note this reports the *web* service's view. Downloads run in the worker, so
+    a variable shared with one and not the other will read as fine here and
+    still fail there - share with all three.
+    """
+    payload = ytdlp.describe()
+    if not payload["cookies_loaded"]:
+        payload["hint"] = (
+            "No cookies loaded. Paste the contents of a cookies.txt into "
+            "YTDLP_COOKIES and share it with web, worker and scheduler."
+        )
+    elif payload["cookie_lines"] < 5:
+        payload["hint"] = (
+            f"Only {payload['cookie_lines']} cookie lines were read - an export "
+            "from a logged-in YouTube session usually has dozens. The paste may "
+            "be partial."
         )
     return payload
 

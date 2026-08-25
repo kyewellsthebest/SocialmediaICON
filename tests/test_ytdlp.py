@@ -207,3 +207,51 @@ def test_comment_lines_do_not_count_as_cookies(monkeypatch):
     )
 
     assert ytdlp.cookiefile() is None
+
+
+def test_describe_reports_no_cookies_when_there_are_none():
+    payload = ytdlp.describe()
+
+    assert payload["cookies_loaded"] is False
+    assert payload["cookies_source"] == "none"
+    assert payload["cookie_lines"] == 0
+    assert payload["player_clients"] == ["tv", "web_safari"]
+
+
+def test_describe_counts_the_cookies_it_loaded(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+
+    payload = ytdlp.describe()
+
+    assert payload["cookies_loaded"] is True
+    assert payload["cookies_source"] == "pasted text"
+    assert payload["cookie_lines"] == 2
+    assert payload["player_clients"][0] == "web"
+
+
+def test_describe_never_leaks_the_cookies(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+    monkeypatch.setattr(settings, "ytdlp_proxy", "http://user:pw@host:1", raising=False)
+
+    body = repr(ytdlp.describe())
+
+    assert "abc123" not in body
+    assert "user:pw" not in body
+
+
+def test_the_endpoint_flags_a_partial_paste(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+
+    import api.routes.settings as settings_routes
+
+    payload = settings_routes.ytdlp_status()
+
+    assert "partial" in payload["hint"]
+
+
+def test_the_endpoint_says_when_nothing_arrived():
+    import api.routes.settings as settings_routes
+
+    payload = settings_routes.ytdlp_status()
+
+    assert "No cookies loaded" in payload["hint"]
