@@ -362,6 +362,12 @@ mangled beyond repair.
 Signing in from a datacenter IP is precisely the pattern account bans look for,
 and losing a burner account costs nothing.
 
+**Or skip the download entirely.** The Sources tab takes a video file
+directly: save it however you like and upload it. Everything downstream -
+transcription, segment detection, ranking, rendering - is identical, and no
+part of it depends on a platform's goodwill. Cheap proxies get flagged for
+YouTube specifically, so this is often the shortest path to a finished clip.
+
 **The fix that removes the problem rather than working around it** is not
 downloading from YouTube at all. Source footage from a clipping campaign comes
 to you as a file, with permission attached — which is also the answer to the

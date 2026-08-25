@@ -265,6 +265,10 @@ so the same code path serves both the weekend CLI and the deployed worker.
 | `META_ACCESS_TOKEN`, `INSTAGRAM_USER_ID`, `THREADS_*`, `FACEBOOK_PAGE_ID` | posting Reels / Threads yourself (free) |
 | `UPLOAD_POST_API_KEY`, `UPLOAD_POST_USER` | TikTok / Snapchat via a reseller |
 
+Sources can also be **uploaded as files** rather than fetched by URL — the
+download is the only stage that depends on a platform allowing it, and the
+rest of the pipeline does not care where the video came from.
+
 Full setup, including how to get each one: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 ---

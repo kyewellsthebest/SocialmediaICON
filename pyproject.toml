@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
+  "python-multipart>=0.0.9",  # file uploads into the pipeline
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
   "sqlalchemy>=2.0",

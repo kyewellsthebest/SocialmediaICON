@@ -85,6 +85,37 @@ def download_source(url: str, dest_dir: Path | str, max_height: int | None = Non
     )
 
 
+def adopt_upload(source_id: int, local_path: Path | str, title: str | None = None) -> int:
+    """Take a file that is already on disk into the pipeline.
+
+    The same job as `run`, minus the download - which is the step YouTube
+    fights hardest. Anything you can put in a file (a video you saved
+    yourself, footage a creator sent you) enters here and is treated
+    identically from transcription onwards.
+    """
+    from core.ffmpeg_ops import probe
+    from worker.tasks.transcribe import run as transcribe_run
+
+    local_path = Path(local_path)
+    info = probe(local_path)
+    key = f"sources/{source_id}/{local_path.name}"
+    get_storage().put_file(local_path, key)
+
+    with session_scope() as session:
+        source = session.get(Source, source_id)
+        if source is None:
+            raise ValueError(f"no source {source_id}")
+        source.title = title or source.title or local_path.stem
+        source.duration_s = info.duration_s
+        source.storage_key = key
+        source.status = "downloaded"
+        source.error = None
+
+    log.info("adopted upload for source %s (%.0fs)", source_id, info.duration_s)
+    enqueue("transcribe", transcribe_run, source_id)
+    return source_id
+
+
 def run(source_id: int) -> int:
     """RQ entrypoint: download the source, store it, enqueue transcription."""
     from worker.tasks.transcribe import run as transcribe_run
