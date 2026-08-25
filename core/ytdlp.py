@@ -52,6 +52,19 @@ NO_FORMAT_MARKERS = (
     "no formats found",
 )
 
+# Other ways a client can fail that say nothing about the video itself.
+# YouTube phrases its refusals differently per client and changes the wording,
+# so this list grows; what they share is that a different client may well
+# succeed on the same URL a second later.
+CLIENT_FAILURE_MARKERS = (
+    "the page needs to be reloaded",
+    "unable to extract player response",
+    "failed to extract any player response",
+    "please sign in",
+    "unable to extract yt initial data",
+    "player response is invalid",
+)
+
 BOT_CHECK_HELP = (
     "YouTube blocked the download with its bot check. This is about the IP "
     "address, not the video: cloud hosts are challenged by default. Paste a "
@@ -77,14 +90,20 @@ def is_no_usable_format(error: BaseException) -> bool:
     return any(marker in message for marker in NO_FORMAT_MARKERS)
 
 
+def is_client_failure(error: BaseException) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in CLIENT_FAILURE_MARKERS)
+
+
 def is_worth_another_client(error: BaseException) -> bool:
     """Whether a different player client might succeed where this one did not.
 
-    Two failures qualify, for the same underlying reason: what YouTube hands
-    back depends on which client asked. Everything else - a deleted video, a
-    region block - will fail identically on all five.
+    Three families qualify, for one underlying reason: what YouTube hands back
+    depends on which client asked, and it refuses each of them differently.
+    Everything that is genuinely about the video - deleted, private, region
+    locked, members only - fails identically on all five and raises at once.
     """
-    return is_bot_check(error) or is_no_usable_format(error)
+    return is_bot_check(error) or is_no_usable_format(error) or is_client_failure(error)
 
 
 COOKIE_HEADER = "# Netscape HTTP Cookie File"
@@ -256,7 +275,12 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
         except Exception as exc:  # noqa: BLE001 - yt-dlp raises a wide range
             if not is_worth_another_client(exc):
                 raise
-            reason = "was challenged" if is_bot_check(exc) else "offered no usable format"
+            if is_bot_check(exc):
+                reason = "was challenged"
+            elif is_no_usable_format(exc):
+                reason = "offered no usable format"
+            else:
+                reason = f"failed with {str(exc).strip()[:80]!r}"
             log.warning("player client %r %s, trying the next", client, reason)
             last = exc
 

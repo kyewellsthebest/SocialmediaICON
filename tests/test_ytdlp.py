@@ -378,3 +378,53 @@ def test_cookies_working_but_ip_blocked_names_the_real_fork(monkeypatch):
     message = str(caught.value)
     assert "residential proxy" in message
     assert "proof-of-origin" in message
+
+
+def test_a_reload_demand_falls_through_to_the_next_client():
+    """YouTube refuses each client differently; only the video is universal."""
+    tried: list[str] = []
+
+    def call(options: dict) -> str:
+        client = options["extractor_args"]["youtube"]["player_client"][0]
+        tried.append(client)
+        if client == "tv":
+            raise RuntimeError("ERROR: [youtube] 0TRbtFhb0_c: The page needs to be reloaded.")
+        return "downloaded"
+
+    assert ytdlp.run(call, ytdlp.base_options()) == "downloaded"
+    assert tried == ["tv", "web_safari"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "The page needs to be reloaded.",
+        "Unable to extract player response",
+        "Failed to extract any player response",
+        "Please sign in",
+    ],
+)
+def test_known_client_refusals_are_all_retriable(message):
+    assert ytdlp.is_worth_another_client(RuntimeError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Video unavailable",
+        "Private video. Sign in if you've been granted access to this video",
+        "This video is available to this channel's members",
+        "The uploader has not made this video available in your country",
+    ],
+)
+def test_problems_with_the_video_itself_are_not_retried(message):
+    """A deleted video fails the same way on every client; retrying is noise."""
+    calls: list[str] = []
+
+    def call(options: dict) -> str:
+        calls.append("x")
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError):
+        ytdlp.run(call, ytdlp.base_options())
+    assert len(calls) == 1
