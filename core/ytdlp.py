@@ -109,7 +109,17 @@ def base_options(**overrides: Any) -> dict[str, Any]:
 
 
 def player_clients() -> list[str]:
-    return [c.strip() for c in settings.ytdlp_player_clients.split(",") if c.strip()]
+    """Clients to try, in order.
+
+    A cookie jar is a *web* session, so the web client is the one that can
+    actually present it. Without this, cookies get set and then handed to
+    clients that ignore them, and the challenge looks unchanged - which reads
+    as "cookies did not work" when they were never used.
+    """
+    clients = [c.strip() for c in settings.ytdlp_player_clients.split(",") if c.strip()]
+    if cookiefile() and "web" not in clients:
+        clients.insert(0, "web")
+    return clients
 
 
 def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:

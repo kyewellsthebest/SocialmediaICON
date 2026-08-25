@@ -114,3 +114,25 @@ def test_overrides_win_over_the_defaults():
 def test_bot_check_detection_is_not_fooled_by_ordinary_errors():
     assert ytdlp.is_bot_check(_bot_check())
     assert not ytdlp.is_bot_check(RuntimeError("HTTP Error 404: Not Found"))
+
+
+def test_cookies_put_the_web_client_first(monkeypatch):
+    """Cookies are a web session; a client that ignores them wastes the attempt."""
+    monkeypatch.setattr(
+        settings, "ytdlp_cookies_b64", base64.b64encode(b"# cookies\n").decode(), raising=False
+    )
+
+    assert ytdlp.player_clients()[0] == "web"
+
+
+def test_without_cookies_the_configured_order_is_untouched():
+    assert ytdlp.player_clients() == ["tv", "web_safari"]
+
+
+def test_an_explicit_web_entry_is_not_duplicated(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_player_clients", "mweb,web,tv", raising=False)
+    monkeypatch.setattr(
+        settings, "ytdlp_cookies_b64", base64.b64encode(b"# cookies\n").decode(), raising=False
+    )
+
+    assert ytdlp.player_clients().count("web") == 1
