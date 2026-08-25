@@ -63,10 +63,9 @@ def test_the_failure_says_what_this_worker_actually_had(monkeypatch):
         ytdlp.run(call, ytdlp.base_options())
 
     message = str(caught.value)
-    assert "cookies=yes" in message
-    assert "2 lines" in message
+    assert "cookies=yes(2)" in message
     assert "tried=web,tv,web_safari" in message
-    assert "proxy=yes" in message
+    assert message.startswith("[proxy=YES")
 
 
 def test_the_failure_calls_out_missing_cookies_loudly():
@@ -77,6 +76,7 @@ def test_the_failure_calls_out_missing_cookies_loudly():
         ytdlp.run(call, ytdlp.base_options())
 
     assert "cookies=NO" in str(caught.value)
+    assert str(caught.value).startswith("[proxy=NO")
 
 
 def test_a_real_error_is_raised_at_once_not_retried():
@@ -329,7 +329,7 @@ def test_exhausting_clients_on_formats_says_that_not_bot_check():
         ytdlp.run(call, ytdlp.base_options())
 
     message = str(caught.value)
-    assert "no usable format" in message.lower() or "downloadable format" in message
+    assert "downloadable format" in message
     assert "YTDLP_COOKIES" not in message  # cookies are not the problem here
 
 
@@ -377,8 +377,8 @@ def test_cookies_working_but_ip_blocked_names_the_real_fork(monkeypatch):
         ytdlp.run(call, ytdlp.base_options())
 
     message = str(caught.value)
+    assert message.startswith("[proxy=NO cookies=yes")
     assert "residential proxy" in message
-    assert "proof-of-origin" in message
 
 
 def test_a_reload_demand_falls_through_to_the_next_client():

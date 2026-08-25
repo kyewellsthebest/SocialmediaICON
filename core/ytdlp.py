@@ -290,28 +290,27 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
             log.warning("player client %r %s, trying the next", client, reason)
             last = exc
 
+    # The state goes first: dashboards truncate long errors, and the half that
+    # says what this worker had is the half worth keeping.
     state = describe()
+    prefix = (
+        f"[proxy={'YES' if state['proxy_set'] else 'NO'} "
+        f"cookies={'yes' if state['cookies_loaded'] else 'NO'}"
+        f"({state['cookie_lines']}) "
+        f"tried={','.join(clients)}] "
+    )
+
     if last is not None and is_no_usable_format(last):
         raise BotCheck(
-            "Every player client got through but none offered a downloadable "
-            "format. YouTube serves some clients streams yt-dlp cannot use. Try "
-            "reordering YTDLP_PLAYER_CLIENTS, or update yt-dlp. "
-            f"[tried={','.join(clients)}, yt-dlp={state['yt_dlp_version']}]"
+            prefix + "Every client got through but none offered a downloadable "
+            "format. Try reordering YTDLP_PLAYER_CLIENTS, or update yt-dlp."
         ) from last
 
     if state["cookies_loaded"] and not state["proxy_set"]:
         raise BotCheck(
-            "Cookies got one client past the bot check but it had no usable "
-            "format, and every other client was blocked by IP. That combination "
-            "needs either a residential proxy (YTDLP_PROXY) or a proof-of-origin "
-            "token provider - cookies alone cannot resolve it. "
-            f"[cookies={state['cookie_lines']} lines, tried={','.join(clients)}]"
+            prefix + "Cookies got one client past the bot check but it had no "
+            "usable format, and every other client was blocked by IP. That needs "
+            "a residential proxy (YTDLP_PROXY); cookies alone cannot resolve it."
         ) from last
 
-    raise BotCheck(
-        f"{BOT_CHECK_HELP} "
-        f"[this worker: cookies={'yes' if state['cookies_loaded'] else 'NO'}"
-        f" ({state['cookie_lines']} lines, {state['cookies_source']}),"
-        f" proxy={'yes' if state['proxy_set'] else 'no'},"
-        f" tried={','.join(clients)}]"
-    ) from last
+    raise BotCheck(prefix + BOT_CHECK_HELP) from last
