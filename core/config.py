@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     # crops 16:9 to 9:16 and upscales either way, this is the dial between
     # a sharper clip and a smaller bill.
     ingest_max_height: int = 1080
+    # auto  - the worker downloads the video itself (needs an IP YouTube
+    #         will serve, so a proxy or a lucky host)
+    # agent - the source waits for scripts/local_agent.py to supply the file
+    #         from a machine with an ordinary home connection
+    ingest_mode: str = "auto"
 
     # publishing
     publisher: str = "manual"  # manual | upload_post | youtube | meta
@@ -170,6 +175,10 @@ class Settings(BaseSettings):
     @property
     def r2_endpoint_url(self) -> str:
         return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+
+    @property
+    def ingest_by_agent(self) -> bool:
+        return self.ingest_mode.strip().lower() == "agent"
 
     @property
     def has_instagram(self) -> bool:

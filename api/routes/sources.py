@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from core.config import settings as env_settings
 from core.db import get_db
 from core.models import LICENSES, SOURCE_KINDS, Niche, Source
 from worker.queue import enqueue
@@ -131,13 +132,69 @@ def create_source(payload: SourceIn, db: Session = Depends(get_db)) -> Any:
     source = Source(url=payload.url, kind=payload.kind, license=license_tag, niche_id=niche_id)
     db.add(source)
     db.flush()
-    enqueue("ingest", ingest_run, source.id)
+    if not env_settings.ingest_by_agent:
+        enqueue("ingest", ingest_run, source.id)
     return source
 
 
 @router.get("", response_model=list[SourceOut])
-def list_sources(limit: int = 50, db: Session = Depends(get_db)) -> Any:
-    return db.query(Source).order_by(Source.id.desc()).limit(limit).all()
+def list_sources(limit: int = 50, status: str | None = None, db: Session = Depends(get_db)) -> Any:
+    """Recent sources, newest first. `status` filters - the local agent uses it
+    to find work without reading everything."""
+    query = db.query(Source)
+    if status:
+        query = query.filter(Source.status == status)
+    return query.order_by(Source.id.desc()).limit(limit).all()
+
+
+@router.post("/{source_id}/file", response_model=SourceOut)
+async def attach_file(source_id: int, file: UploadFile = File(...)) -> Any:
+    """Supply the video for a source that is waiting for one.
+
+    This is how the local agent hands back what it downloaded: the source was
+    registered here, the bytes were fetched somewhere with a residential IP,
+    and the pipeline continues as though the download had happened in place.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from core.db import session_scope
+
+    name = Path(file.filename or "upload.mp4").name
+    if Path(name).suffix.lower() not in UPLOAD_SUFFIXES:
+        raise HTTPException(422, f"{Path(name).suffix or 'that file type'} is not a video")
+
+    with session_scope() as session:
+        source = session.get(Source, source_id)
+        if source is None:
+            raise HTTPException(404, "source not found")
+        if source.storage_key:
+            raise HTTPException(409, "that source already has a video")
+        title = source.title
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"agent-{source_id}-"))
+    dest = tmp_dir / name
+    try:
+        with dest.open("wb") as out:
+            shutil.copyfileobj(file.file, out, length=1024 * 1024)
+        if dest.stat().st_size == 0:
+            raise HTTPException(422, "that file is empty")
+        adopt_upload(source_id, dest, title=title)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        with session_scope() as session:
+            failed = session.get(Source, source_id)
+            if failed is not None:
+                failed.status = "failed"
+                failed.error = str(exc)[:2000]
+        raise HTTPException(400, f"could not read that file: {exc}") from exc
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    with session_scope() as session:
+        return SourceOut.model_validate(session.get(Source, source_id))
 
 
 @router.get("/{source_id}", response_model=SourceOut)

@@ -372,3 +372,35 @@ YouTube specifically, so this is often the shortest path to a finished clip.
 downloading from YouTube at all. Source footage from a clipping campaign comes
 to you as a file, with permission attached — which is also the answer to the
 copyright question.
+
+
+## Downloading from a machine YouTube will talk to
+
+If the bot check cannot be beaten from the host — and on a cloud host it often
+cannot, at any price you would want to pay — move only the download to a
+machine with an ordinary home connection. Everything else stays deployed.
+
+1. On the deployment, set `INGEST_MODE=agent`. Sources then wait at
+   `registered` instead of the worker trying a download that will fail.
+2. On your own computer, once:
+
+```bash
+pip install yt-dlp httpx
+```
+
+3. Then leave this running:
+
+```bash
+python scripts/local_agent.py --url https://your-app.up.railway.app --token YOUR_DASHBOARD_TOKEN
+```
+
+It polls for sources waiting on a file, downloads each with yt-dlp over your
+own connection, and posts it back. Transcription, detection, ranking, rendering
+and publishing all continue in the cloud, unchanged.
+
+Cost: nothing. Limitation: downloads only happen while it is running, so the
+pipeline is as continuous as your computer is. Everything downstream stays 24/7
+— a source fetched at midnight is still rendered and posted on schedule.
+
+`--once` does a single pass and exits, which is what you want from a scheduled
+task rather than a terminal left open.

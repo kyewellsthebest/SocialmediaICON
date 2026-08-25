@@ -295,8 +295,13 @@ def send_to_pipeline(tracked_id: int, license_tag: str = "campaign") -> int:
         source_id = source.id
         video.status = "queued"
 
-    enqueue("ingest", ingest_run, source_id)
-    log.info("tracked video %s -> source %s", tracked_id, source_id)
+    if settings.ingest_by_agent:
+        # Left at `registered` for the local agent to pick up. Enqueuing the
+        # download here would only fail from this IP.
+        log.info("tracked video %s -> source %s, waiting for the agent", tracked_id, source_id)
+    else:
+        enqueue("ingest", ingest_run, source_id)
+        log.info("tracked video %s -> source %s", tracked_id, source_id)
     return source_id
 
 
