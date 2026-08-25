@@ -67,10 +67,18 @@ class Settings(BaseSettings):
     # is linked to - the way out when the Page is tied to a different
     # Instagram account than the one you post from.
     instagram_access_token: str | None = None
+    # Instagram Login and Threads each issue their own app id/secret pair,
+    # shown on their own use case page. The exchange is signed with those,
+    # not with the Meta app secret - a detail that costs an evening to find
+    # because the error it produces names the token, not the secret.
+    instagram_app_id: str | None = None
+    instagram_app_secret: str | None = None
     facebook_page_id: str | None = None
     facebook_page_token: str | None = None  # falls back to meta_access_token
     threads_user_id: str | None = None
     threads_access_token: str | None = None  # a separate token from the FB one
+    threads_app_id: str | None = None
+    threads_app_secret: str | None = None
     # Meta downloads and transcodes the file itself; a 60s 1080x1920 clip is
     # usually done inside a minute, but the queue is shared and can be slow.
     meta_publish_timeout_s: int = 420

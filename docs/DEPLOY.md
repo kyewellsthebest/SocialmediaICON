@@ -66,6 +66,11 @@ for a 60-day token before putting it anywhere:
 python scripts/meta_token.py --exchange instagram=IGQ... threads=THQ... facebook=EAA...
 ```
 
+Instagram and Threads sign their exchange with **their own** app secret —
+`INSTAGRAM_APP_SECRET` and `THREADS_APP_SECRET`, shown on their own use case
+pages, not the Meta app's. Using the wrong one fails with an error that
+blames the token, which is a long way from the actual cause.
+
 The **Facebook Page** token is a two-step job, because a Page token inherits
 the expiry of whatever it was derived from:
 

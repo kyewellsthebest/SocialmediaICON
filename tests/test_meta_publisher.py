@@ -369,11 +369,51 @@ def test_exchange_reports_a_refusal_rather_than_returning_junk(meta_env, monkeyp
 
 def test_exchange_needs_the_app_secret(meta_env, monkeypatch):
     monkeypatch.setattr(settings, "meta_app_secret", None, raising=False)
+    monkeypatch.setattr(settings, "instagram_app_secret", None, raising=False)
 
     from core.publishers.meta import exchange_token
 
-    with pytest.raises(MetaError, match="META_APP_SECRET"):
+    with pytest.raises(MetaError, match="INSTAGRAM_APP_SECRET"):
         exchange_token("instagram", "short", client=httpx.Client())
+
+
+def test_each_platform_signs_with_its_own_app_secret(meta_env, monkeypatch):
+    """Instagram and Threads are separate apps with separate secrets."""
+    monkeypatch.setattr(settings, "meta_app_secret", "meta-secret", raising=False)
+    monkeypatch.setattr(settings, "instagram_app_secret", "ig-secret", raising=False)
+    monkeypatch.setattr(settings, "threads_app_secret", "th-secret", raising=False)
+    monkeypatch.setattr(settings, "meta_app_id", "app", raising=False)
+    secrets: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        secrets.append(request.url.params["client_secret"])
+        return httpx.Response(200, json={"access_token": "long"})
+
+    from core.publishers.meta import exchange_token
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    for platform in ("instagram", "threads", "facebook"):
+        exchange_token(platform, "short", client=client)
+
+    assert secrets == ["ig-secret", "th-secret", "meta-secret"]
+
+
+def test_the_meta_secret_is_the_fallback_when_no_specific_one_is_set(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "meta_app_secret", "meta-secret", raising=False)
+    monkeypatch.setattr(settings, "instagram_app_secret", None, raising=False)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params["client_secret"])
+        return httpx.Response(200, json={"access_token": "long"})
+
+    from core.publishers.meta import exchange_token
+
+    exchange_token(
+        "instagram", "short", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert seen == ["meta-secret"]
 
 
 def test_page_tokens_come_back_with_ids_and_names(meta_env):

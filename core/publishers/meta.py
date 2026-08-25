@@ -433,6 +433,25 @@ EXCHANGE = {
     "threads": (THREADS_HOST + "/access_token", "th_exchange_token"),
 }
 
+# Instagram Login and Threads are separate apps under the same Meta app, each
+# with its own secret on its own use case page. Signing the exchange with the
+# Meta secret fails in a way that blames the token, so this is worth getting
+# right rather than discovering.
+_SECRET_VAR = {
+    "instagram": "INSTAGRAM_APP_SECRET",
+    "threads": "THREADS_APP_SECRET",
+    "facebook": "META_APP_SECRET",
+}
+
+
+def _app_secret_for(platform: str) -> str | None:
+    """The secret that signs this platform's exchange, falling back to Meta's."""
+    if platform == "instagram":
+        return settings.instagram_app_secret or settings.meta_app_secret
+    if platform == "threads":
+        return settings.threads_app_secret or settings.meta_app_secret
+    return settings.meta_app_secret
+
 
 def exchange_token(
     platform: str,
@@ -448,9 +467,9 @@ def exchange_token(
     """
     owns_client = client is None
     client = client or httpx.Client(timeout=30.0)
-    secret = app_secret or settings.meta_app_secret
+    secret = app_secret or _app_secret_for(platform)
     if not secret:
-        raise MetaError("META_APP_SECRET is not set - the exchange is signed with it")
+        raise MetaError(f"{_SECRET_VAR.get(platform, 'META_APP_SECRET')} is not set")
     try:
         if platform == "facebook":
             if not settings.meta_app_id:
