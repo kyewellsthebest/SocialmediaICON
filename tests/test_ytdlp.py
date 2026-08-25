@@ -18,6 +18,7 @@ from core.config import settings
 @pytest.fixture(autouse=True)
 def clean_state(monkeypatch):
     monkeypatch.setattr(ytdlp, "_cookiefile", None, raising=False)
+    monkeypatch.setattr(settings, "ytdlp_cookies", None, raising=False)
     monkeypatch.setattr(settings, "ytdlp_cookies_b64", None, raising=False)
     monkeypatch.setattr(settings, "ytdlp_cookiefile", None, raising=False)
     monkeypatch.setattr(settings, "ytdlp_proxy", None, raising=False)
@@ -136,3 +137,73 @@ def test_an_explicit_web_entry_is_not_duplicated(monkeypatch):
     )
 
     assert ytdlp.player_clients().count("web") == 1
+
+
+TAB_COOKIES = (
+    "# Netscape HTTP Cookie File\n"
+    ".youtube.com\tTRUE\t/\tTRUE\t1799999999\tSID\tabc123\n"
+    ".youtube.com\tTRUE\t/\tTRUE\t1799999999\tHSID\tdef456\n"
+)
+
+
+def test_pasted_cookies_are_used_as_they_come(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+
+    from pathlib import Path
+
+    written = Path(ytdlp.cookiefile()).read_text()
+
+    assert "SID\tabc123" in written
+    assert "HSID\tdef456" in written
+
+
+def test_tabs_lost_in_a_text_box_are_repaired(monkeypatch):
+    """A pasted cookies.txt usually arrives with its tabs turned into spaces."""
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES.replace("\t", "    "), raising=False)
+
+    from pathlib import Path
+
+    written = Path(ytdlp.cookiefile()).read_text()
+
+    assert ".youtube.com\tTRUE\t/\tTRUE\t1799999999\tSID\tabc123" in written
+
+
+def test_a_value_containing_spaces_survives_the_repair(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "ytdlp_cookies",
+        ".youtube.com TRUE / TRUE 1799999999 PREF f6=40000000&hl=en gb",
+        raising=False,
+    )
+
+    from pathlib import Path
+
+    written = Path(ytdlp.cookiefile()).read_text()
+
+    # Six fields, then everything else folded back into the value.
+    assert written.splitlines()[1].split("\t")[6] == "f6=40000000&hl=en gb"
+
+
+def test_cookie_text_with_nothing_usable_is_ignored(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_cookies", "I pasted the wrong thing", raising=False)
+
+    assert ytdlp.cookiefile() is None
+
+
+def test_raw_text_wins_over_base64_when_both_are_set(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+    monkeypatch.setattr(
+        settings, "ytdlp_cookies_b64", base64.b64encode(b"# other\n").decode(), raising=False
+    )
+
+    from pathlib import Path
+
+    assert "abc123" in Path(ytdlp.cookiefile()).read_text()
+
+
+def test_comment_lines_do_not_count_as_cookies(monkeypatch):
+    monkeypatch.setattr(
+        settings, "ytdlp_cookies", "# Netscape HTTP Cookie File\n# nothing else\n", raising=False
+    )
+
+    assert ytdlp.cookiefile() is None

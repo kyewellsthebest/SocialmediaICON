@@ -9,9 +9,10 @@ There are three levers, in increasing order of effort:
 1. **Player client.** YouTube's clients are checked differently, and the set
    that passes changes every few months. So the client is a list to try in
    order, configurable, rather than a value compiled into the code.
-2. **Cookies.** A logged-in session usually passes. Use a throwaway Google
-   account, never your real one: signing in from a datacenter IP is exactly
-   the pattern account bans are looking for.
+2. **Cookies.** A logged-in session usually passes. Paste the contents of a
+   cookies.txt into YTDLP_COOKIES - tabs lost in transit are repaired here.
+   Use a throwaway Google account, never your real one: signing in from a
+   datacenter IP is exactly the pattern account bans are looking for.
 3. **A residential proxy.** Reliable, costs money, and is the only one of the
    three that always works.
 
@@ -60,26 +61,60 @@ def is_bot_check(error: BaseException) -> bool:
     return any(marker in message for marker in BOT_CHECK_MARKERS)
 
 
+COOKIE_HEADER = "# Netscape HTTP Cookie File"
+
+
+def normalise_cookie_text(text: str) -> bytes:
+    """Repair a cookies.txt that lost its tabs on the way through a text box.
+
+    The Netscape format is tab-separated, and pasting one through a web form
+    routinely turns those tabs into spaces - after which yt-dlp reads the file
+    as empty and the challenge looks unchanged. Fields cannot contain tabs, so
+    re-splitting on whitespace and rejoining recovers the original exactly,
+    with any spaces in the value folded back into the last field.
+    """
+    lines = [COOKIE_HEADER]
+    for line in text.replace("\r\n", "\n").split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "\t" in line:
+            lines.append(line.rstrip())
+            continue
+        fields = stripped.split()
+        if len(fields) < 7:
+            continue  # not a cookie line; dropping it beats a parse error
+        lines.append("\t".join([*fields[:6], " ".join(fields[6:])]))
+    return ("\n".join(lines) + "\n").encode()
+
+
 def cookiefile() -> str | None:
     """Path to a cookies.txt, materialised from the environment if needed.
 
-    Cookies are a file, but Railway holds strings - so they travel as base64
-    and are written to a temp file once per process.
+    Cookies are a file but Railway holds strings, so they arrive either as the
+    file's text pasted straight in or as base64, and are written to a temp file
+    once per process.
     """
     global _cookiefile
 
     if settings.ytdlp_cookiefile:
         return settings.ytdlp_cookiefile
-    if not settings.ytdlp_cookies_b64:
+    if not (settings.ytdlp_cookies or settings.ytdlp_cookies_b64):
         return None
     if _cookiefile and _cookiefile.exists():
         return str(_cookiefile)
 
-    try:
-        raw = base64.b64decode(settings.ytdlp_cookies_b64, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        log.error("YTDLP_COOKIES_B64 is not valid base64, ignoring it: %s", exc)
-        return None
+    if settings.ytdlp_cookies:
+        raw = normalise_cookie_text(settings.ytdlp_cookies)
+        if raw.count(b"\n") < 2:
+            log.error("YTDLP_COOKIES has no usable cookie lines, ignoring it")
+            return None
+    else:
+        try:
+            raw = base64.b64decode(settings.ytdlp_cookies_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            log.error("YTDLP_COOKIES_B64 is not valid base64, ignoring it: %s", exc)
+            return None
 
     handle = tempfile.NamedTemporaryFile(
         prefix="ytdlp-cookies-", suffix=".txt", delete=False, mode="wb"
@@ -88,7 +123,7 @@ def cookiefile() -> str | None:
     handle.close()
     _cookiefile = Path(handle.name)
     _cookiefile.chmod(0o600)
-    log.info("using cookies from YTDLP_COOKIES_B64")
+    log.info("using cookies from the environment (%d bytes)", len(raw))
     return str(_cookiefile)
 
 

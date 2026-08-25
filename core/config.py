@@ -48,7 +48,8 @@ class Settings(BaseSettings):
     # used matters, and the set that passes changes every few months -
     # hence a list to try in order rather than a value in the code.
     ytdlp_player_clients: str = "tv,web_safari,mweb,android_vr"
-    ytdlp_cookies_b64: str | None = None  # cookies.txt, base64 encoded
+    ytdlp_cookies: str | None = None  # cookies.txt contents, pasted as-is
+    ytdlp_cookies_b64: str | None = None  # or base64, if the text gets mangled
     ytdlp_cookiefile: str | None = None  # or a path, for local runs
     ytdlp_proxy: str | None = None  # residential proxy, if you have one
 

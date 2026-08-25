@@ -344,20 +344,21 @@ Three fixes, cheapest first:
 | Lever | Cost | Reliability |
 |---|---|---|
 | `YTDLP_PLAYER_CLIENTS` — reorder the list | free | sometimes, and it changes every few months |
-| `YTDLP_COOKIES_B64` — a logged-in session | free | usually |
+| `YTDLP_COOKIES` — a logged-in session | free | usually |
 | `YTDLP_PROXY` — a residential proxy | ~$5–15/mo | always |
 
 The pipeline already walks the client list on every download, so a challenge on
 one client falls through to the next before anything fails.
 
 **Cookies.** Export `cookies.txt` from a browser logged into YouTube (any
-"Get cookies.txt" extension), then:
+"Get cookies.txt" extension), open it in a text editor, and paste the whole
+contents into `YTDLP_COOKIES`. No terminal needed — the file is tab-separated
+and pasting usually turns those tabs into spaces, which is repaired on read.
 
-```bash
-base64 -w0 cookies.txt      # macOS: base64 -i cookies.txt
-```
+`YTDLP_COOKIES_B64` takes the same file base64-encoded, for when a paste is
+mangled beyond repair.
 
-Paste the result into `YTDLP_COOKIES_B64`. **Use a throwaway Google account.**
+**Use a throwaway Google account.**
 Signing in from a datacenter IP is precisely the pattern account bans look for,
 and losing a burner account costs nothing.
 
