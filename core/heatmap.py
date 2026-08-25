@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from core import ytdlp
+
 log = logging.getLogger(__name__)
 
 
@@ -20,15 +22,14 @@ def fetch_metadata(url: str, with_heatmap: bool = True) -> dict[str, Any]:
     """
     import yt_dlp
 
-    options = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "extract_flat": False,
-    }
+    options = ytdlp.base_options(skip_download=True, extract_flat=False)
+
+    def attempt(opts: dict) -> dict:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
     try:
-        with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(url, download=False)
+        info = ytdlp.run(attempt, options)
     except Exception as exc:  # noqa: BLE001 - yt-dlp raises a wide range
         log.warning("metadata fetch failed for %s: %s", url, exc)
         return {}

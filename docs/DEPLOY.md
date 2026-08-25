@@ -331,3 +331,37 @@ DATABASE_URL=postgresql://localhost/clipengine uvicorn api.main:app --reload
 ```
 
 `scripts/seed_demo.py --clear` removes the demo rows when you're done with them.
+
+
+## When YouTube says "confirm you're not a bot"
+
+Nothing is wrong with the request. YouTube challenges whole datacenter IP
+ranges, and every cloud host — Railway included — sits in one. The same URL
+downloads fine from your laptop.
+
+Three fixes, cheapest first:
+
+| Lever | Cost | Reliability |
+|---|---|---|
+| `YTDLP_PLAYER_CLIENTS` — reorder the list | free | sometimes, and it changes every few months |
+| `YTDLP_COOKIES_B64` — a logged-in session | free | usually |
+| `YTDLP_PROXY` — a residential proxy | ~$5–15/mo | always |
+
+The pipeline already walks the client list on every download, so a challenge on
+one client falls through to the next before anything fails.
+
+**Cookies.** Export `cookies.txt` from a browser logged into YouTube (any
+"Get cookies.txt" extension), then:
+
+```bash
+base64 -w0 cookies.txt      # macOS: base64 -i cookies.txt
+```
+
+Paste the result into `YTDLP_COOKIES_B64`. **Use a throwaway Google account.**
+Signing in from a datacenter IP is precisely the pattern account bans look for,
+and losing a burner account costs nothing.
+
+**The fix that removes the problem rather than working around it** is not
+downloading from YouTube at all. Source footage from a clipping campaign comes
+to you as a file, with permission attached — which is also the answer to the
+copyright question.

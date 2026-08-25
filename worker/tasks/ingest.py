@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from core import ytdlp
 from core.config import settings
 from core.db import session_scope
 from core.models import LICENSES, Source
@@ -54,21 +55,18 @@ def download_source(url: str, dest_dir: Path | str, max_height: int = 1080) -> D
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    options = {
-        "format": (
-            f"bv*[height<={max_height}]+ba/b[height<={max_height}]/bv*+ba/b"
-        ),
-        "merge_output_format": "mp4",
-        "outtmpl": str(dest_dir / "%(id)s.%(ext)s"),
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "retries": 3,
-    }
+    options = ytdlp.base_options(
+        format=f"bv*[height<={max_height}]+ba/b[height<={max_height}]/bv*+ba/b",
+        merge_output_format="mp4",
+        outtmpl=str(dest_dir / "%(id)s.%(ext)s"),
+    )
 
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=True)
-        path = Path(ydl.prepare_filename(info))
+    def attempt(opts: dict) -> tuple[dict, Path]:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            return info, Path(ydl.prepare_filename(info))
+
+    info, path = ytdlp.run(attempt, options)
 
     if not path.exists():
         # yt-dlp rewrote the container during merge (e.g. .webm -> .mp4).
