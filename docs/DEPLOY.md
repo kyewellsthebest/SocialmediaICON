@@ -59,17 +59,25 @@ Run `python scripts/meta_token.py` afterwards — it prints the **username**
 behind each configured id, so a wrong account shows up before the queue posts
 to it.
 
-**The tokens the dashboard generates last about an hour.** Exchange each one
-for a 60-day token before putting it anywhere:
+**Instagram and Threads tokens from the app dashboard are already long-lived**
+— 60 days, use them exactly as they come. Do not exchange them; that fails
+with an error blaming the token, and sends you round in circles regenerating
+a token that was fine.
+
+Only the **Facebook** token needs exchanging, because the Graph API Explorer
+issues a short-lived one:
 
 ```bash
-python scripts/meta_token.py --exchange instagram=IGQ... threads=THQ... facebook=EAA...
+python scripts/meta_token.py --exchange facebook=EAA...
 ```
 
-Instagram and Threads sign their exchange with **their own** app secret —
-`INSTAGRAM_APP_SECRET` and `THREADS_APP_SECRET`, shown on their own use case
-pages, not the Meta app's. Using the wrong one fails with an error that
-blames the token, which is a long way from the actual cause.
+If you ever do need to exchange an Instagram or Threads token — one obtained
+through the OAuth code flow rather than the dashboard — it is signed with
+**that platform's own** app secret (`INSTAGRAM_APP_SECRET`, `THREADS_APP_SECRET`,
+from their own use case pages), never the Meta app's.
+
+All three are refreshed the same way once they are in place, and the scheduler
+does that for you.
 
 The **Facebook Page** token is a two-step job, because a Page token inherits
 the expiry of whatever it was derived from:

@@ -5,8 +5,9 @@
     python scripts/meta_token.py --exchange instagram=IGQ...  # 1 hour -> 60 days
     python scripts/meta_token.py --refresh   # extend by another 60 days
 
-The tokens Meta's dashboard generates last about an hour. Run --exchange on
-each one first, or the queue works this afternoon and is dead by morning.
+Only the Facebook token needs exchanging - the Graph API Explorer issues a
+short-lived one. Instagram and Threads tokens from the app dashboard are
+already long-lived; exchanging those fails with an error that blames the token.
 
 Meta's long-lived tokens last 60 days and cannot be refreshed once expired, so
 this is a diary entry, not a fire-and-forget. Run it monthly and paste the new

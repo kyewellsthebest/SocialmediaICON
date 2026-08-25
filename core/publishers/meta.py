@@ -499,7 +499,7 @@ def exchange_token(
         payload = response.json()
         token = payload.get("access_token")
         if not token:
-            raise MetaError(f"exchange refused: {payload}")
+            raise MetaError(_exchange_error(platform, payload))
         return str(token)
     finally:
         if owns_client:
@@ -541,6 +541,27 @@ def list_page_tokens(client: httpx.Client | None = None) -> list[dict[str, str]]
     finally:
         if owns_client:
             client.close()
+
+
+def _exchange_error(platform: str, payload: dict) -> str:
+    """Explain a refused exchange, especially the one that reads as a bad token.
+
+    Meta's app dashboard hands out tokens that are *already* long-lived, and
+    exchanging one fails with "the type of access token is invalid" - which
+    reads as a broken token and sends you back to regenerate it, forever. Say
+    what is actually wrong instead.
+    """
+    error = payload.get("error") or {}
+    subcode = error.get("error_subcode")
+    code = error.get("code")
+    if subcode == 2207055 or code == 452:
+        return (
+            "this token cannot be exchanged, which usually means it is already "
+            "long-lived - tokens generated in the app dashboard last 60 days "
+            f"and should be used as-is. Set the {platform.upper()} token "
+            "straight from the dashboard and skip the exchange."
+        )
+    return f"exchange refused: {error or payload}"
 
 
 def refresh_tokens(client: httpx.Client | None = None) -> dict[str, str]:

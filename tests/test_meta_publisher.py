@@ -554,3 +554,39 @@ def test_variables_lists_never_carry_a_value(meta_env, monkeypatch):
 
     assert "fb-token" not in repr(listed)
     assert all(name.isupper() for name in listed)
+
+
+def test_exchanging_an_already_long_lived_token_says_so(meta_env, monkeypatch):
+    """Meta blames the token; the real cause is that it needs no exchange."""
+    monkeypatch.setattr(settings, "instagram_app_secret", "ig-secret", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "Session key invalid.",
+                    "code": 452,
+                    "error_subcode": 2207055,
+                }
+            },
+        )
+
+    from core.publishers.meta import exchange_token
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(MetaError, match="already long-lived"):
+        exchange_token("instagram", "IGAAe-token", client=client)
+
+
+def test_other_exchange_errors_are_still_reported_verbatim(meta_env, monkeypatch):
+    monkeypatch.setattr(settings, "instagram_app_secret", "ig-secret", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "Bad client secret", "code": 1}})
+
+    from core.publishers.meta import exchange_token
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(MetaError, match="Bad client secret"):
+        exchange_token("instagram", "IGAAe-token", client=client)
