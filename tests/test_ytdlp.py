@@ -54,6 +54,7 @@ def test_every_client_challenged_raises_something_actionable():
 def test_the_failure_says_what_this_worker_actually_had(monkeypatch):
     """The service that failed is the only one whose config matters."""
     monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+    monkeypatch.setattr(settings, "ytdlp_proxy", "http://p:1", raising=False)
 
     def call(options: dict) -> str:
         raise _bot_check()
@@ -65,6 +66,7 @@ def test_the_failure_says_what_this_worker_actually_had(monkeypatch):
     assert "cookies=yes" in message
     assert "2 lines" in message
     assert "tried=web,tv,web_safari" in message
+    assert "proxy=yes" in message
 
 
 def test_the_failure_calls_out_missing_cookies_loudly():
@@ -335,3 +337,44 @@ def test_format_detection_does_not_catch_unrelated_errors():
     assert ytdlp.is_no_usable_format(_no_format())
     assert not ytdlp.is_no_usable_format(RuntimeError("Video unavailable"))
     assert not ytdlp.is_worth_another_client(RuntimeError("Private video"))
+
+
+def test_missing_pot_formats_are_requested_by_default():
+    seen: list[dict] = []
+
+    def call(options: dict) -> str:
+        seen.append(options["extractor_args"]["youtube"])
+        return "ok"
+
+    ytdlp.run(call, ytdlp.base_options())
+
+    assert seen[0]["formats"] == ["missing_pot"]
+
+
+def test_missing_pot_can_be_turned_off(monkeypatch):
+    monkeypatch.setattr(settings, "ytdlp_allow_missing_pot", False, raising=False)
+    seen: list[dict] = []
+
+    def call(options: dict) -> str:
+        seen.append(options["extractor_args"]["youtube"])
+        return "ok"
+
+    ytdlp.run(call, ytdlp.base_options())
+
+    assert "formats" not in seen[0]
+
+
+def test_cookies_working_but_ip_blocked_names_the_real_fork(monkeypatch):
+    """Telling someone to check cookies when cookies are fine wastes their time."""
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+    order = iter([_no_format(), _bot_check(), _bot_check()])
+
+    def call(options: dict) -> str:
+        raise next(order)
+
+    with pytest.raises(ytdlp.BotCheck) as caught:
+        ytdlp.run(call, ytdlp.base_options())
+
+    message = str(caught.value)
+    assert "residential proxy" in message
+    assert "proof-of-origin" in message

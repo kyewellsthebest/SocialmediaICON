@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     ytdlp_cookies_b64: str | None = None  # or base64, if the text gets mangled
     ytdlp_cookiefile: str | None = None  # or a path, for local runs
     ytdlp_proxy: str | None = None  # residential proxy, if you have one
+    # Accept formats that would normally be skipped for lacking a proof-of-
+    # origin token. Without this the web client authenticates and then offers
+    # nothing downloadable; with it, some formats work and some 403.
+    ytdlp_allow_missing_pot: bool = True
 
     # publishing
     publisher: str = "manual"  # manual | upload_post | youtube | meta

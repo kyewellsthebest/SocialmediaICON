@@ -243,10 +243,13 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
     for client in clients:
         attempt = dict(options)
         extractor_args = dict(attempt.get("extractor_args") or {})
-        extractor_args["youtube"] = {
+        youtube_args = {
             **extractor_args.get("youtube", {}),
             "player_client": [client],
         }
+        if settings.ytdlp_allow_missing_pot:
+            youtube_args.setdefault("formats", ["missing_pot"])
+        extractor_args["youtube"] = youtube_args
         attempt["extractor_args"] = extractor_args
         try:
             return call(attempt)
@@ -264,6 +267,15 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
             "format. YouTube serves some clients streams yt-dlp cannot use. Try "
             "reordering YTDLP_PLAYER_CLIENTS, or update yt-dlp. "
             f"[tried={','.join(clients)}, yt-dlp={state['yt_dlp_version']}]"
+        ) from last
+
+    if state["cookies_loaded"] and not state["proxy_set"]:
+        raise BotCheck(
+            "Cookies got one client past the bot check but it had no usable "
+            "format, and every other client was blocked by IP. That combination "
+            "needs either a residential proxy (YTDLP_PROXY) or a proof-of-origin "
+            "token provider - cookies alone cannot resolve it. "
+            f"[cookies={state['cookie_lines']} lines, tried={','.join(clients)}]"
         ) from last
 
     raise BotCheck(
