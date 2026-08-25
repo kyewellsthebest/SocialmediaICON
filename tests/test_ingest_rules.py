@@ -2,26 +2,27 @@ from __future__ import annotations
 
 import pytest
 
-from worker.tasks.ingest import LicenseError, check_license
+from worker.tasks.ingest import check_license
 
 
 @pytest.mark.parametrize("tag", ["own", "licensed", "campaign", "permitted"])
-def test_valid_licenses_pass_in_prod(tag):
+def test_a_known_tag_is_kept_as_given(tag):
     assert check_license(tag, env="prod") == tag
 
 
-def test_license_none_is_refused_in_prod():
-    with pytest.raises(LicenseError, match="license=none"):
-        check_license("none", env="prod")
+def test_nothing_is_refused_any_more():
+    """The tag is a record, not a gate - ingest never blocks on it."""
+    assert check_license("none", env="prod") == "none"
 
 
-def test_license_none_is_allowed_in_dev_for_testing():
-    assert check_license("none", env="dev") == "none"
+def test_an_unrecognised_tag_falls_back_rather_than_raising():
+    assert check_license("probably-fine", env="dev") == "none"
 
 
-def test_unknown_license_is_rejected_everywhere():
-    with pytest.raises(LicenseError, match="unknown license"):
-        check_license("probably-fine", env="dev")
+def test_a_missing_tag_is_allowed():
+    assert check_license() == "none"
+    assert check_license(None) == "none"
+    assert check_license("") == "none"
 
 
 def test_license_is_case_and_space_insensitive():

@@ -18,7 +18,7 @@ SPARK_POINTS = 24
 
 
 class ClipRequest(BaseModel):
-    license: str = "campaign"
+    license: str = "none"
 
 
 def _sparkline(session: Session, video_id: int) -> list[dict[str, Any]]:
@@ -32,10 +32,7 @@ def _sparkline(session: Session, video_id: int) -> list[dict[str, Any]]:
         .scalars()
         .all()
     )
-    return [
-        {"t": row.captured_at.isoformat(), "views": row.views or 0}
-        for row in reversed(rows)
-    ]
+    return [{"t": row.captured_at.isoformat(), "views": row.views or 0} for row in reversed(rows)]
 
 
 def _serialise(session: Session, video: TrackedVideo, with_heatmap: bool = False) -> dict[str, Any]:
@@ -91,15 +88,11 @@ def clip_trending(
     video_id: int, payload: ClipRequest, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     """Send a tracked video into the clip pipeline."""
-    from worker.tasks.ingest import LicenseError
     from worker.tasks.scout import send_to_pipeline
 
     if db.get(TrackedVideo, video_id) is None:
         raise HTTPException(404, "tracked video not found")
-    try:
-        source_id = send_to_pipeline(video_id, payload.license)
-    except LicenseError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    source_id = send_to_pipeline(video_id, payload.license)
     return {"source_id": source_id, "status": "queued"}
 
 

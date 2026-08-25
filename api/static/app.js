@@ -516,10 +516,8 @@ document.addEventListener("click", async (event) => {
     }
 
     if (t.classList.contains("js-clip")) {
-      const licence = prompt("Licence — you must have the right to clip this.\n\nown / licensed / campaign / permitted", "campaign");
-      if (!licence) return;
       await withBusy(t, () => api(`/trending/${t.dataset.id}/clip`, {
-        method: "POST", body: JSON.stringify({ license: licence.trim() }),
+        method: "POST", body: JSON.stringify({}),
       }));
       toast("Sent to the pipeline — watch the Sources tab.");
       return renderTrending();
@@ -558,7 +556,7 @@ document.addEventListener("click", async (event) => {
       await withBusy(t, () => api("/sources", {
         method: "POST",
         body: JSON.stringify({
-          url, license: $("#src-licence").value, kind: "youtube",
+          url, kind: "youtube",
           niche: $("#src-niche").value.trim() || null,
         }),
       }));

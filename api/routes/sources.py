@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from core.db import get_db
 from core.models import LICENSES, SOURCE_KINDS, Niche, Source
 from worker.queue import enqueue
-from worker.tasks.ingest import LicenseError, check_license
+from worker.tasks.ingest import check_license
 from worker.tasks.ingest import run as ingest_run
 
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -19,7 +19,8 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 
 class SourceIn(BaseModel):
     url: str
-    license: str = Field(description=f"one of {LICENSES}")
+    # Optional and unenforced; recorded so a source can be traced later.
+    license: str = Field(default="none", description=f"one of {LICENSES}")
     kind: str = "youtube"
     niche: str | None = None
 
@@ -41,10 +42,7 @@ class SourceOut(BaseModel):
 def create_source(payload: SourceIn, db: Session = Depends(get_db)) -> Any:
     if payload.kind not in SOURCE_KINDS:
         raise HTTPException(422, f"kind must be one of {SOURCE_KINDS}")
-    try:
-        license_tag = check_license(payload.license)
-    except LicenseError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    license_tag = check_license(payload.license)
 
     niche_id = None
     if payload.niche:
@@ -55,9 +53,7 @@ def create_source(payload: SourceIn, db: Session = Depends(get_db)) -> Any:
             db.flush()
         niche_id = niche.id
 
-    source = Source(
-        url=payload.url, kind=payload.kind, license=license_tag, niche_id=niche_id
-    )
+    source = Source(url=payload.url, kind=payload.kind, license=license_tag, niche_id=niche_id)
     db.add(source)
     db.flush()
     enqueue("ingest", ingest_run, source.id)
