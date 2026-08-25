@@ -42,6 +42,16 @@ BOT_CHECK_MARKERS = (
     "sign in to confirm",
 )
 
+# The web client authenticates with cookies but is increasingly served
+# SABR-only streams, whose formats yt-dlp skips for having no usable URL. The
+# result is a client that gets past the bot check and then offers nothing to
+# download - so this is a reason to try the next client, not to fail.
+NO_FORMAT_MARKERS = (
+    "requested format is not available",
+    "no video formats found",
+    "no formats found",
+)
+
 BOT_CHECK_HELP = (
     "YouTube blocked the download with its bot check. This is about the IP "
     "address, not the video: cloud hosts are challenged by default. Paste a "
@@ -60,6 +70,21 @@ class BotCheck(RuntimeError):
 def is_bot_check(error: BaseException) -> bool:
     message = str(error).lower()
     return any(marker in message for marker in BOT_CHECK_MARKERS)
+
+
+def is_no_usable_format(error: BaseException) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in NO_FORMAT_MARKERS)
+
+
+def is_worth_another_client(error: BaseException) -> bool:
+    """Whether a different player client might succeed where this one did not.
+
+    Two failures qualify, for the same underlying reason: what YouTube hands
+    back depends on which client asked. Everything else - a deleted video, a
+    region block - will fail identically on all five.
+    """
+    return is_bot_check(error) or is_no_usable_format(error)
 
 
 COOKIE_HEADER = "# Netscape HTTP Cookie File"
@@ -226,12 +251,21 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
         try:
             return call(attempt)
         except Exception as exc:  # noqa: BLE001 - yt-dlp raises a wide range
-            if not is_bot_check(exc):
+            if not is_worth_another_client(exc):
                 raise
-            log.warning("player client %r was challenged, trying the next", client)
+            reason = "was challenged" if is_bot_check(exc) else "offered no usable format"
+            log.warning("player client %r %s, trying the next", client, reason)
             last = exc
 
     state = describe()
+    if last is not None and is_no_usable_format(last):
+        raise BotCheck(
+            "Every player client got through but none offered a downloadable "
+            "format. YouTube serves some clients streams yt-dlp cannot use. Try "
+            "reordering YTDLP_PLAYER_CLIENTS, or update yt-dlp. "
+            f"[tried={','.join(clients)}, yt-dlp={state['yt_dlp_version']}]"
+        ) from last
+
     raise BotCheck(
         f"{BOT_CHECK_HELP} "
         f"[this worker: cookies={'yes' if state['cookies_loaded'] else 'NO'}"

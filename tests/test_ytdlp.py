@@ -281,3 +281,57 @@ def test_the_endpoint_says_when_nothing_arrived():
     payload = settings_routes.ytdlp_status()
 
     assert "No cookies loaded" in payload["hint"]
+
+
+def _no_format() -> Exception:
+    return RuntimeError(
+        "ERROR: [youtube] Ssr9PQ87TEU: Requested format is not available. "
+        "Use --list-formats for a list of available formats"
+    )
+
+
+def test_a_client_with_no_usable_format_falls_through(monkeypatch):
+    """The web client authenticates and then offers nothing downloadable."""
+    monkeypatch.setattr(settings, "ytdlp_cookies", TAB_COOKIES, raising=False)
+    tried: list[str] = []
+
+    def call(options: dict) -> str:
+        client = options["extractor_args"]["youtube"]["player_client"][0]
+        tried.append(client)
+        if client == "web":
+            raise _no_format()
+        return "downloaded"
+
+    assert ytdlp.run(call, ytdlp.base_options()) == "downloaded"
+    assert tried == ["web", "tv"]
+
+
+def test_a_bot_check_then_a_format_problem_both_fall_through():
+    order = iter([_bot_check(), _no_format()])
+    tried: list[str] = []
+
+    def call(options: dict) -> str:
+        tried.append(options["extractor_args"]["youtube"]["player_client"][0])
+        raise next(order)
+
+    with pytest.raises(ytdlp.BotCheck):
+        ytdlp.run(call, ytdlp.base_options())
+    assert tried == ["tv", "web_safari"]
+
+
+def test_exhausting_clients_on_formats_says_that_not_bot_check():
+    def call(options: dict) -> str:
+        raise _no_format()
+
+    with pytest.raises(ytdlp.BotCheck) as caught:
+        ytdlp.run(call, ytdlp.base_options())
+
+    message = str(caught.value)
+    assert "no usable format" in message.lower() or "downloadable format" in message
+    assert "YTDLP_COOKIES" not in message  # cookies are not the problem here
+
+
+def test_format_detection_does_not_catch_unrelated_errors():
+    assert ytdlp.is_no_usable_format(_no_format())
+    assert not ytdlp.is_no_usable_format(RuntimeError("Video unavailable"))
+    assert not ytdlp.is_worth_another_client(RuntimeError("Private video"))
