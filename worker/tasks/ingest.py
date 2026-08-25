@@ -48,8 +48,13 @@ def check_license(license_tag: str, env: str | None = None) -> str:
     return tag
 
 
-def download_source(url: str, dest_dir: Path | str, max_height: int = 1080) -> Download:
-    """yt-dlp pull, best quality at or below `max_height`."""
+def download_source(url: str, dest_dir: Path | str, max_height: int | None = None) -> Download:
+    """yt-dlp pull, best quality at or below `max_height`.
+
+    Height defaults to INGEST_MAX_HEIGHT, which is the lever on a metered
+    proxy: capping at 720 roughly halves the bytes pulled per source.
+    """
+    max_height = max_height or settings.ingest_max_height
     import yt_dlp
 
     dest_dir = Path(dest_dir)

@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # origin token. Without this the web client authenticates and then offers
     # nothing downloadable; with it, some formats work and some 403.
     ytdlp_allow_missing_pot: bool = True
+    # Residential proxies bill per gigabyte, and video is heavy: a 12 minute
+    # 1080p source is 200-400 MB, 720p roughly half that. Since the render
+    # crops 16:9 to 9:16 and upscales either way, this is the dial between
+    # a sharper clip and a smaller bill.
+    ingest_max_height: int = 1080
 
     # publishing
     publisher: str = "manual"  # manual | upload_post | youtube | meta
