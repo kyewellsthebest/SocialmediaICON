@@ -268,7 +268,7 @@ function trendingItem(v) {
       <div class="stat"><span class="k">Views/hr</span><span class="v">${fmt(v.velocity_vph)}</span></div>
       <div class="stat"><span class="k">Momentum</span><span class="v">${momentum(v.momentum)}</span></div>
       <div class="stat"><span class="k">Like rate</span><span class="v">${pct(v.like_rate)}</span></div>
-      <div class="stat"><span class="k">Comment rate</span><span class="v">${pct(v.comment_rate)}</span></div>
+      <div class="stat"><span class="k">Comment rate</span><span class="v">${pct(v.comment_rate, 2)}</span></div>
     </div>
     <div class="row" style="gap:10px">
       <div style="flex:1 1 130px;min-width:0">${v.has_heatmap
@@ -527,6 +527,12 @@ document.addEventListener("click", async (event) => {
       return showGate(true);
     }
     if (t.id === "gate-go") return unlock();
+
+    if (t.id === "trend-tidy") {
+      const r = await withBusy(t, () => api("/trending/below-bar", { method: "DELETE" }));
+      toast(r.deleted ? `Removed ${r.deleted} below the bar.` : "Everything tracked passes the current filters.");
+      return renderTrending();
+    }
 
     if (t.id === "scan-now") {
       const r = await withBusy(t, () => api("/trending/scan", { method: "POST" }));

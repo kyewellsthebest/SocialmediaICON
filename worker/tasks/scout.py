@@ -20,6 +20,7 @@ from core import youtube
 from core.config import settings
 from core.db import session_scope
 from core.heatmap import fetch_metadata
+from core.language import looks_english
 from core.models import Niche, Source, TrackedSnapshot, TrackedVideo
 from core.scoring import comment_rate, like_rate, peak_heat, score_video, views_per_hour
 from core.scoring import hot_segments as compute_hot_segments
@@ -60,8 +61,8 @@ def wanted(row: dict) -> bool:
     a language your audience does not speak cannot be captioned into something
     they will watch, however good the moment is.
 
-    A missing language is kept: YouTube's field is frequently unset, and
-    discarding everything unlabelled throws away most of the good material.
+    A missing declared language is not by itself a rejection - YouTube leaves
+    that field unset constantly - but the title still gets read.
     """
     views = row.get("views")
     if views is not None and views < settings.scout_min_views:
@@ -71,6 +72,11 @@ def wanted(row: dict) -> bool:
     if wanted_language:
         declared = (row.get("language") or "").strip().lower()
         if declared and not declared.startswith(wanted_language):
+            return False
+        # The declared field is unset on most videos, so it filters almost
+        # nothing on its own. The title is the only other evidence available
+        # before downloading, and for English it is enough.
+        if wanted_language == "en" and not looks_english(row.get("title")):
             return False
     return True
 

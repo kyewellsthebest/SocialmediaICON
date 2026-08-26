@@ -88,6 +88,25 @@ def get_trending(video_id: int, db: Session = Depends(get_db)) -> dict[str, Any]
     return _serialise(db, video, with_heatmap=True)
 
 
+@router.delete("/below-bar")
+def drop_below_bar(db: Session = Depends(get_db)) -> dict[str, int]:
+    """Remove tracked videos that would not pass today's quality gate.
+
+    The gate only applies to videos as they are discovered, so tightening it
+    leaves everything found under the old rules sitting in the table. This
+    re-applies it to what is already there.
+    """
+    from worker.tasks.scout import wanted
+
+    removed = 0
+    for video in db.query(TrackedVideo).all():
+        row = {"views": video.views, "title": video.title, "language": None}
+        if not wanted(row):
+            db.delete(video)
+            removed += 1
+    return {"deleted": removed}
+
+
 @router.post("/{video_id}/clip")
 def clip_trending(
     video_id: int, payload: ClipRequest, db: Session = Depends(get_db)

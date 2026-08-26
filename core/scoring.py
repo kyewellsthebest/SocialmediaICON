@@ -118,33 +118,45 @@ def score_video(
     now: datetime | None = None,
     comment_ratio: float | None = None,
 ) -> float:
-    """Composite 0–100 used to order the trending table.
+    """Composite 0-100 used to order the trending table.
 
-    Velocity says people are watching it now. Like-rate says they approved.
-    Comment-rate says they reacted strongly enough to type something, which is
-    a higher bar and a better predictor of a clip-worthy moment. The heat peak
-    says where that moment is. The age penalty stops a three-year-old megahit
-    sitting at the top forever.
+    Calibrated against what YouTube long-form actually does, not against
+    short-form intuitions: a 5% like rate is excellent and 1% is ordinary, and
+    comment rates sit an order of magnitude below that. Asking for 10% likes
+    scored genuinely strong videos in single digits.
+
+    A signal that is *unknown* is excluded and the remaining weights are
+    renormalised, rather than counted as zero. Most videos have no heatmap
+    until one is fetched, and scoring them as though viewers replayed nothing
+    buried every video the scout had not got to yet.
     """
-    # Velocity is heavily skewed, so compress it: 10k views/hour ~ full marks.
-    velocity_points = 0.0
-    if velocity_vph:
-        velocity_points = min(1.0, (velocity_vph / 10_000) ** 0.5)
+    signals: list[tuple[float, float]] = []
 
-    # 10% like-rate is excellent, 2% is ordinary.
-    like_points = min(1.0, (like_ratio or 0) / 0.10)
+    if velocity_vph is not None:
+        # Compressed: this niche's good videos run in the hundreds per hour,
+        # so full marks at 2,000 rather than 10,000.
+        signals.append((0.30, min(1.0, (velocity_vph / 2_000) ** 0.5)))
 
-    # Comment rates are an order of magnitude lower than like rates: 1% is
-    # remarkable, 0.1% is normal.
-    comment_points = min(1.0, (comment_ratio or 0) / 0.01)
+    if like_ratio is not None:
+        signals.append((0.15, min(1.0, like_ratio / 0.05)))
 
-    heat_points = min(1.0, max(0.0, heat_peak or 0.0))
+    if comment_ratio is not None:
+        signals.append((0.20, min(1.0, comment_ratio / 0.005)))
+
+    if heat_peak is not None:
+        signals.append((0.35, min(1.0, max(0.0, heat_peak))))
+
+    if not signals:
+        return 0.0
+
+    total_weight = sum(weight for weight, _ in signals)
+    raw = sum(weight * points for weight, points in signals) / total_weight
 
     age_h = hours_since(published_at, now) or 1.0
-    # Full marks under a week old, tailing off after that.
-    recency = 1.0 if age_h <= 168 else max(0.25, (168 / age_h) ** 0.4)
+    # Full marks for the first month, then a gentle taper - the search window
+    # is six months, so punishing everything older than a week fought it.
+    recency = 1.0 if age_h <= 720 else max(0.55, (720 / age_h) ** 0.3)
 
-    raw = 0.35 * velocity_points + 0.15 * like_points + 0.20 * comment_points + 0.30 * heat_points
     return round(100 * raw * recency, 1)
 
 

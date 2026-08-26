@@ -295,3 +295,75 @@ class TestMomentum:
         assert momentum(None, 100_000, published, now) is None
         assert momentum(100.0, None, published, now) is None
         assert momentum(100.0, 100_000, None, now) is None
+
+
+class TestScoreCalibration:
+    """A 3.2M-view video scoring 8/100 meant the thresholds were wrong, not
+    the video. These pin the shape so it cannot drift back."""
+
+    def _pub(self, days):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 8, 26, tzinfo=UTC)
+        return now - timedelta(days=days), now
+
+    def test_a_strong_video_without_a_heatmap_still_scores_respectably(self):
+        from core.scoring import score_video
+
+        published, now = self._pub(18)
+        score = score_video(2600, 0.005, published, None, now, comment_ratio=0.0005)
+
+        assert 40 <= score <= 70
+
+    def test_a_weak_video_scores_below_a_strong_one(self):
+        from core.scoring import score_video
+
+        published, now = self._pub(18)
+        strong = score_video(2600, 0.005, published, None, now, comment_ratio=0.0005)
+        weak = score_video(27, 0.05, published, None, now, comment_ratio=0.001)
+
+        assert strong > weak
+
+    def test_an_absent_heatmap_is_not_counted_as_a_flat_one(self):
+        """Unknown and zero are different: most videos have no heatmap yet, and
+        scoring those as though nobody replayed anything buried all of them."""
+        from core.scoring import score_video
+
+        published, now = self._pub(10)
+        unknown = score_video(1000, 0.04, published, None, now, comment_ratio=0.002)
+        known_flat = score_video(1000, 0.04, published, 0.0, now, comment_ratio=0.002)
+
+        assert unknown > known_flat
+
+    def test_a_heatmap_peak_lifts_the_score(self):
+        from core.scoring import score_video
+
+        published, now = self._pub(10)
+        peaky = score_video(1000, 0.04, published, 0.95, now, comment_ratio=0.002)
+        flat = score_video(1000, 0.04, published, 0.05, now, comment_ratio=0.002)
+
+        assert peaky > flat + 15
+
+    def test_five_percent_likes_is_full_marks_not_ten(self):
+        from core.scoring import score_video
+
+        published, now = self._pub(1)
+        assert score_video(None, 0.05, published, None, now) == score_video(
+            None, 0.09, published, None, now
+        )
+
+    def test_a_month_old_video_keeps_full_recency(self):
+        from core.scoring import score_video
+
+        fresh_pub, now = self._pub(1)
+        month_pub, _ = self._pub(29)
+
+        assert score_video(1000, 0.04, fresh_pub, 0.5, now) == score_video(
+            1000, 0.04, month_pub, 0.5, now
+        )
+
+    def test_nothing_known_scores_zero_rather_than_erroring(self):
+        from core.scoring import score_video
+
+        published, now = self._pub(5)
+        assert score_video(None, None, published, None, now) == 0.0
