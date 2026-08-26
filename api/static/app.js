@@ -244,7 +244,10 @@ async function renderOverview(first) {
 async function renderTrending(first) {
   if (first) $("#trending-body").innerHTML = skelCards(4);
   const filter = $("#trending-filter").value;
-  const rows = await api(`/trending${filter ? `?status=${filter}` : ""}`);
+  const source = $("#trending-source")?.value || "";
+  const query = [filter ? `status=${filter}` : "", source ? `platform=${source}` : ""]
+    .filter(Boolean).join("&");
+  const rows = await api(`/trending${query ? `?${query}` : ""}`);
   state.data.trending = rows;
 
   $("#trending-body").innerHTML = rows.length
@@ -259,13 +262,13 @@ function trendingItem(v) {
       ${v.thumbnail_url ? `<img src="${esc(v.thumbnail_url)}" alt="" loading="lazy">` : ""}
       <div style="min-width:0;flex:1">
         <div class="item-title"><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a></div>
-        <div class="item-sub">${esc(v.channel_title || "")} · ${clock(v.duration_s)} · ${ago(v.published_at)}</div>
+        <div class="item-sub"><span class="src src-${esc(v.platform || "youtube")}">${v.platform === "reddit" ? "Reddit" : "YouTube"}</span> ${esc(v.channel_title || "")} · ${clock(v.duration_s)} · ${ago(v.published_at)}</div>
       </div>
       <div class="score"><b>${v.score ?? "—"}</b><small>score</small></div>
     </div>
     <div class="stats">
-      <div class="stat"><span class="k">Views</span><span class="v">${fmt(v.views)}</span></div>
-      <div class="stat"><span class="k">Views/hr</span><span class="v">${fmt(v.velocity_vph)}</span></div>
+      <div class="stat"><span class="k">${v.platform === "reddit" ? "Upvotes" : "Views"}</span><span class="v">${fmt(v.views)}</span></div>
+      <div class="stat"><span class="k">${v.platform === "reddit" ? "Upvotes/hr" : "Views/hr"}</span><span class="v">${fmt(v.velocity_vph)}</span></div>
       <div class="stat"><span class="k">Momentum</span><span class="v">${momentum(v.momentum)}</span></div>
       <div class="stat"><span class="k">Like rate</span><span class="v">${pct(v.like_rate)}</span></div>
       <div class="stat"><span class="k">Comment rate</span><span class="v">${pct(v.comment_rate, 2)}</span></div>
@@ -325,7 +328,7 @@ async function renderPosts(first) {
           ${pill(p.status)}
         </div>
         <div class="stats">
-          <div class="stat"><span class="k">Views</span><span class="v">${fmt(p.views)}</span></div>
+          <div class="stat"><span class="k">${v.platform === "reddit" ? "Upvotes" : "Views"}</span><span class="v">${fmt(p.views)}</span></div>
           <div class="stat"><span class="k">Like rate</span><span class="v">${pct(p.like_rate)}</span></div>
           <div class="stat"><span class="k">Trend</span><span class="v">${sparkline(p.series, 70, 20)}</span></div>
         </div>
@@ -648,7 +651,9 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-document.addEventListener("change", (e) => { if (e.target.id === "trending-filter") renderTrending(); });
+document.addEventListener("change", (e) => {
+  if (e.target.id === "trending-filter" || e.target.id === "trending-source") renderTrending();
+});
 
 document.addEventListener("mouseover", (event) => {
   const cell = event.target.closest("[data-tip]");

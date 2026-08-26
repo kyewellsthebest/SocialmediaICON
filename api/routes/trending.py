@@ -70,10 +70,13 @@ def _serialise(session: Session, video: TrackedVideo, with_heatmap: bool = False
 @router.get("")
 def list_trending(
     status: str | None = None,
+    platform: str | None = None,
     limit: int = 50,
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     query = db.query(TrackedVideo)
+    if platform:
+        query = query.filter(TrackedVideo.platform == platform)
     if status:
         query = query.filter(TrackedVideo.status == status)
     videos = query.order_by(TrackedVideo.score.desc().nullslast()).limit(limit).all()

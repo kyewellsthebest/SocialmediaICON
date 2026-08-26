@@ -762,3 +762,20 @@ select:focus-visible,
   .card, .btn-primary, .list > .item { transition: none; }
   .btn-primary:hover, .card:hover { transform: none; }
 }
+
+
+/* Source badge. The two platforms measure different things - upvotes are not
+   views - so a row has to say which it is before its numbers mean anything. */
+.src {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-right: 4px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+.src-youtube { background: color-mix(in srgb, var(--s2) 18%, transparent); color: var(--s2); }
+.src-reddit  { background: color-mix(in srgb, var(--s3) 18%, transparent); color: var(--s3); }
