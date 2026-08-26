@@ -158,3 +158,88 @@ class TestKeywordRotation:
         window = self._window(words, 3, 1)
         assert len(window) == 3
         assert window == ["d", "e", "a"]
+
+
+class TestCommentRate:
+    """Liking costs one tap; commenting means the video provoked something."""
+
+    def test_comments_per_view(self):
+        from core.scoring import comment_rate
+
+        assert comment_rate(500, 100_000) == pytest.approx(0.005)
+
+    def test_no_views_means_no_rate_rather_than_a_crash(self):
+        from core.scoring import comment_rate
+
+        assert comment_rate(10, 0) is None
+        assert comment_rate(10, None) is None
+        assert comment_rate(None, 1000) is None
+
+    def test_a_talked_about_video_outscores_a_merely_liked_one(self):
+        from datetime import UTC, datetime
+
+        from core.scoring import score_video
+
+        now = datetime(2026, 8, 26, tzinfo=UTC)
+        published = datetime(2026, 8, 24, tzinfo=UTC)
+        common = dict(velocity_vph=500.0, like_ratio=0.05, published_at=published, now=now)
+
+        talked_about = score_video(**common, comment_ratio=0.01)
+        merely_liked = score_video(**common, comment_ratio=0.0002)
+
+        assert talked_about > merely_liked
+
+
+class TestQualityGate:
+    """Copying a video nobody watched copies noise."""
+
+    def _row(self, **kw):
+        base = {"views": 500_000, "language": "en"}
+        base.update(kw)
+        return base
+
+    def test_a_video_below_the_view_floor_is_dropped(self, monkeypatch):
+        from core.config import settings
+        from worker.tasks.scout import wanted
+
+        monkeypatch.setattr(settings, "scout_min_views", 100_000, raising=False)
+
+        assert wanted(self._row(views=500_000))
+        assert not wanted(self._row(views=3_000))
+
+    def test_another_language_is_dropped(self, monkeypatch):
+        from core.config import settings
+        from worker.tasks.scout import wanted
+
+        monkeypatch.setattr(settings, "scout_language", "en", raising=False)
+
+        assert wanted(self._row(language="en-GB"))
+        assert not wanted(self._row(language="ru"))
+        assert not wanted(self._row(language="pl"))
+
+    def test_an_unlabelled_video_is_kept(self, monkeypatch):
+        """YouTube leaves this field unset constantly; rejecting on absence
+        would throw away most of the good material."""
+        from core.config import settings
+        from worker.tasks.scout import wanted
+
+        monkeypatch.setattr(settings, "scout_language", "en", raising=False)
+
+        assert wanted(self._row(language=None))
+        assert wanted(self._row(language=""))
+
+    def test_a_blank_language_setting_accepts_everything(self, monkeypatch):
+        from core.config import settings
+        from worker.tasks.scout import wanted
+
+        monkeypatch.setattr(settings, "scout_language", "", raising=False)
+
+        assert wanted(self._row(language="ru"))
+
+    def test_a_missing_view_count_is_not_treated_as_zero(self, monkeypatch):
+        from core.config import settings
+        from worker.tasks.scout import wanted
+
+        monkeypatch.setattr(settings, "scout_min_views", 100_000, raising=False)
+
+        assert wanted(self._row(views=None))

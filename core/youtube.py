@@ -99,6 +99,7 @@ def search(
     order: str = "viewCount",
     region_code: str | None = None,
     video_duration: str = "medium",
+    relevance_language: str | None = None,
 ) -> list[str]:
     """Return video ids matching a niche keyword.
 
@@ -120,6 +121,10 @@ def search(
     }
     if region_code:
         params["regionCode"] = region_code
+    if relevance_language:
+        # A hint, not a filter - YouTube still returns other languages, so the
+        # real check happens on defaultAudioLanguage after the stats call.
+        params["relevanceLanguage"] = relevance_language
 
     payload = _get("search", params, COST_SEARCH)
     return [
@@ -154,6 +159,11 @@ def videos(video_ids: list[str]) -> list[dict[str, Any]]:
                         or snippet.get("thumbnails", {}).get("default", {}).get("url")
                     ),
                     "published_at": _parse_dt(snippet.get("publishedAt")),
+                    # What the uploader declared. Often absent, which is why a
+                    # missing value must not be treated as a rejection.
+                    "language": (
+                        snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage")
+                    ),
                     "duration_s": parse_iso8601_duration(
                         item.get("contentDetails", {}).get("duration")
                     ),

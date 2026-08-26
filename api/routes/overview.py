@@ -16,10 +16,11 @@ from core.youtube import DAILY_QUOTA, units_used_today
 
 router = APIRouter(prefix="/overview", tags=["overview"])
 
-# Rough per-source running cost, from the costed plan: transcription + model
-# calls + a slice of infra. Used to show spend against the monthly budget.
-COST_PER_SOURCE = 0.55
-MONTHLY_FIXED = 45.0
+# The spend figure is an estimate from COST_FIXED_MONTHLY and COST_PER_SOURCE,
+# not a bill from anyone. Fixed is what you pay whatever happens - host,
+# storage, proxies - and per-source is the transcription and model calls one
+# video costs to process. Both are settings, because guessing them in code and
+# then showing the guess as a number is how a dashboard starts lying.
 
 
 @router.get("")
@@ -95,9 +96,17 @@ def overview(db: Session = Depends(get_db)) -> dict[str, Any]:
             "pct": round(100 * quota_used / DAILY_QUOTA, 1),
         },
         "spend": {
-            "estimate_month": round(MONTHLY_FIXED + sources_this_month * COST_PER_SOURCE, 2),
-            "budget": 100.0,
-            "note": "estimate: fixed services plus per-source transcription and model calls",
+            "estimate_month": round(
+                settings.cost_fixed_monthly + sources_this_month * settings.cost_per_source, 2
+            ),
+            "budget": settings.monthly_budget,
+            "fixed": settings.cost_fixed_monthly,
+            "per_source": settings.cost_per_source,
+            "sources_this_month": sources_this_month,
+            "note": (
+                f"estimate, not a bill: ${settings.cost_fixed_monthly:.0f} fixed + "
+                f"{sources_this_month} sources x ${settings.cost_per_source:.2f}"
+            ),
         },
         "config": {
             "env": settings.env,

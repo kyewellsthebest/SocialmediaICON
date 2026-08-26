@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     scout_video_duration: str = "medium"  # short | medium | long
     scout_max_keywords: int = 4
     scout_track_limit: int = 30
+    # Quality gate. A 3k-view upload is not a trend, and a clip whose
+    # audio is in a language your audience does not speak cannot be
+    # captioned into something they will watch.
+    scout_min_views: int = 100_000
+    scout_language: str = "en"  # blank to accept any language
 
     metrics_interval_minutes: int = 60
     autopost_enabled: bool = False
@@ -146,6 +151,13 @@ class Settings(BaseSettings):
     min_clip_s: float = 15.0
     max_clip_s: float = 60.0
     window_minutes: int = 6
+
+    # Running cost estimate shown on the dashboard. Fixed is what you pay
+    # whatever happens (host, storage, proxies); per-source is the
+    # transcription and model calls one video costs to process.
+    cost_fixed_monthly: float = 20.0
+    cost_per_source: float = 0.55
+    monthly_budget: float = 100.0
 
     # local working dirs (used when R2 is not configured)
     local_storage_dir: Path = REPO_ROOT / ".storage"

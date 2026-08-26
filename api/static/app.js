@@ -343,12 +343,17 @@ function showPostDetail(id) {
 async function renderSources(first) {
   if (first) $("#sources-body").innerHTML = skelCards(2);
   const rows = await api("/sources");
+  const failed = rows.filter((s) => s.status === "failed").length;
   $("#sources-body").innerHTML = rows.length
-    ? `<div class="list">${rows.map((s) => `<article class="item">
+    ? `${failed ? `<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span class="item-sub">${failed} failed</span>
+          <button class="btn ghost" id="src-clear-failed">Clear failed</button>
+        </div>` : ""}
+      <div class="list">${rows.map((s) => `<article class="item">
         <div class="item-top">
           <div style="min-width:0;flex:1">
             <div class="item-title"><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a></div>
-            <div class="item-sub">${esc(s.license)} · ${clock(s.duration_s)} · ${ago(s.created_at)}</div>
+            <div class="item-sub">${clock(s.duration_s)} · ${ago(s.created_at)}</div>
           </div>
           ${pill(s.status)}
         </div>
@@ -551,6 +556,17 @@ document.addEventListener("click", async (event) => {
     if (t.classList.contains("js-reject")) {
       await withBusy(t, () => api(`/review/${t.dataset.id}/reject`, { method: "POST" }));
       return renderReview();
+    }
+
+    if (t.id === "src-clear-failed") {
+      const r = await withBusy(t, () => api("/sources/failed", { method: "DELETE" }));
+      toast(r.deleted ? `Cleared ${r.deleted} failed source${r.deleted === 1 ? "" : "s"}.` : "Nothing failed to clear.");
+      return renderSources();
+    }
+
+    if (t.classList.contains("js-src-delete")) {
+      await api(`/sources/${t.dataset.id}`, { method: "DELETE" });
+      return renderSources();
     }
 
     if (t.id === "src-add") {

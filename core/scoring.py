@@ -71,19 +71,34 @@ def like_rate(likes: int | None, views: int | None) -> float | None:
     return likes / views
 
 
+def comment_rate(comments: int | None, views: int | None) -> float | None:
+    """Comments per view.
+
+    Liking is one tap and costs nothing; commenting means the video provoked
+    enough to make someone type. For clipping that is the more useful signal -
+    a video people argue about has a moment in it worth cutting, and a video
+    people merely approve of often does not.
+    """
+    if not views or comments is None:
+        return None
+    return comments / views
+
+
 def score_video(
     velocity_vph: float | None,
     like_ratio: float | None,
     published_at: datetime | None,
     heat_peak: float | None = None,
     now: datetime | None = None,
+    comment_ratio: float | None = None,
 ) -> float:
     """Composite 0–100 used to order the trending table.
 
-    Velocity says people are watching it now, like-rate says they liked what
-    they watched, the heat peak says there is a specific moment worth cutting,
-    and the age penalty stops a three-year-old megahit sitting at the top
-    forever.
+    Velocity says people are watching it now. Like-rate says they approved.
+    Comment-rate says they reacted strongly enough to type something, which is
+    a higher bar and a better predictor of a clip-worthy moment. The heat peak
+    says where that moment is. The age penalty stops a three-year-old megahit
+    sitting at the top forever.
     """
     # Velocity is heavily skewed, so compress it: 10k views/hour ~ full marks.
     velocity_points = 0.0
@@ -93,13 +108,17 @@ def score_video(
     # 10% like-rate is excellent, 2% is ordinary.
     like_points = min(1.0, (like_ratio or 0) / 0.10)
 
+    # Comment rates are an order of magnitude lower than like rates: 1% is
+    # remarkable, 0.1% is normal.
+    comment_points = min(1.0, (comment_ratio or 0) / 0.01)
+
     heat_points = min(1.0, max(0.0, heat_peak or 0.0))
 
     age_h = hours_since(published_at, now) or 1.0
     # Full marks under a week old, tailing off after that.
     recency = 1.0 if age_h <= 168 else max(0.25, (168 / age_h) ** 0.4)
 
-    raw = 0.45 * velocity_points + 0.25 * like_points + 0.30 * heat_points
+    raw = 0.35 * velocity_points + 0.15 * like_points + 0.20 * comment_points + 0.30 * heat_points
     return round(100 * raw * recency, 1)
 
 

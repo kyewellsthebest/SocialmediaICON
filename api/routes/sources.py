@@ -197,6 +197,26 @@ async def attach_file(source_id: int, file: UploadFile = File(...)) -> Any:
         return SourceOut.model_validate(session.get(Source, source_id))
 
 
+@router.delete("/failed")
+def clear_failed(db: Session = Depends(get_db)) -> dict[str, int]:
+    """Delete every failed source.
+
+    A failed source is a dead end - it has no video and nothing downstream
+    references it - and a column of them buries the ones that worked.
+    """
+    removed = db.query(Source).filter(Source.status == "failed").delete()
+    return {"deleted": removed}
+
+
+@router.delete("/{source_id}")
+def delete_source(source_id: int, db: Session = Depends(get_db)) -> dict[str, int]:
+    source = db.get(Source, source_id)
+    if source is None:
+        raise HTTPException(404, "source not found")
+    db.delete(source)
+    return {"deleted": source_id}
+
+
 @router.get("/{source_id}", response_model=SourceOut)
 def get_source(source_id: int, db: Session = Depends(get_db)) -> Any:
     source = db.get(Source, source_id)

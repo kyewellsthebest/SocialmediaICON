@@ -21,8 +21,8 @@ from core.config import settings
 from core.db import session_scope
 from core.heatmap import fetch_metadata
 from core.models import Niche, Source, TrackedSnapshot, TrackedVideo
+from core.scoring import comment_rate, like_rate, peak_heat, score_video, views_per_hour
 from core.scoring import hot_segments as compute_hot_segments
-from core.scoring import like_rate, peak_heat, score_video, views_per_hour
 from worker.queue import enqueue
 
 log = logging.getLogger(__name__)
@@ -50,6 +50,29 @@ def keywords_for_run(keywords: list[str], size: int, now: datetime) -> list[str]
     start = (slot * size) % len(keywords)
     window = keywords + keywords  # wrap without modulo arithmetic per item
     return window[start : start + size]
+
+
+def wanted(row: dict) -> bool:
+    """Whether a video is worth tracking at all.
+
+    Two gates, both about not wasting a clip run. A video with a few thousand
+    views has not demonstrated anything - copying it copies noise. And audio in
+    a language your audience does not speak cannot be captioned into something
+    they will watch, however good the moment is.
+
+    A missing language is kept: YouTube's field is frequently unset, and
+    discarding everything unlabelled throws away most of the good material.
+    """
+    views = row.get("views")
+    if views is not None and views < settings.scout_min_views:
+        return False
+
+    wanted_language = (settings.scout_language or "").strip().lower()
+    if wanted_language:
+        declared = (row.get("language") or "").strip().lower()
+        if declared and not declared.startswith(wanted_language):
+            return False
+    return True
 
 
 def _niche_id(session, niche_name: str | None) -> int | None:
@@ -92,6 +115,7 @@ def scout(
                 max_results=max(10, limit // max(1, len(searching))),
                 region_code=settings.scout_region,
                 video_duration=settings.scout_video_duration,
+                relevance_language=settings.scout_language or None,
             )
         except youtube.QuotaExceeded as exc:
             log.warning("stopping scout: %s", exc)
@@ -109,6 +133,17 @@ def scout(
 
     rows = youtube.videos(video_ids)
     log.info("fetched stats for %d videos", len(rows))
+
+    kept = [row for row in rows if wanted(row)]
+    if len(kept) < len(rows):
+        log.info(
+            "%d of %d videos passed the quality gate (>=%s views, language %r)",
+            len(kept),
+            len(rows),
+            f"{settings.scout_min_views:,}",
+            settings.scout_language or "any",
+        )
+    rows = kept
 
     touched: list[int] = []
     with session_scope() as session:
@@ -145,12 +180,14 @@ def scout(
                 row["views"], row["published_at"], previous_views, previous_at, now
             )
             video.like_rate = like_rate(row["likes"], row["views"])
+            comment_ratio = comment_rate(row["comments"], row["views"])
             video.score = score_video(
                 video.velocity_vph,
                 video.like_rate,
                 row["published_at"],
                 peak_heat(video.heatmap),
                 now,
+                comment_ratio=comment_ratio,
             )
             video.last_checked_at = now
 
@@ -204,7 +241,11 @@ def enrich_heatmaps(budget: int = HEATMAP_BUDGET) -> int:
             video.heatmap = heat
             video.hot_segments = segments
             video.score = score_video(
-                video.velocity_vph, video.like_rate, video.published_at, peak_heat(heat)
+                video.velocity_vph,
+                video.like_rate,
+                video.published_at,
+                peak_heat(heat),
+                comment_ratio=comment_rate(video.comments, video.views),
             )
         enriched += 1
         log.info("heatmap for %s -> %d hot segments", url, len(segments))
