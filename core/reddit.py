@@ -16,6 +16,11 @@ Two things make it worth the trouble over YouTube:
 Two things are worse: there are no view counts, only votes, and much of what
 is posted is a crosspost to YouTube, which is the door we already found shut.
 Both are handled by filtering rather than hoping.
+
+One thing turned out the same: Reddit refuses unauthenticated requests from
+datacenter ranges with a 403, exactly as YouTube does. Credentials avoid that -
+the OAuth host serves cloud hosts happily - and failing those, the request goes
+out through the same proxy pool the downloader uses.
 """
 
 from __future__ import annotations
@@ -81,11 +86,47 @@ def _token(client: httpx.Client) -> str:
         auth=(settings.reddit_client_id, settings.reddit_client_secret),
         headers={"User-Agent": settings.reddit_user_agent},
     )
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError:
+        # Reddit answers a refused request with an HTML page, and parsing that
+        # as JSON raises something that says nothing about what went wrong.
+        raise RedditError(
+            f"the token request was refused ({response.status_code}). Check the "
+            "client id and secret, and that the app is a 'script' app."
+        ) from None
+
     token = payload.get("access_token")
     if not token:
         raise RedditError(f"could not get a token: {str(payload)[:200]}")
     return str(token)
+
+
+def _proxy() -> str | None:
+    """A proxy for Reddit, reusing whatever the downloader was given.
+
+    Reddit blocks the public endpoint from datacenter ranges, so on a cloud
+    host an unauthenticated request needs to leave from somewhere else.
+    """
+    if settings.reddit_proxy:
+        return settings.reddit_proxy
+    if settings.has_reddit:
+        return None  # credentials are the better answer; no proxy needed
+    from core.ytdlp import proxies
+
+    pool = [p for p in proxies() if p]
+    if not pool:
+        return None
+    # Walk the pool with the clock so one address does not carry every request.
+    return pool[int(time.time() // 600) % len(pool)]
+
+
+def make_client(timeout: float = 30.0) -> httpx.Client:
+    """An httpx client configured the way Reddit needs to be asked."""
+    kwargs: dict[str, Any] = {"timeout": timeout, "follow_redirects": True}
+    if proxy := _proxy():
+        kwargs["proxy"] = proxy
+    return httpx.Client(**kwargs)
 
 
 def _endpoint(client: httpx.Client) -> tuple[str, dict[str, str]]:
@@ -98,10 +139,10 @@ def _endpoint(client: httpx.Client) -> tuple[str, dict[str, str]]:
     """
     agent = settings.reddit_user_agent
     if settings.has_reddit:
-        try:
-            return API, {"Authorization": f"Bearer {_token(client)}", "User-Agent": agent}
-        except RedditError as exc:
-            log.warning("falling back to the public endpoint: %s", exc)
+        # Credentials that do not work are a problem to report, not to route
+        # around: the public endpoint fails too, and its message would tell
+        # you to set the credentials you have already set.
+        return API, {"Authorization": f"Bearer {_token(client)}", "User-Agent": agent}
     return PUBLIC, {"User-Agent": agent}
 
 
@@ -148,7 +189,7 @@ def search(
     hour, day, week, month, year, all - and only applies to top and comments.
     """
     owns_client = client is None
-    client = client or httpx.Client(timeout=30.0, follow_redirects=True)
+    client = client or make_client()
     try:
         base, headers = _endpoint(client)
         response = client.get(
@@ -164,6 +205,12 @@ def search(
             },
             headers=headers,
         )
+        if response.status_code == 403:
+            raise RedditError(
+                "Reddit refused the request (403). It blocks unauthenticated "
+                "reads from datacenter ranges: set REDDIT_CLIENT_ID and "
+                "REDDIT_CLIENT_SECRET, or REDDIT_PROXY to a residential proxy."
+            )
         if response.status_code >= 400:
             raise RedditError(f"search failed ({response.status_code}): {response.text[:200]}")
 
@@ -186,7 +233,7 @@ def top_comments(
     hand them to a model without reshaping.
     """
     owns_client = client is None
-    client = client or httpx.Client(timeout=30.0, follow_redirects=True)
+    client = client or make_client()
     try:
         base, headers = _endpoint(client)
         response = client.get(

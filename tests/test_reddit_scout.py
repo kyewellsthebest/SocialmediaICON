@@ -193,7 +193,8 @@ def test_no_credentials_falls_back_to_the_public_endpoint(monkeypatch):
     assert seen[0].startswith("https://www.reddit.com/search.json")
 
 
-def test_a_broken_token_exchange_falls_back_rather_than_failing(monkeypatch):
+def test_half_set_credentials_use_the_public_endpoint(monkeypatch):
+    """A secret with no id is not credentials, so there is nothing to report."""
     monkeypatch.setattr(settings, "reddit_client_id", "id", raising=False)
     monkeypatch.setattr(settings, "reddit_client_secret", "", raising=False)
 
@@ -298,3 +299,66 @@ class TestScoutSources:
         monkeypatch.setattr(settings, "youtube_api_key", "a-real-key", raising=False)
 
         assert settings.scouts("youtube") is False
+
+
+class TestBlockedFromDatacenters:
+    """Reddit refuses unauthenticated reads from cloud ranges with a 403,
+    exactly as YouTube does. The message has to say that, and the request has
+    to have somewhere else to go."""
+
+    def test_a_403_explains_itself_rather_than_dumping_html(self, monkeypatch):
+        monkeypatch.setattr(settings, "reddit_client_id", None, raising=False)
+        monkeypatch.setattr(settings, "reddit_client_secret", None, raising=False)
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, text="<body class=theme-beta><style>.theme-light")
+
+        with pytest.raises(reddit.RedditError) as caught:
+            reddit.search("metal detecting", client=_client(handle))
+
+        message = str(caught.value)
+        assert "datacenter" in message
+        assert "REDDIT_CLIENT_ID" in message
+        assert "theme-beta" not in message  # not the raw page
+
+    def test_a_refused_token_says_so_instead_of_a_json_error(self):
+        """Reddit answers a refused token request with an HTML page, and
+        parsing that as JSON raises something that explains nothing."""
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, text="<html>Blocked</html>")
+
+        with pytest.raises(reddit.RedditError, match="token request was refused"):
+            reddit.search("x", client=_client(handle))
+
+    def test_the_downloader_proxy_pool_is_reused_when_unauthenticated(self, monkeypatch):
+        monkeypatch.setattr(settings, "reddit_client_id", None, raising=False)
+        monkeypatch.setattr(settings, "reddit_client_secret", None, raising=False)
+        monkeypatch.setattr(settings, "reddit_proxy", None, raising=False)
+        monkeypatch.setattr(settings, "ytdlp_proxies", "1.1.1.1:80:u:p", raising=False)
+
+        assert reddit._proxy() == "http://u:p@1.1.1.1:80"
+
+    def test_an_explicit_reddit_proxy_wins(self, monkeypatch):
+        monkeypatch.setattr(settings, "reddit_proxy", "http://mine:1", raising=False)
+        monkeypatch.setattr(settings, "ytdlp_proxies", "1.1.1.1:80:u:p", raising=False)
+
+        assert reddit._proxy() == "http://mine:1"
+
+    def test_credentials_mean_no_proxy_is_needed(self, monkeypatch):
+        """The OAuth host serves cloud hosts, so spending proxy bandwidth on it
+        would be paying to solve a problem that is already solved."""
+        monkeypatch.setattr(settings, "reddit_proxy", None, raising=False)
+        monkeypatch.setattr(settings, "ytdlp_proxies", "1.1.1.1:80:u:p", raising=False)
+
+        assert reddit._proxy() is None
+
+    def test_no_proxies_configured_is_not_an_error(self, monkeypatch):
+        monkeypatch.setattr(settings, "reddit_client_id", None, raising=False)
+        monkeypatch.setattr(settings, "reddit_client_secret", None, raising=False)
+        monkeypatch.setattr(settings, "reddit_proxy", None, raising=False)
+        monkeypatch.setattr(settings, "ytdlp_proxies", "", raising=False)
+        monkeypatch.setattr(settings, "ytdlp_proxy", None, raising=False)
+
+        assert reddit._proxy() is None
+        assert reddit.make_client() is not None

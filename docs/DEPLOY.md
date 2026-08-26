@@ -434,19 +434,27 @@ search is site-wide, so one keyword reaches every subreddit at once — which
 matters, because the video worth clipping is as likely to be in
 r/Damnthatsinteresting as in the niche subreddit.
 
-**No key is required.** Reddit serves the same listings as JSON to anyone who
-asks with a real user agent, so all the scout needs is:
+**Credentials are required from a cloud host.** Reddit's public JSON endpoint
+answers a laptop happily and refuses datacenter ranges with a 403, exactly as
+YouTube does. The authenticated API does not — it serves cloud hosts — so an
+app is the way through, and it is free.
+
+1. [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → **create another
+   app…** → type **script** → redirect URI `http://localhost:8080`.
+2. The client id is the short string under the app name; the secret is beside
+   it.
 
 ```
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+REDDIT_USER_AGENT=clip-engine/0.1 (by /u/your-username)
 REDDIT_KEYWORDS=metal detecting,magnet fishing,gold prospecting
-REDDIT_USER_AGENT=clip-engine/0.1 (your-reddit-username)
 ```
 
-Credentials are optional and only raise the rate limit, which a handful of
-searches every six hours is nowhere near. If you want them anyway, create a
-**script** app at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps)
-and set `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`; a token that fails to
-issue falls back to the public endpoint rather than failing the scan.
+Without credentials the scout still runs against the public endpoint, which
+works from a laptop and 403s from a server. `REDDIT_PROXY` is the other way
+out if you have a residential proxy, but credentials cost nothing and are the
+supported route.
 
 **What it gives you that YouTube does not:** the comments. A replay curve says
 people rewound to 4:12; a comment thread says *why*. That is a better

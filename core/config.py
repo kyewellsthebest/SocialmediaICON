@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     reddit_min_duration_s: float = 45.0
     reddit_min_upvotes: int = 500
     reddit_time_filter: str = "month"  # hour|day|week|month|year|all
+    # Reddit blocks unauthenticated reads from datacenter ranges. Credentials
+    # are the better answer; this is the fallback, and defaults to reusing
+    # the downloader's proxy pool.
+    reddit_proxy: str | None = None
 
     # yt-dlp. YouTube challenges datacenter IPs, so which player client is
     # used matters, and the set that passes changes every few months -
