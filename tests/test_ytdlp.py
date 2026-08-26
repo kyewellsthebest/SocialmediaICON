@@ -553,3 +553,57 @@ class TestProxyPool:
         with pytest.raises(RuntimeError, match="unavailable"):
             ytdlp.run(call, ytdlp.base_options())
         assert len(calls) == 1
+
+
+class TestGeoBlocking:
+    """ "Not available" is about where the request came from, not the video.
+    Asking four more clients through the same exit gets the same answer."""
+
+    def test_the_curly_apostrophe_youtube_actually_sends_is_matched(self):
+        assert ytdlp.is_geo_blocked(
+            RuntimeError("ERROR: [youtube] Cce_w8qFjoQ: This content isn’t available.")
+        )
+
+    def test_the_plain_apostrophe_works_too(self):
+        assert ytdlp.is_geo_blocked(RuntimeError("This content isn't available."))
+
+    def test_country_blocks_are_recognised(self):
+        assert ytdlp.is_geo_blocked(
+            RuntimeError("The uploader has not made this video available in your country")
+        )
+
+    def test_an_ordinary_dead_video_is_not_mistaken_for_geo(self):
+        assert not ytdlp.is_geo_blocked(RuntimeError("Video unavailable"))
+        assert not ytdlp.is_geo_blocked(RuntimeError("Private video"))
+
+    def test_a_geo_block_changes_country_instead_of_client(self, monkeypatch):
+        monkeypatch.setattr(
+            settings, "ytdlp_proxies", "1.1.1.1:80:a:b,2.2.2.2:80:c:d", raising=False
+        )
+        monkeypatch.setattr(settings, "ytdlp_max_proxies_per_run", 4, raising=False)
+        attempts: list[tuple[str, str]] = []
+
+        def call(options: dict) -> str:
+            proxy = options["proxy"]
+            client = options["extractor_args"]["youtube"]["player_client"][0]
+            attempts.append((proxy, client))
+            if "1.1.1.1" in proxy:
+                raise RuntimeError("This content isn’t available.")
+            return "downloaded"
+
+        assert ytdlp.run(call, ytdlp.base_options()) == "downloaded"
+        # One attempt on the blocked exit, not four.
+        assert len([a for a in attempts if "1.1.1.1" in a[0]]) == 1
+
+    def test_every_exit_blocked_says_region_lock_not_bot_check(self, monkeypatch):
+        monkeypatch.setattr(settings, "ytdlp_proxies", "1.1.1.1:80:a:b", raising=False)
+
+        def call(options: dict) -> str:
+            raise RuntimeError("This content isn’t available.")
+
+        with pytest.raises(ytdlp.BotCheck) as caught:
+            ytdlp.run(call, ytdlp.base_options())
+
+        message = str(caught.value)
+        assert "region locked" in message
+        assert "cookies" not in message.split("]")[1].lower()

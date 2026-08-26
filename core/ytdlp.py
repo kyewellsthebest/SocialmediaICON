@@ -53,6 +53,18 @@ NO_FORMAT_MARKERS = (
     "no formats found",
 )
 
+# Refusals that are about *where the request came from*, not the video and not
+# the client. A different country's exit answers differently, so these move to
+# the next proxy rather than trying more clients through the same one.
+# YouTube writes the apostrophe as U+2019, so match on the halves around it.
+GEO_MARKERS = (
+    "this content isn",
+    "not available in your country",
+    "uploader has not made this video available",
+    "video is unavailable in your",
+    "who has blocked it in your country",
+)
+
 # Other ways a client can fail that say nothing about the video itself.
 # YouTube phrases its refusals differently per client and changes the wording,
 # so this list grows; what they share is that a different client may well
@@ -97,6 +109,12 @@ def is_no_usable_format(error: BaseException) -> bool:
     return any(marker in message for marker in NO_FORMAT_MARKERS)
 
 
+def is_geo_blocked(error: BaseException) -> bool:
+    """The content exists; this exit is in the wrong place to be shown it."""
+    message = str(error).lower()
+    return any(marker in message for marker in GEO_MARKERS)
+
+
 def is_client_failure(error: BaseException) -> bool:
     message = str(error).lower()
     return any(marker in message for marker in CLIENT_FAILURE_MARKERS)
@@ -111,6 +129,11 @@ def is_worth_another_client(error: BaseException) -> bool:
     locked, members only - fails identically on all five and raises at once.
     """
     return is_bot_check(error) or is_no_usable_format(error) or is_client_failure(error)
+
+
+def is_worth_another_proxy(error: BaseException) -> bool:
+    """Whether a different exit might succeed where this one did not."""
+    return is_worth_another_client(error) or is_geo_blocked(error)
 
 
 COOKIE_HEADER = "# Netscape HTTP Cookie File"
@@ -332,6 +355,16 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
             try:
                 return call(attempt)
             except Exception as exc:  # noqa: BLE001 - yt-dlp raises a wide range
+                if is_geo_blocked(exc):
+                    # Every client through this exit will be told the same
+                    # thing, so stop asking and change country.
+                    log.warning(
+                        "proxy %d/%d cannot see this video from where it is",
+                        index + 1,
+                        len(ordered),
+                    )
+                    last = exc
+                    break
                 if not is_worth_another_client(exc):
                     raise
                 if is_bot_check(exc):
@@ -350,6 +383,13 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
         f"({state['cookie_lines']}) "
         f"tried={','.join(tried_clients)}] "
     )
+
+    if last is not None and is_geo_blocked(last):
+        raise BotCheck(
+            prefix + "The video is not available from any exit tried - it is "
+            "region locked. Proxies in the uploader's country would see it; "
+            "these cannot."
+        ) from last
 
     if last is not None and is_no_usable_format(last):
         raise BotCheck(
