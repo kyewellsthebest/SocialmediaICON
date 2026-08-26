@@ -71,6 +71,50 @@ def like_rate(likes: int | None, views: int | None) -> float | None:
     return likes / views
 
 
+def velocity_from_series(
+    series: list[dict[str, Any]],
+    now: datetime | None = None,
+    min_span_h: float = 6.0,
+) -> float | None:
+    """Views per hour measured across a real span of time.
+
+    Comparing the last two readings fails when they are minutes apart - the
+    interval is too short to measure anything, so the caller falls back to the
+    lifetime average, and every video then looks like it is being watched at
+    exactly its usual rate. That is why momentum read 1.0x on everything.
+
+    So this reaches back for the oldest reading at least `min_span_h` old and
+    measures against that instead. Returns None when the history is too short
+    to say anything honest.
+    """
+    if len(series) < 2:
+        return None
+
+    now = now or datetime.now(UTC)
+    points: list[tuple[datetime, int]] = []
+    for point in series:
+        raw = point.get("t")
+        views = point.get("views")
+        if not raw or views is None:
+            continue
+        when = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        points.append((when, int(views)))
+
+    if len(points) < 2:
+        return None
+    points.sort(key=lambda p: p[0])
+    latest_at, latest_views = points[-1]
+
+    # The oldest reading that is far enough back to measure against.
+    for when, views in points:
+        span = (latest_at - when).total_seconds() / 3600
+        if span >= min_span_h:
+            return max((latest_views - views) / span, 0.0)
+    return None
+
+
 def momentum(
     velocity_vph: float | None,
     views: int | None,

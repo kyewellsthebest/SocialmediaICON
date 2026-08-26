@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.db import get_db
 from core.models import TrackedSnapshot, TrackedVideo
-from core.scoring import comment_rate, momentum
+from core.scoring import comment_rate, momentum, velocity_from_series
 
 router = APIRouter(prefix="/trending", tags=["trending"])
 
@@ -37,6 +37,12 @@ def _sparkline(session: Session, video_id: int) -> list[dict[str, Any]]:
 
 
 def _serialise(session: Session, video: TrackedVideo, with_heatmap: bool = False) -> dict[str, Any]:
+    series = _sparkline(session, video.id)
+    # Measured across hours of history rather than between two readings taken
+    # seconds apart, which is what made every video look perfectly average.
+    measured = velocity_from_series(series)
+    velocity = measured if measured is not None else video.velocity_vph
+
     payload: dict[str, Any] = {
         "id": video.id,
         "platform": video.platform,
@@ -50,17 +56,18 @@ def _serialise(session: Session, video: TrackedVideo, with_heatmap: bool = False
         "views": video.views,
         "likes": video.likes,
         "comments": video.comments,
-        "velocity_vph": video.velocity_vph,
+        "velocity_vph": velocity,
+        "velocity_measured": measured is not None,
         "like_rate": video.like_rate,
         "comment_rate": comment_rate(video.comments, video.views),
         # Pace against this video's own average, so a year-old video and a
         # two-day-old one can be compared on the same number.
-        "momentum": momentum(video.velocity_vph, video.views, video.published_at),
+        "momentum": momentum(velocity, video.views, video.published_at),
         "score": video.score,
         "status": video.status,
         "hot_segments": video.hot_segments or [],
         "has_heatmap": bool(video.heatmap),
-        "series": _sparkline(session, video.id),
+        "series": series,
     }
     if with_heatmap:
         payload["heatmap"] = video.heatmap or []

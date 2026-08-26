@@ -367,3 +367,77 @@ class TestScoreCalibration:
 
         published, now = self._pub(5)
         assert score_video(None, None, published, None, now) == 0.0
+
+
+class TestVelocityFromSeries:
+    """Momentum read 1.0x on every video because velocity was the lifetime
+    average, and dividing that by itself is always 1. These pin the fix."""
+
+    def _series(self, points):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 8, 26, 12, tzinfo=UTC)
+        return [{"t": (now - timedelta(hours=h)).isoformat(), "views": v} for h, v in points]
+
+    def test_it_measures_across_the_span_not_between_the_last_two(self):
+        from core.scoring import velocity_from_series
+
+        # Two readings seconds apart at the end; real growth over 24 hours.
+        series = self._series([(24, 100_000), (12, 112_000), (0.01, 124_000), (0, 124_000)])
+
+        assert velocity_from_series(series) == pytest.approx(1000, rel=0.02)
+
+    def test_readings_too_close_together_give_no_answer(self):
+        """Better to say nothing than to report the lifetime average as if it
+        were the current rate."""
+        from core.scoring import velocity_from_series
+
+        series = self._series([(0.5, 100_000), (0.2, 100_050), (0, 100_100)])
+
+        assert velocity_from_series(series) is None
+
+    def test_a_single_reading_gives_no_answer(self):
+        from core.scoring import velocity_from_series
+
+        assert velocity_from_series(self._series([(0, 100_000)])) is None
+        assert velocity_from_series([]) is None
+
+    def test_a_corrected_count_never_reports_negative_growth(self):
+        from core.scoring import velocity_from_series
+
+        series = self._series([(24, 100_500), (0, 100_000)])
+
+        assert velocity_from_series(series) == 0.0
+
+    def test_a_fading_video_now_scores_below_one(self):
+        """The Spider-Man video read 1.0x while actually slowing down."""
+        from datetime import UTC, datetime
+
+        from core.scoring import momentum, velocity_from_series
+
+        series = [
+            {"t": "2026-08-25T08:37:52+00:00", "views": 1463268},
+            {"t": "2026-08-25T20:40:43+00:00", "views": 1486378},
+            {"t": "2026-08-26T11:36:43+00:00", "views": 1507202},
+        ]
+        measured = velocity_from_series(series)
+        value = momentum(
+            measured,
+            1507202,
+            datetime(2026, 8, 8, 14, tzinfo=UTC),
+            datetime(2026, 8, 26, 11, 37, tzinfo=UTC),
+        )
+
+        assert measured == pytest.approx(1628, rel=0.05)
+        assert value < 0.6
+
+    def test_unparseable_points_are_skipped_rather_than_fatal(self):
+        from core.scoring import velocity_from_series
+
+        series = [
+            {"t": None, "views": 5},
+            {"t": "2026-08-25T00:00:00+00:00", "views": 100},
+            {"t": "2026-08-26T00:00:00+00:00", "views": 340},
+        ]
+
+        assert velocity_from_series(series) == pytest.approx(10, rel=0.01)
