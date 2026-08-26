@@ -589,3 +589,176 @@ select { appearance: none; background-image: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Finish pass.
+   The layout was right; what it lacked was depth and any sense of the thing
+   being alive. Everything below is additive — ambient light, edges that catch
+   it, and motion that only ever runs once per element. Nothing here moves on
+   a loop except the two indicators that genuinely mean "working", because a
+   dashboard that never stops animating is exhausting to keep open.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --glow: 42, 120, 214;          /* accent, as RGB parts for alpha mixing */
+  --edge-light: rgba(255, 255, 255, .55);
+  --ambient: radial-gradient(120% 60% at 50% -10%, rgba(42, 120, 214, .07), transparent 70%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --edge-light: rgba(255, 255, 255, .07);
+    --ambient: radial-gradient(120% 60% at 50% -10%, rgba(57, 135, 229, .13), transparent 70%);
+  }
+}
+
+:root[data-theme="dark"] {
+  --edge-light: rgba(255, 255, 255, .07);
+  --ambient: radial-gradient(120% 60% at 50% -10%, rgba(57, 135, 229, .13), transparent 70%);
+}
+
+/* Light pooling at the top of the page, so the header has something to sit in
+   rather than floating on flat colour. Fixed, so scrolling does not drag it. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 420px;
+  background: var(--ambient);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Cards: a lit top edge and a shadow that deepens on hover. The border is the
+   only thing that changes colour, which keeps text contrast constant. */
+.card {
+  position: relative;
+  background-image: linear-gradient(var(--surface), var(--surface));
+  transition: border-color .35s var(--ease), box-shadow .35s var(--ease),
+              transform .35s var(--ease);
+}
+
+.card::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--edge-light) 30%,
+              var(--edge-light) 70%, transparent);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .card:hover {
+    border-color: rgba(var(--glow), .28);
+    box-shadow: var(--shadow-2), 0 0 0 1px rgba(var(--glow), .06),
+                0 12px 40px -20px rgba(var(--glow), .5);
+  }
+}
+
+/* Numbers are the reason anyone opens this. Give them tabular figures so they
+   stop jittering as they update, and a little more presence. */
+.stat-value,
+.kpi-value,
+.big-number {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+
+/* Primary action: a gradient with a soft halo, lifting slightly on hover. */
+.btn-primary {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--s1) 88%, white),
+              var(--s1));
+  box-shadow: 0 1px 2px rgba(11, 11, 11, .18),
+              0 6px 18px -8px rgba(var(--glow), .8);
+}
+
+@media (hover: hover) {
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(11, 11, 11, .2),
+                0 12px 28px -10px rgba(var(--glow), .9);
+  }
+  .btn:not(.btn-primary):hover { border-color: rgba(var(--glow), .35); }
+}
+
+/* Focus has to be visible without being loud — a ring, not a redraw. */
+.btn:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.tabbar a:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px rgba(var(--glow), .55);
+}
+
+/* Rows arrive rather than appear. Staggered by position so a list reads as a
+   sequence; capped at six because beyond that nobody is watching any more. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.list > .item {
+  animation: rise .34s var(--ease) both;
+  transition: border-color .3s var(--ease), background .3s var(--ease);
+}
+
+.list > .item:nth-child(1) { animation-delay: .00s; }
+.list > .item:nth-child(2) { animation-delay: .04s; }
+.list > .item:nth-child(3) { animation-delay: .08s; }
+.list > .item:nth-child(4) { animation-delay: .12s; }
+.list > .item:nth-child(5) { animation-delay: .16s; }
+.list > .item:nth-child(n+6) { animation-delay: .2s; }
+
+@media (hover: hover) {
+  .list > .item:hover {
+    border-color: rgba(var(--glow), .3);
+    background: color-mix(in srgb, var(--surface) 94%, var(--s1));
+  }
+}
+
+/* Status pills carry a matching halo, so state reads at a glance in a long
+   column without relying on the colour alone — the text stays the label. */
+.pill { position: relative; transition: box-shadow .3s var(--ease); }
+.pill-good     { box-shadow: 0 0 0 1px rgba(12, 163, 12, .25), 0 0 14px -6px rgba(12, 163, 12, .8); }
+.pill-warning  { box-shadow: 0 0 0 1px rgba(250, 178, 25, .3), 0 0 14px -6px rgba(250, 178, 25, .8); }
+.pill-critical { box-shadow: 0 0 0 1px rgba(208, 59, 59, .3), 0 0 14px -6px rgba(208, 59, 59, .8); }
+
+/* The active tab gets a lit underline instead of a flat block of colour. */
+.tabbar a[aria-current="page"]::before {
+  box-shadow: 0 0 12px 0 rgba(var(--glow), .9);
+}
+
+/* Two things are allowed to loop, because both mean "still working": the
+   progress bar at the top and the skeletons while data is in flight. */
+#progress:not([hidden])::after {
+  box-shadow: 0 0 12px 1px rgba(var(--glow), .7);
+}
+
+@keyframes sheen {
+  from { background-position: -160% 0; }
+  to   { background-position: 260% 0; }
+}
+
+.skel {
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 40%,
+              var(--surface-2) 80%);
+  background-size: 220% 100%;
+  animation: sheen 1.5s linear infinite;
+}
+
+/* Momentum reads as a temperature, not a number: rising, steady or fading. */
+.momentum { font-variant-numeric: tabular-nums; font-weight: 600; }
+.momentum-rising { color: var(--good); }
+.momentum-steady { color: var(--ink-2); }
+.momentum-fading { color: var(--muted); }
+
+/* Anyone who has asked their system for less motion gets none of it. The
+   layout is unchanged; only the movement goes. */
+@media (prefers-reduced-motion: reduce) {
+  .list > .item { animation: none; }
+  .skel { animation: none; }
+  .card, .btn-primary, .list > .item { transition: none; }
+  .btn-primary:hover, .card:hover { transform: none; }
+}

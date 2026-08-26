@@ -581,6 +581,9 @@ class TestGeoBlocking:
             settings, "ytdlp_proxies", "1.1.1.1:80:a:b,2.2.2.2:80:c:d", raising=False
         )
         monkeypatch.setattr(settings, "ytdlp_max_proxies_per_run", 4, raising=False)
+        # The starting proxy advances with the clock; pin it so the assertion
+        # is about the fallback and not about what time the suite ran.
+        monkeypatch.setattr(ytdlp.time, "time", lambda: 0.0)
         attempts: list[tuple[str, str]] = []
 
         def call(options: dict) -> str:

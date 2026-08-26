@@ -71,6 +71,32 @@ def like_rate(likes: int | None, views: int | None) -> float | None:
     return likes / views
 
 
+def momentum(
+    velocity_vph: float | None,
+    views: int | None,
+    published_at: datetime | None,
+    now: datetime | None = None,
+) -> float | None:
+    """Current pace against this video's own lifetime average.
+
+    Raw views-per-hour cannot be compared between videos: 200/hour is dying
+    for something a day old and remarkable for something a year old. Dividing
+    by the video's own average normalises that away.
+
+    1.0 means it is being watched at exactly its usual rate. Above 1.5 it is
+    accelerating - something has picked it up again. Below 0.5 it is fading.
+    """
+    if not velocity_vph or not views:
+        return None
+    age_h = hours_since(published_at, now)
+    if not age_h or age_h <= 0:
+        return None
+    lifetime_average = views / age_h
+    if lifetime_average <= 0:
+        return None
+    return velocity_vph / lifetime_average
+
+
 def comment_rate(comments: int | None, views: int | None) -> float | None:
     """Comments per view.
 

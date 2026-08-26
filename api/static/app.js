@@ -59,6 +59,15 @@ function toast(message, kind = "") {
 
 /* ---------- api ---------- */
 
+// Momentum is pace against the video's own average, so it means the same
+// thing at any age or size: above 1 it is speeding up, below 1 it is fading.
+function momentum(value) {
+  if (value === null || value === undefined) return "—";
+  const band = value >= 1.5 ? "rising" : value >= 0.7 ? "steady" : "fading";
+  const arrow = band === "rising" ? "↑" : band === "fading" ? "↓" : "→";
+  return `<span class="momentum momentum-${band}">${arrow} ${value.toFixed(1)}×</span>`;
+}
+
 async function api(path, options = {}) {
   state.inflight++;
   $("#progress").hidden = false;
@@ -257,7 +266,9 @@ function trendingItem(v) {
     <div class="stats">
       <div class="stat"><span class="k">Views</span><span class="v">${fmt(v.views)}</span></div>
       <div class="stat"><span class="k">Views/hr</span><span class="v">${fmt(v.velocity_vph)}</span></div>
+      <div class="stat"><span class="k">Momentum</span><span class="v">${momentum(v.momentum)}</span></div>
       <div class="stat"><span class="k">Like rate</span><span class="v">${pct(v.like_rate)}</span></div>
+      <div class="stat"><span class="k">Comment rate</span><span class="v">${pct(v.comment_rate)}</span></div>
     </div>
     <div class="row" style="gap:10px">
       <div style="flex:1 1 130px;min-width:0">${v.has_heatmap

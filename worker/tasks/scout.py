@@ -116,6 +116,7 @@ def scout(
                 region_code=settings.scout_region,
                 video_duration=settings.scout_video_duration,
                 relevance_language=settings.scout_language or None,
+                published_within_days=settings.scout_max_age_days,
             )
         except youtube.QuotaExceeded as exc:
             log.warning("stopping scout: %s", exc)

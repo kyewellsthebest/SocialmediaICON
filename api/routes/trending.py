@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.db import get_db
 from core.models import TrackedSnapshot, TrackedVideo
+from core.scoring import comment_rate, momentum
 
 router = APIRouter(prefix="/trending", tags=["trending"])
 
@@ -51,6 +52,10 @@ def _serialise(session: Session, video: TrackedVideo, with_heatmap: bool = False
         "comments": video.comments,
         "velocity_vph": video.velocity_vph,
         "like_rate": video.like_rate,
+        "comment_rate": comment_rate(video.comments, video.views),
+        # Pace against this video's own average, so a year-old video and a
+        # two-day-old one can be compared on the same number.
+        "momentum": momentum(video.velocity_vph, video.views, video.published_at),
         "score": video.score,
         "status": video.status,
         "hot_segments": video.hot_segments or [],

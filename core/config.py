@@ -137,6 +137,10 @@ class Settings(BaseSettings):
     # captioned into something they will watch.
     scout_min_views: int = 100_000
     scout_language: str = "en"  # blank to accept any language
+    # How far back to look. Wider than the view floor suggests, because a
+    # six-month-old video with a strong replay peak is better clip material
+    # than a fresh one with none - the peak is what gets cut, not the date.
+    scout_max_age_days: int = 180
 
     metrics_interval_minutes: int = 60
     autopost_enabled: bool = False

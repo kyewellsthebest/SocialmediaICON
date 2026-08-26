@@ -243,3 +243,55 @@ class TestQualityGate:
         monkeypatch.setattr(settings, "scout_min_views", 100_000, raising=False)
 
         assert wanted(self._row(views=None))
+
+
+class TestMomentum:
+    """Raw views-per-hour cannot be compared between videos of different ages."""
+
+    def _at(self, days_old):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 8, 26, tzinfo=UTC)
+        return now - timedelta(days=days_old), now
+
+    def test_steady_viewing_scores_about_one(self):
+        from core.scoring import momentum
+
+        published, now = self._at(30)
+        # 100k views over 720 hours is ~139/hour; watching at that rate now.
+        assert momentum(138.9, 100_000, published, now) == pytest.approx(1.0, abs=0.01)
+
+    def test_a_video_picking_up_again_scores_above_one(self):
+        from core.scoring import momentum
+
+        published, now = self._at(180)
+        # 500k over ~4320h is ~116/hour lifetime; currently doing 400.
+        assert momentum(400.0, 500_000, published, now) > 3
+
+    def test_a_faded_video_scores_below_one(self):
+        from core.scoring import momentum
+
+        published, now = self._at(7)
+        assert momentum(50.0, 100_000, published, now) < 0.2
+
+    def test_an_old_slow_video_and_a_new_fast_one_are_comparable(self):
+        """The point of the metric: same number, same meaning, any age."""
+        from core.scoring import momentum
+
+        old_published, now = self._at(365)
+        new_published, _ = self._at(2)
+
+        old = momentum(200.0, 1_000_000, old_published, now)
+        new = momentum(2000.0, 100_000, new_published, now)
+
+        assert old == pytest.approx(1.75, abs=0.05)
+        assert new == pytest.approx(0.96, abs=0.05)
+        assert old > new  # the year-old video is the one accelerating
+
+    def test_missing_pieces_give_no_answer_rather_than_a_wrong_one(self):
+        from core.scoring import momentum
+
+        published, now = self._at(30)
+        assert momentum(None, 100_000, published, now) is None
+        assert momentum(100.0, None, published, now) is None
+        assert momentum(100.0, 100_000, None, now) is None
