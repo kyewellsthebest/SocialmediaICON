@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     # trend scouting
     youtube_api_key: str | None = None
 
+    # Reddit. Free, answers from a datacenter, and its search is site-wide -
+    # one query reaches every subreddit rather than one at a time.
+    reddit_client_id: str | None = None
+    reddit_client_secret: str | None = None
+    reddit_user_agent: str = "clip-engine/0.1 (scout)"
+    reddit_keywords: str = ""  # comma separated; blank reuses SCOUT_KEYWORDS
+    # A 20-second clip of an already-short clip is not worth a render.
+    reddit_min_duration_s: float = 45.0
+    reddit_min_upvotes: int = 500
+    reddit_time_filter: str = "month"  # hour|day|week|month|year|all
+
     # yt-dlp. YouTube challenges datacenter IPs, so which player client is
     # used matters, and the set that passes changes every few months -
     # hence a list to try in order rather than a value in the code.
@@ -229,6 +240,15 @@ class Settings(BaseSettings):
         return bool(
             self.meta_access_token or self.instagram_access_token or self.threads_access_token
         )
+
+    @property
+    def has_reddit(self) -> bool:
+        return bool(self.reddit_client_id and self.reddit_client_secret)
+
+    @property
+    def reddit_search_terms(self) -> list[str]:
+        raw = self.reddit_keywords or self.scout_keywords
+        return [k.strip() for k in raw.split(",") if k.strip()]
 
     @property
     def has_youtube_read(self) -> bool:

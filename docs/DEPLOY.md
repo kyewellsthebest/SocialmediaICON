@@ -425,3 +425,35 @@ line is metered.
 
 `--once` does a single pass and exits, which is what you want from a scheduled
 task rather than a terminal left open.
+
+
+## Reddit as a source
+
+Reddit answers from a datacenter: no proxy, no cookies, no bot check. Its
+search is site-wide, so one keyword reaches every subreddit at once — which
+matters, because the video worth clipping is as likely to be in
+r/Damnthatsinteresting as in the niche subreddit.
+
+1. Go to [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → **create
+   another app…** → type **script** → redirect URI `http://localhost:8080`.
+2. Copy the id under the app name and the secret beside it:
+
+```
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+REDDIT_USER_AGENT=clip-engine/0.1 (your-reddit-username)
+```
+
+Free, no review, no approval, takes two minutes.
+
+**What it gives you that YouTube does not:** the comments. A replay curve says
+people rewound to 4:12; a comment thread says *why*. That is a better
+instruction for where to cut.
+
+**What it does not give you:** view counts. Ranking runs on upvote pace,
+upvote ratio and comments-per-upvote — the last being the useful one, since a
+post people argued about has a moment in it and a post they merely approved of
+often does not.
+
+Only native `v.redd.it` video is tracked. Crossposts to YouTube are skipped,
+since downloading those runs into the block this exists to avoid.

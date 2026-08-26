@@ -41,6 +41,7 @@ def _jobs() -> list[Job]:
     from worker.tasks.publish import autopost
     from worker.tasks.refresh_tokens import run as refresh_tokens
     from worker.tasks.scout import run as scout_run
+    from worker.tasks.scout_reddit import run as scout_reddit
 
     return [
         Job(
@@ -49,6 +50,13 @@ def _jobs() -> list[Job]:
             every_minutes=settings.scout_interval_minutes,
             func=scout_run,
             enabled=settings.scout_enabled and settings.has_youtube_read,
+        ),
+        Job(
+            name="scout_reddit",
+            queue="metrics",
+            every_minutes=settings.scout_interval_minutes,
+            func=scout_reddit,
+            enabled=settings.scout_enabled and settings.has_reddit,
         ),
         Job(
             name="metrics",

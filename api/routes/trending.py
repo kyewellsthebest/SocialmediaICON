@@ -131,16 +131,40 @@ def ignore_trending(video_id: int, db: Session = Depends(get_db)) -> dict[str, A
 
 
 @router.post("/scan")
-def scan_now() -> dict[str, Any]:
-    """Kick a scout run by hand instead of waiting for the schedule."""
+def scan_now(source: str = "all") -> dict[str, Any]:
+    """Kick a scout run by hand instead of waiting for the schedule.
+
+    `source` is all, youtube or reddit. Whichever platforms are configured run;
+    a missing key skips that platform rather than failing the whole scan, so
+    one working source is enough to get results.
+    """
     from core.config import settings
     from worker.queue import enqueue
     from worker.tasks.scout import run as scout_run
+    from worker.tasks.scout_reddit import run as reddit_run
 
-    if not settings.has_youtube_read:
-        raise HTTPException(422, "YOUTUBE_API_KEY is not set")
-    job = enqueue("metrics", scout_run)
-    if job is None:  # no Redis configured - run it here
-        found = scout_run()
-        return {"queued": False, "discovered": found}
-    return {"queued": True, "job_id": job.id}
+    wanted = source.strip().lower()
+    runs: list[tuple[str, Any]] = []
+    if wanted in ("all", "youtube") and settings.has_youtube_read:
+        runs.append(("youtube", scout_run))
+    if wanted in ("all", "reddit") and settings.has_reddit:
+        runs.append(("reddit", reddit_run))
+
+    if not runs:
+        raise HTTPException(
+            422,
+            "No scout source is configured. Set YOUTUBE_API_KEY, or "
+            "REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET.",
+        )
+
+    queued, discovered = [], 0
+    for name, func in runs:
+        job = enqueue("metrics", func)
+        if job is None:  # no Redis configured - run it here
+            discovered += func()
+        else:
+            queued.append(name)
+
+    if queued:
+        return {"queued": True, "sources": queued}
+    return {"queued": False, "discovered": discovered}
