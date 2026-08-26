@@ -14,6 +14,7 @@ from scripts.local_agent import Agent
 
 
 def _agent(handler, **kw) -> Agent:
+    kw.setdefault("min_gap_s", 0)
     agent = Agent("https://example.invalid", "tok", 1080, keep=False, **kw)
     agent.client = httpx.Client(
         transport=httpx.MockTransport(handler), headers={"X-Dashboard-Token": "tok"}
@@ -119,3 +120,70 @@ def test_stopping_mid_batch_leaves_the_rest_queued(monkeypatch, tmp_path):
     agent.tick()
 
     assert seen == [1]  # the second is left for the next run
+
+
+class TestPacing:
+    """The connection is shared with the rest of the house, so the traffic
+    should look like someone watching videos, not like a scraper."""
+
+    def _idle(self, handler):
+        return _agent(handler)
+
+    def test_a_gap_is_left_between_downloads(self):
+        slept: list[float] = []
+        agent = _agent(lambda r: httpx.Response(200, json=[]), min_gap_s=90)
+        agent.finished_at = [__import__("time").monotonic()]
+
+        assert agent.wait_for_slot(sleep=slept.append) is True
+        assert slept and 85 <= slept[0] <= 90
+
+    def test_no_wait_when_nothing_has_run_yet(self):
+        slept: list[float] = []
+        agent = _agent(lambda r: httpx.Response(200, json=[]), min_gap_s=90)
+
+        assert agent.wait_for_slot(sleep=slept.append) is True
+        assert slept == []
+
+    def test_the_hourly_cap_stops_the_batch_rather_than_stalling_it(self):
+        import time as _t
+
+        agent = _agent(lambda r: httpx.Response(200, json=[]), max_per_hour=3)
+        agent.finished_at = [_t.monotonic()] * 3
+
+        assert agent.wait_for_slot(sleep=lambda s: None) is False
+
+    def test_old_downloads_fall_out_of_the_hour(self):
+        import time as _t
+
+        agent = _agent(lambda r: httpx.Response(200, json=[]), max_per_hour=2)
+        agent.finished_at = [_t.monotonic() - 4000, _t.monotonic() - 3700]
+
+        assert agent.wait_for_slot(sleep=lambda s: None) is True
+
+    def test_hitting_the_cap_mid_batch_leaves_the_rest_queued(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {"id": i, "url": f"https://youtu.be/{i}", "kind": "youtube"}
+                        for i in (1, 2, 3)
+                    ],
+                )
+            return httpx.Response(200, json={})
+
+        agent = _agent(handler, max_per_hour=1)
+        seen: list[int] = []
+        monkeypatch.setattr(agent, "handle", lambda s: seen.append(s["id"]))
+        # handle() is stubbed, so record the completion the real one would.
+        original = agent.handle
+
+        def handle_and_record(source):
+            original(source)
+            agent.finished_at.append(__import__("time").monotonic())
+
+        monkeypatch.setattr(agent, "handle", handle_and_record)
+
+        agent.tick()
+
+        assert seen == [1]

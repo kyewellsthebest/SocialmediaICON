@@ -402,5 +402,18 @@ Cost: nothing. Limitation: downloads only happen while it is running, so the
 pipeline is as continuous as your computer is. Everything downstream stays 24/7
 — a source fetched at midnight is still rendered and posted on schedule.
 
+**What it does to your connection.** It uses your home internet exactly as your
+browser does, and signs in to nothing — downloads are anonymous, so there is no
+account to lose. It paces itself: 90 seconds between downloads and at most 12 an
+hour by default, which is fewer videos than a person watching casually. Adjust
+with `--min-gap` and `--max-per-hour`.
+
+The realistic worst case is YouTube briefly rate-limiting the connection, which
+would show as a captcha on Google searches for anyone in the building and clears
+by itself within hours. Nothing is permanent, nothing is billed, and no
+household device is affected beyond that. Bandwidth is the one real cost:
+roughly 300 MB per source at 1080p, so `INGEST_MAX_HEIGHT=720` halves it if the
+line is metered.
+
 `--once` does a single pass and exits, which is what you want from a scheduled
 task rather than a terminal left open.
