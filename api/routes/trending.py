@@ -117,6 +117,17 @@ def drop_below_bar(db: Session = Depends(get_db)) -> dict[str, int]:
     return {"deleted": removed}
 
 
+@router.delete("/platform/{name}")
+def drop_platform(name: str, db: Session = Depends(get_db)) -> dict[str, int]:
+    """Remove every tracked video from one platform.
+
+    Turning a source off stops new videos arriving but leaves the old ones in
+    the table, where they go stale and crowd out the source you switched to.
+    """
+    removed = db.query(TrackedVideo).filter(TrackedVideo.platform == name).delete()
+    return {"deleted": removed, "platform": name}
+
+
 @router.post("/{video_id}/clip")
 def clip_trending(
     video_id: int, payload: ClipRequest, db: Session = Depends(get_db)
@@ -155,16 +166,16 @@ def scan_now(source: str = "all") -> dict[str, Any]:
 
     wanted = source.strip().lower()
     runs: list[tuple[str, Any]] = []
-    if wanted in ("all", "youtube") and settings.has_youtube_read:
+    if wanted in ("all", "youtube") and settings.scouts("youtube") and settings.has_youtube_read:
         runs.append(("youtube", scout_run))
-    if wanted in ("all", "reddit") and settings.reddit_search_terms:
+    if wanted in ("all", "reddit") and settings.scouts("reddit") and settings.reddit_search_terms:
         runs.append(("reddit", reddit_run))
 
     if not runs:
         raise HTTPException(
             422,
-            "No scout source is configured. Set YOUTUBE_API_KEY, or set "
-            "REDDIT_KEYWORDS (Reddit needs no key).",
+            f"No scout source is available. SCOUT_SOURCES is {settings.scout_sources!r}; "
+            "youtube also needs YOUTUBE_API_KEY, reddit needs REDDIT_KEYWORDS.",
         )
 
     queued, discovered = [], 0

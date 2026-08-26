@@ -137,6 +137,9 @@ class Settings(BaseSettings):
 
     # automation cadence
     scout_enabled: bool = True
+    # Which platforms the scout draws from. Comma separated; a platform
+    # left out is never searched, whatever keys are configured.
+    scout_sources: str = "youtube,reddit"
     scout_interval_minutes: int = 360  # every 6h - hourly is a waste of quota
     scout_keywords: str = ""  # comma separated, per niche
     scout_region: str | None = None
@@ -240,6 +243,14 @@ class Settings(BaseSettings):
         return bool(
             self.meta_access_token or self.instagram_access_token or self.threads_access_token
         )
+
+    @property
+    def sources(self) -> list[str]:
+        return [s.strip().lower() for s in self.scout_sources.split(",") if s.strip()]
+
+    def scouts(self, name: str) -> bool:
+        """Whether `name` is a source this deployment draws from."""
+        return name.lower() in self.sources
 
     @property
     def has_reddit(self) -> bool:

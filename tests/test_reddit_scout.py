@@ -255,3 +255,46 @@ def test_the_trending_row_says_which_platform_it_came_from():
         assert "platform" in inspect.getsource(trending)
     else:
         assert payload["platform"] == "reddit"
+
+
+class TestScoutSources:
+    """Switching a source off must actually stop it, whatever keys are set."""
+
+    def test_a_platform_left_out_is_not_scouted(self, monkeypatch):
+        monkeypatch.setattr(settings, "scout_sources", "reddit", raising=False)
+
+        assert settings.scouts("reddit") is True
+        assert settings.scouts("youtube") is False
+
+    def test_whitespace_and_case_do_not_matter(self, monkeypatch):
+        monkeypatch.setattr(settings, "scout_sources", " Reddit , YouTube ", raising=False)
+
+        assert settings.scouts("reddit") is True
+        assert settings.scouts("youtube") is True
+
+    def test_an_empty_setting_scouts_nothing(self, monkeypatch):
+        monkeypatch.setattr(settings, "scout_sources", "", raising=False)
+
+        assert settings.sources == []
+        assert settings.scouts("reddit") is False
+
+    def test_scan_refuses_clearly_when_the_only_source_is_off(self, monkeypatch):
+        from fastapi import HTTPException
+
+        import api.routes.trending as trending
+
+        monkeypatch.setattr(settings, "scout_sources", "reddit", raising=False)
+        monkeypatch.setattr(settings, "reddit_keywords", "", raising=False)
+        monkeypatch.setattr(settings, "scout_keywords", "", raising=False)
+
+        with pytest.raises(HTTPException) as caught:
+            trending.scan_now()
+
+        assert "SCOUT_SOURCES" in caught.value.detail
+        assert "REDDIT_KEYWORDS" in caught.value.detail
+
+    def test_youtube_stays_off_even_with_a_key(self, monkeypatch):
+        monkeypatch.setattr(settings, "scout_sources", "reddit", raising=False)
+        monkeypatch.setattr(settings, "youtube_api_key", "a-real-key", raising=False)
+
+        assert settings.scouts("youtube") is False

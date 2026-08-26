@@ -531,6 +531,13 @@ document.addEventListener("click", async (event) => {
     }
     if (t.id === "gate-go") return unlock();
 
+    if (t.classList.contains("js-drop-platform")) {
+      const name = t.dataset.platform;
+      const r = await withBusy(t, () => api(`/trending/platform/${name}`, { method: "DELETE" }));
+      toast(r.deleted ? `Removed ${r.deleted} ${name} videos.` : `Nothing from ${name} to remove.`);
+      return renderTrending();
+    }
+
     if (t.id === "trend-tidy") {
       const r = await withBusy(t, () => api("/trending/below-bar", { method: "DELETE" }));
       toast(r.deleted ? `Removed ${r.deleted} below the bar.` : "Everything tracked passes the current filters.");

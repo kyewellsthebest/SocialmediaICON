@@ -49,7 +49,9 @@ def _jobs() -> list[Job]:
             queue="metrics",
             every_minutes=settings.scout_interval_minutes,
             func=scout_run,
-            enabled=settings.scout_enabled and settings.has_youtube_read,
+            enabled=(
+                settings.scout_enabled and settings.scouts("youtube") and settings.has_youtube_read
+            ),
         ),
         Job(
             name="scout_reddit",
@@ -57,7 +59,11 @@ def _jobs() -> list[Job]:
             every_minutes=settings.scout_interval_minutes,
             func=scout_reddit,
             # No credentials needed: the public endpoint answers without an app.
-            enabled=settings.scout_enabled and bool(settings.reddit_search_terms),
+            enabled=(
+                settings.scout_enabled
+                and settings.scouts("reddit")
+                and bool(settings.reddit_search_terms)
+            ),
         ),
         Job(
             name="metrics",
