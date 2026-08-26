@@ -65,7 +65,7 @@ def test_the_failure_says_what_this_worker_actually_had(monkeypatch):
     message = str(caught.value)
     assert "cookies=yes(2)" in message
     assert "tried=web,tv,web_safari" in message
-    assert message.startswith("[proxy=YES")
+    assert message.startswith("[proxies=1of1")
 
 
 def test_the_failure_calls_out_missing_cookies_loudly():
@@ -76,7 +76,7 @@ def test_the_failure_calls_out_missing_cookies_loudly():
         ytdlp.run(call, ytdlp.base_options())
 
     assert "cookies=NO" in str(caught.value)
-    assert str(caught.value).startswith("[proxy=NO")
+    assert str(caught.value).startswith("[proxies=1of1")
 
 
 def test_a_real_error_is_raised_at_once_not_retried():
@@ -377,7 +377,7 @@ def test_cookies_working_but_ip_blocked_names_the_real_fork(monkeypatch):
         ytdlp.run(call, ytdlp.base_options())
 
     message = str(caught.value)
-    assert message.startswith("[proxy=NO cookies=yes")
+    assert message.startswith("[proxies=1of1 cookies=yes")
     assert "residential proxy" in message
 
 
@@ -457,3 +457,99 @@ def test_missing_pot_formats_are_off_by_default():
     ytdlp.run(call, ytdlp.base_options())
 
     assert "formats" not in seen[0]
+
+
+class TestProxyPool:
+    """Proxies are sold in blocks and shared, so one being burned says nothing
+    about the next. Testing one and concluding is how a paid block gets wasted."""
+
+    def test_a_dashboard_export_line_is_understood(self, monkeypatch):
+        monkeypatch.setattr(
+            settings, "ytdlp_proxies", "31.59.20.176:6754:bob:secret", raising=False
+        )
+
+        assert ytdlp.proxies() == ["http://bob:secret@31.59.20.176:6754"]
+
+    def test_full_urls_pass_through_untouched(self, monkeypatch):
+        monkeypatch.setattr(
+            settings, "ytdlp_proxies", "http://u:p@host:1, socks5://other:2", raising=False
+        )
+
+        assert ytdlp.proxies() == ["http://u:p@host:1", "socks5://other:2"]
+
+    def test_newlines_separate_as_well_as_commas(self, monkeypatch):
+        monkeypatch.setattr(
+            settings, "ytdlp_proxies", "1.1.1.1:80:a:b\n2.2.2.2:81:c:d\n", raising=False
+        )
+
+        assert len(ytdlp.proxies()) == 2
+
+    def test_an_unreadable_line_is_skipped_not_fatal(self, monkeypatch):
+        monkeypatch.setattr(
+            settings, "ytdlp_proxies", "1.1.1.1:80:a:b, total nonsense", raising=False
+        )
+
+        assert ytdlp.proxies() == ["http://a:b@1.1.1.1:80"]
+
+    def test_the_single_proxy_setting_still_works(self, monkeypatch):
+        monkeypatch.setattr(settings, "ytdlp_proxies", None, raising=False)
+        monkeypatch.setattr(settings, "ytdlp_proxy", "http://solo:1", raising=False)
+
+        assert ytdlp.proxies() == ["http://solo:1"]
+
+    def test_a_burned_proxy_moves_on_to_the_next(self, monkeypatch):
+        monkeypatch.setattr(
+            settings, "ytdlp_proxies", "1.1.1.1:80:a:b,2.2.2.2:80:c:d", raising=False
+        )
+        monkeypatch.setattr(settings, "ytdlp_max_proxies_per_run", 4, raising=False)
+        seen: list[str] = []
+
+        def call(options: dict) -> str:
+            seen.append(options["proxy"])
+            if "1.1.1.1" in options["proxy"]:
+                raise _bot_check()
+            return "downloaded"
+
+        assert ytdlp.run(call, ytdlp.base_options()) == "downloaded"
+        assert "2.2.2.2" in seen[-1]
+
+    def test_only_the_budgeted_number_of_proxies_is_tried(self, monkeypatch):
+        pool = ",".join(f"10.0.0.{i}:80:u:p" for i in range(1, 11))
+        monkeypatch.setattr(settings, "ytdlp_proxies", pool, raising=False)
+        monkeypatch.setattr(settings, "ytdlp_max_proxies_per_run", 3, raising=False)
+        used: set[str] = set()
+
+        def call(options: dict) -> str:
+            used.add(options["proxy"])
+            raise _bot_check()
+
+        with pytest.raises(ytdlp.BotCheck) as caught:
+            ytdlp.run(call, ytdlp.base_options())
+
+        assert len(used) == 3
+        assert "3 of your 10 proxies" in str(caught.value)
+        assert "untried" in str(caught.value)
+
+    def test_the_whole_pool_being_refused_reads_differently(self, monkeypatch):
+        monkeypatch.setattr(settings, "ytdlp_proxies", "1.1.1.1:80:a:b", raising=False)
+
+        def call(options: dict) -> str:
+            raise _bot_check()
+
+        with pytest.raises(ytdlp.BotCheck) as caught:
+            ytdlp.run(call, ytdlp.base_options())
+
+        assert "untried" not in str(caught.value)
+
+    def test_a_real_error_still_raises_without_burning_the_pool(self, monkeypatch):
+        pool = ",".join(f"10.0.0.{i}:80:u:p" for i in range(1, 6))
+        monkeypatch.setattr(settings, "ytdlp_proxies", pool, raising=False)
+        calls: list[str] = []
+
+        def call(options: dict) -> str:
+            calls.append("x")
+            raise RuntimeError("Video unavailable")
+
+        with pytest.raises(RuntimeError, match="unavailable"):
+            ytdlp.run(call, ytdlp.base_options())
+        assert len(calls) == 1

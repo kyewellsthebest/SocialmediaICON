@@ -345,7 +345,7 @@ Three fixes, cheapest first:
 |---|---|---|
 | `YTDLP_PLAYER_CLIENTS` — reorder the list | free | sometimes, and it changes every few months |
 | `YTDLP_COOKIES` — a logged-in session | free | usually |
-| `YTDLP_PROXY` — a residential proxy | ~$5–15/mo | always |
+| `YTDLP_PROXIES` — a block of residential proxies | ~$6/mo for 20 | often, if any in the block are unburned |
 
 The pipeline already walks the client list on every download, so a challenge on
 one client falls through to the next before anything fails.
@@ -367,6 +367,14 @@ directly: save it however you like and upload it. Everything downstream -
 transcription, segment detection, ranking, rendering - is identical, and no
 part of it depends on a platform's goodwill. Cheap proxies get flagged for
 YouTube specifically, so this is often the shortest path to a finished clip.
+
+**Use the whole block, not one IP.** Providers sell proxies in blocks and
+those IPs are shared with their other customers, so they are not equally
+burned — one being challenged says nothing about the next. Paste the provider's
+whole exported list into `YTDLP_PROXIES` (the `ip:port:user:pass` lines work
+as-is) and each download walks through them until one is served. Testing a
+single IP and concluding the provider is useless is how a paid block gets
+written off.
 
 **The fix that removes the problem rather than working around it** is not
 downloading from YouTube at all. Source footage from a clipping campaign comes

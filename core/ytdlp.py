@@ -26,6 +26,7 @@ import base64
 import binascii
 import logging
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -219,7 +220,8 @@ def describe() -> dict[str, Any]:
         "cookies_loaded": bool(path),
         "cookie_lines": lines,
         "player_clients": player_clients(),
-        "proxy_set": bool(settings.ytdlp_proxy),
+        "proxy_set": proxies() != [None],
+        "proxy_count": len([p for p in proxies() if p]),
     }
 
 
@@ -233,10 +235,43 @@ def base_options(**overrides: Any) -> dict[str, Any]:
     }
     if cookies := cookiefile():
         options["cookiefile"] = cookies
-    if settings.ytdlp_proxy:
-        options["proxy"] = settings.ytdlp_proxy
+    first = proxies()[0]
+    if first:
+        options["proxy"] = first
     options.update(overrides)
     return options
+
+
+def _as_proxy_url(entry: str) -> str | None:
+    """Accept either a proxy URL or the ip:port:user:pass line dashboards export.
+
+    Webshare and friends hand you a downloadable list in the second form, and
+    retyping twenty of them into URLs is exactly the kind of transcription
+    people get wrong once and then debug for an hour.
+    """
+    entry = entry.strip()
+    if not entry:
+        return None
+    if "://" in entry:
+        return entry
+    parts = entry.split(":")
+    if len(parts) == 4:
+        host, port, user, password = parts
+        return f"http://{user}:{password}@{host}:{port}"
+    if len(parts) == 2:
+        return f"http://{entry}"
+    log.warning("could not read proxy entry %r, skipping it", entry)
+    return None
+
+
+def proxies() -> list[str | None]:
+    """Every proxy to try, in order. `[None]` means a direct connection."""
+    raw = settings.ytdlp_proxies or ""
+    entries = [e for chunk in raw.split("\n") for e in chunk.split(",")]
+    found = [url for url in (_as_proxy_url(e) for e in entries) if url]
+    if not found and settings.ytdlp_proxy:
+        found = [settings.ytdlp_proxy]
+    return found or [None]
 
 
 def player_clients() -> list[str]:
@@ -254,50 +289,66 @@ def player_clients() -> list[str]:
 
 
 def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
-    """Run `call` against each player client until one works.
+    """Run `call` against each proxy and player client until one works.
 
-    A bot check on one client says nothing about the next, so the list is worth
-    walking. Any other error is real and raised immediately - retrying a 404
-    four times just makes the log longer.
+    Two dimensions, because two different things get refused: an address the
+    platform distrusts, and a client it will not serve. Proxies are the outer
+    loop - a burned IP fails on every client, so moving on beats exhausting the
+    clients against an address that will never answer.
+
+    The starting proxy walks with the clock, so runs do not all begin on the
+    same address and wear it out while the rest sit idle.
     """
-    clients = player_clients()
-    if not clients:
-        return call(options)
+    clients = player_clients() or [None]
+    pool = proxies()
+    budget = max(1, settings.ytdlp_max_proxies_per_run)
+    start = int(time.time() // 600) % len(pool) if len(pool) > 1 else 0
+    ordered = [pool[(start + i) % len(pool)] for i in range(len(pool))][:budget]
 
     last: BaseException | None = None
-    for client in clients:
-        attempt = dict(options)
-        extractor_args = dict(attempt.get("extractor_args") or {})
-        youtube_args = {
-            **extractor_args.get("youtube", {}),
-            "player_client": [client],
-        }
-        if settings.ytdlp_allow_missing_pot:
-            youtube_args.setdefault("formats", ["missing_pot"])
-        extractor_args["youtube"] = youtube_args
-        attempt["extractor_args"] = extractor_args
-        try:
-            return call(attempt)
-        except Exception as exc:  # noqa: BLE001 - yt-dlp raises a wide range
-            if not is_worth_another_client(exc):
-                raise
-            if is_bot_check(exc):
-                reason = "was challenged"
-            elif is_no_usable_format(exc):
-                reason = "offered no usable format"
-            else:
-                reason = f"failed with {str(exc).strip()[:80]!r}"
-            log.warning("player client %r %s, trying the next", client, reason)
-            last = exc
+    tried_clients: list[str] = []
 
-    # The state goes first: dashboards truncate long errors, and the half that
-    # says what this worker had is the half worth keeping.
+    for index, proxy in enumerate(ordered):
+        for client in clients:
+            attempt = dict(options)
+            if proxy:
+                attempt["proxy"] = proxy
+            elif "proxy" in attempt:
+                del attempt["proxy"]
+
+            if client:
+                extractor_args = dict(attempt.get("extractor_args") or {})
+                youtube_args = {
+                    **extractor_args.get("youtube", {}),
+                    "player_client": [client],
+                }
+                if settings.ytdlp_allow_missing_pot:
+                    youtube_args.setdefault("formats", ["missing_pot"])
+                extractor_args["youtube"] = youtube_args
+                attempt["extractor_args"] = extractor_args
+                if client not in tried_clients:
+                    tried_clients.append(client)
+
+            try:
+                return call(attempt)
+            except Exception as exc:  # noqa: BLE001 - yt-dlp raises a wide range
+                if not is_worth_another_client(exc):
+                    raise
+                if is_bot_check(exc):
+                    reason = "was challenged"
+                elif is_no_usable_format(exc):
+                    reason = "offered no usable format"
+                else:
+                    reason = f"failed with {str(exc).strip()[:80]!r}"
+                log.warning("proxy %d/%d, client %r %s", index + 1, len(ordered), client, reason)
+                last = exc
+
     state = describe()
     prefix = (
-        f"[proxy={'YES' if state['proxy_set'] else 'NO'} "
+        f"[proxies={len(ordered)}of{len(pool)} "
         f"cookies={'yes' if state['cookies_loaded'] else 'NO'}"
         f"({state['cookie_lines']}) "
-        f"tried={','.join(clients)}] "
+        f"tried={','.join(tried_clients)}] "
     )
 
     if last is not None and is_no_usable_format(last):
@@ -306,11 +357,18 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
             "format. Try reordering YTDLP_PLAYER_CLIENTS, or update yt-dlp."
         ) from last
 
-    if state["cookies_loaded"] and not state["proxy_set"]:
+    if len(pool) > len(ordered):
+        raise BotCheck(
+            prefix + f"{len(ordered)} of your {len(pool)} proxies were refused. "
+            "The rest are untried - raise YTDLP_MAX_PROXIES_PER_RUN, or the whole "
+            "block may be flagged."
+        ) from last
+
+    if state["cookies_loaded"] and pool == [None]:
         raise BotCheck(
             prefix + "Cookies got one client past the bot check but it had no "
             "usable format, and every other client was blocked by IP. That needs "
-            "a residential proxy (YTDLP_PROXY); cookies alone cannot resolve it."
+            "a residential proxy; cookies alone cannot resolve it."
         ) from last
 
     raise BotCheck(prefix + BOT_CHECK_HELP) from last

@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     ytdlp_cookies_b64: str | None = None  # or base64, if the text gets mangled
     ytdlp_cookiefile: str | None = None  # or a path, for local runs
     ytdlp_proxy: str | None = None  # residential proxy, if you have one
+    # Several, tried in turn. Providers sell IPs in blocks and they are
+    # shared, so they are not equally burned - one being challenged says
+    # nothing about the next. Accepts full URLs or the ip:port:user:pass
+    # lines proxy dashboards export, separated by commas or newlines.
+    ytdlp_proxies: str | None = None
+    # How many to try before giving up on a source. Twenty proxies times
+    # five clients is a hundred attempts and several minutes; a handful is
+    # enough to tell a burned IP from a burned block.
+    ytdlp_max_proxies_per_run: int = 4
     # Accept formats that would normally be skipped for lacking a proof-of-
     # origin token. They can be selected but often 403 when actually fetched,
     # so this is off by default: a client offering nothing is a clean failure
