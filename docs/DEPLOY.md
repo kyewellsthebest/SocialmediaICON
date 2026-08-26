@@ -434,17 +434,19 @@ search is site-wide, so one keyword reaches every subreddit at once — which
 matters, because the video worth clipping is as likely to be in
 r/Damnthatsinteresting as in the niche subreddit.
 
-1. Go to [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → **create
-   another app…** → type **script** → redirect URI `http://localhost:8080`.
-2. Copy the id under the app name and the secret beside it:
+**No key is required.** Reddit serves the same listings as JSON to anyone who
+asks with a real user agent, so all the scout needs is:
 
 ```
-REDDIT_CLIENT_ID=
-REDDIT_CLIENT_SECRET=
+REDDIT_KEYWORDS=metal detecting,magnet fishing,gold prospecting
 REDDIT_USER_AGENT=clip-engine/0.1 (your-reddit-username)
 ```
 
-Free, no review, no approval, takes two minutes.
+Credentials are optional and only raise the rate limit, which a handful of
+searches every six hours is nowhere near. If you want them anyway, create a
+**script** app at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps)
+and set `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`; a token that fails to
+issue falls back to the public endpoint rather than failing the scan.
 
 **What it gives you that YouTube does not:** the comments. A replay curve says
 people rewound to 4:12; a comment thread says *why*. That is a better

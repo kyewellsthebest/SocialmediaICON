@@ -83,10 +83,6 @@ def _niche_id(session, niche_name: str | None) -> int | None:
 
 def scout(keywords: list[str] | None = None, niche_name: str | None = None) -> list[int]:
     """Search, filter, score and store. Returns the tracked_video ids touched."""
-    if not settings.has_reddit:
-        log.warning("Reddit credentials are not set - skipping")
-        return []
-
     keywords = keywords or settings.reddit_search_terms
     if not keywords:
         log.warning("no Reddit keywords configured - nothing to look for")

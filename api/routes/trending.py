@@ -147,14 +147,14 @@ def scan_now(source: str = "all") -> dict[str, Any]:
     runs: list[tuple[str, Any]] = []
     if wanted in ("all", "youtube") and settings.has_youtube_read:
         runs.append(("youtube", scout_run))
-    if wanted in ("all", "reddit") and settings.has_reddit:
+    if wanted in ("all", "reddit") and settings.reddit_search_terms:
         runs.append(("reddit", reddit_run))
 
     if not runs:
         raise HTTPException(
             422,
-            "No scout source is configured. Set YOUTUBE_API_KEY, or "
-            "REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET.",
+            "No scout source is configured. Set YOUTUBE_API_KEY, or set "
+            "REDDIT_KEYWORDS (Reddit needs no key).",
         )
 
     queued, discovered = [], 0

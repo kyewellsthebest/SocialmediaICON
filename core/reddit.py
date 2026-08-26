@@ -33,6 +33,11 @@ log = logging.getLogger(__name__)
 
 TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 API = "https://oauth.reddit.com"
+# Reddit serves the same listings as JSON to anyone who asks politely, with
+# no app and no token. Lower rate limits, but a handful of searches every few
+# hours is nowhere near them - and creating an app is a step that can just
+# refuse to work, which should not be the thing that stops the scout.
+PUBLIC = "https://www.reddit.com"
 
 # Video Reddit hosts itself. Everything else is a link to somewhere we either
 # cannot download from or have no business reposting.
@@ -83,6 +88,23 @@ def _token(client: httpx.Client) -> str:
     return str(token)
 
 
+def _endpoint(client: httpx.Client) -> tuple[str, dict[str, str]]:
+    """Where to ask, and with what headers.
+
+    With credentials, the OAuth host: higher limits and a stable contract.
+    Without, the public JSON host, which needs no app at all. Reddit rejects
+    requests with a default user agent either way, so that header is not
+    optional.
+    """
+    agent = settings.reddit_user_agent
+    if settings.has_reddit:
+        try:
+            return API, {"Authorization": f"Bearer {_token(client)}", "User-Agent": agent}
+        except RedditError as exc:
+            log.warning("falling back to the public endpoint: %s", exc)
+    return PUBLIC, {"User-Agent": agent}
+
+
 def _post_from(data: dict[str, Any]) -> Post | None:
     """Flatten a listing entry, or None if it is not a video we can use."""
     if data.get("is_self") or data.get("stickied"):
@@ -126,14 +148,11 @@ def search(
     hour, day, week, month, year, all - and only applies to top and comments.
     """
     owns_client = client is None
-    client = client or httpx.Client(timeout=30.0)
+    client = client or httpx.Client(timeout=30.0, follow_redirects=True)
     try:
-        headers = {
-            "Authorization": f"Bearer {_token(client)}",
-            "User-Agent": settings.reddit_user_agent,
-        }
+        base, headers = _endpoint(client)
         response = client.get(
-            f"{API}/search",
+            f"{base}/search{'' if base == API else '.json'}",
             params={
                 "q": query,
                 "sort": sort,
@@ -167,14 +186,11 @@ def top_comments(
     hand them to a model without reshaping.
     """
     owns_client = client is None
-    client = client or httpx.Client(timeout=30.0)
+    client = client or httpx.Client(timeout=30.0, follow_redirects=True)
     try:
-        headers = {
-            "Authorization": f"Bearer {_token(client)}",
-            "User-Agent": settings.reddit_user_agent,
-        }
+        base, headers = _endpoint(client)
         response = client.get(
-            f"{API}/comments/{post_id}",
+            f"{base}/comments/{post_id}{'' if base == API else '.json'}",
             params={"sort": "top", "limit": limit, "depth": 1, "raw_json": 1},
             headers=headers,
         )

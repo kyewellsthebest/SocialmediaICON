@@ -174,8 +174,45 @@ class TestComments:
         assert "his face" in comments[0]["body"]
 
 
-def test_missing_credentials_are_named_not_guessed(monkeypatch):
+def test_no_credentials_falls_back_to_the_public_endpoint(monkeypatch):
+    """Creating a Reddit app can simply refuse to work; that must not be the
+    thing that stops the scout, since the listings are public anyway."""
     monkeypatch.setattr(settings, "reddit_client_id", None, raising=False)
+    monkeypatch.setattr(settings, "reddit_client_secret", None, raising=False)
+    seen: list[str] = []
 
-    with pytest.raises(reddit.RedditError, match="REDDIT_CLIENT_ID"):
-        reddit.search("x", client=_client(lambda r: httpx.Response(200, json={})))
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        assert "authorization" not in request.headers
+        assert request.headers["user-agent"] == settings.reddit_user_agent
+        return httpx.Response(200, json=_listing(_video_post()))
+
+    posts = reddit.search("metal detecting", client=_client(handle))
+
+    assert len(posts) == 1
+    assert seen[0].startswith("https://www.reddit.com/search.json")
+
+
+def test_a_broken_token_exchange_falls_back_rather_than_failing(monkeypatch):
+    monkeypatch.setattr(settings, "reddit_client_id", "id", raising=False)
+    monkeypatch.setattr(settings, "reddit_client_secret", "", raising=False)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_listing(_video_post()))
+
+    assert len(reddit.search("x", client=_client(handle))) == 1
+
+
+def test_credentials_use_the_oauth_host(monkeypatch):
+    seen: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if "access_token" in request.url.path:
+            return httpx.Response(200, json={"access_token": "tok"})
+        assert request.headers["authorization"] == "Bearer tok"
+        return httpx.Response(200, json=_listing(_video_post()))
+
+    reddit.search("x", client=_client(handle))
+
+    assert any("oauth.reddit.com" in url for url in seen)
