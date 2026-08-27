@@ -515,12 +515,32 @@ seconds of ffmpeg compositing. With `REDIS_URL` set it runs on the worker; if
 Redis is missing it runs in the web process instead, which works but ties up a
 request handler for the duration.
 
-### Which sources can fetch their own audio
+### Getting the recordings — no key involved
 
-`Apollo 13` and `UVB-76` pull their recording from archive.org automatically.
-The other four — Air Force One, Gimbal, STARGATE, the Nixon tapes — have audio
-that is public but not behind a URL a worker can take, so they render with
-narration over ambience until you attach a file:
+archive.org's search and metadata endpoints are open: no key, no account, no
+meaningful rate limit. Five of the six sources resolve their own audio, in this
+order:
+
+1. an identifier pinned on the render (`archive_item` in the generate payload),
+2. an identifier pinned on the archive, if there is one,
+3. whatever `archive_query` turns up on archive.org, most-downloaded first —
+   trying each hit in turn until one actually contains a playable file.
+
+Searching rather than hardcoding matters: identifiers move, collections get
+reorganised, and a pinned ID that 404s in six months is indistinguishable from
+a bug. Every render records which item it used.
+
+STARGATE is the exception — it is 12,473 documents and no tape, so it renders
+as narration over ambience by design.
+
+If the search picks something wrong, pin it:
+
+```json
+POST /api/studio/generate
+{"archive_id": "nixon", "archive_item": "the-exact-identifier"}
+```
+
+Or supply the file yourself:
 
 ```
 POST /api/studio/renders/{id}/tape     (multipart, field name "file")

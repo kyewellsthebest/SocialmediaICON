@@ -42,6 +42,7 @@ def run(render_id: int) -> dict[str, Any]:
                 use_stock=bool(options.get("use_stock", True)),
                 tape_offset_s=options.get("tape_offset_s"),
                 tape_path=Path(options["tape_path"]) if options.get("tape_path") else None,
+                archive_item=options.get("archive_item"),
                 fps=options.get("fps"),
             )
         )

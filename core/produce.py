@@ -37,7 +37,11 @@ W, H = 1080, 1920
 #: archive.org is generous but not infinite, and a two-hour master is not worth
 #: pulling to use forty seconds of it.
 MAX_TAPE_BYTES = 320 * 1024 * 1024
-AUDIO_FORMAT_PREFERENCE = (".mp3", ".ogg", ".m4a", ".flac", ".wav")
+#: mp4 is last on purpose: ffmpeg reads its audio track happily, but a video
+#: container is a lot of bytes to move for a soundtrack. It is there for the
+#: sources whose only public copy is a video - the DoD releases in particular.
+AUDIO_FORMAT_PREFERENCE = (".mp3", ".ogg", ".m4a", ".flac", ".wav", ".mp4")
+SEARCH_URL = "https://archive.org/advancedsearch.php"
 
 
 class ProduceError(RuntimeError):
@@ -55,6 +59,9 @@ class Options:
     tape_offset_s: float | None = None
     #: a recording supplied by hand, for archives with nothing fetchable
     tape_path: Path | None = None
+    #: pin a specific archive.org identifier for this render, overriding both
+    #: the archive default and the search
+    archive_item: str | None = None
     fps: int | None = None
 
     def resolved_grade(self) -> float:
@@ -103,22 +110,47 @@ def tape_cache() -> Path:
     return path
 
 
-def fetch_archive_audio(archive: Archive) -> Path | None:
-    """Pull the recording from archive.org, or return None and say why.
+def search_archive_org(query: str, *, rows: int = 8) -> list[str]:
+    """Identifiers matching an archive.org search, most relevant first.
 
-    archive.org's metadata endpoint lists every file in an item, so the exact
-    filename never has to be hardcoded - which matters, because those change
-    and a 404 six months from now would be indistinguishable from a bug.
+    No key, no account, no rate limit worth worrying about. Searching rather
+    than pinning identifiers is the difference between a source that keeps
+    working and one that 404s the month somebody reorganises a collection.
     """
-    if not archive.archive_item:
-        return None
-
     import httpx
 
-    item = archive.archive_item
+    try:
+        response = httpx.get(
+            SEARCH_URL,
+            params={
+                "q": query,
+                "fl[]": "identifier",
+                "rows": rows,
+                "page": 1,
+                "output": "json",
+                "sort[]": "downloads desc",
+            },
+            timeout=30.0,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        docs = response.json().get("response", {}).get("docs", []) or []
+    except Exception as exc:  # noqa: BLE001 - a missing recording is not fatal
+        log.warning("tape: archive.org search %r failed: %s", query, exc)
+        return []
+
+    found = [str(d["identifier"]) for d in docs if d.get("identifier")]
+    log.info("tape: %r matched %d item(s): %s", query, len(found), ", ".join(found[:3]))
+    return found
+
+
+def _audio_from_item(item: str) -> tuple[str, str] | None:
+    """(identifier, filename) for the best audio file in an item, if any."""
+    import httpx
+
     try:
         meta = httpx.get(f"https://archive.org/metadata/{item}", timeout=30.0).json()
-    except Exception as exc:  # noqa: BLE001 - a missing recording is not fatal
+    except Exception as exc:  # noqa: BLE001
         log.warning("tape: metadata for %s failed: %s", item, exc)
         return None
 
@@ -137,14 +169,46 @@ def fetch_archive_audio(archive: Archive) -> Path | None:
         candidates.append((AUDIO_FORMAT_PREFERENCE.index(suffix), name))
 
     if not candidates:
-        log.warning("tape: no usable audio file in archive.org item %s", item)
+        log.info("tape: no usable audio file in archive.org item %s", item)
         return None
 
     candidates.sort()
-    name = candidates[0][1]
+    return item, candidates[0][1]
+
+
+def fetch_archive_audio(archive: Archive, *, override_item: str | None = None) -> Path | None:
+    """Get the recording from archive.org, or return None.
+
+    Tries, in order: an identifier the caller pinned for this render, the one
+    pinned on the archive, then whatever the archive's search turns up. The
+    first item that actually contains a usable audio file wins - a search hit
+    with nothing playable in it is not a reason to give up on the next one.
+    """
+    tried: list[str] = []
+    for candidate in (override_item, archive.archive_item):
+        if candidate and candidate not in tried:
+            tried.append(candidate)
+
+    found = _audio_from_item(tried[0]) if tried else None
+    if found is None and archive.archive_query:
+        for identifier in search_archive_org(archive.archive_query):
+            if identifier in tried:
+                continue
+            tried.append(identifier)
+            found = _audio_from_item(identifier)
+            if found is not None:
+                break
+
+    if found is None:
+        log.warning("tape: nothing playable for %s (tried %s)", archive.id, ", ".join(tried) or "-")
+        return None
+
+    item, name = found
     dest = tape_cache() / f"{item}-{Path(name).name}"
     if dest.exists() and dest.stat().st_size > 0:
         return dest
+
+    import httpx
 
     url = f"https://archive.org/download/{item}/{quote(name)}"
     tmp = dest.with_suffix(dest.suffix + ".part")
@@ -374,7 +438,9 @@ def produce(options: Options, *, work_dir: Path | None = None, keep: bool = Fals
 
         # 2. the recording --------------------------------------------------
         tape: tuple[Path, float] | None = None
-        tape_path = options.tape_path or fetch_archive_audio(archive)
+        tape_path = options.tape_path or fetch_archive_audio(
+            archive, override_item=options.archive_item
+        )
         if tape_path is not None:
             if options.tape_offset_s is None:
                 offset = archive.tape_offset_s
@@ -448,6 +514,9 @@ def produce(options: Options, *, work_dir: Path | None = None, keep: bool = Fals
             layers={
                 "narration_lines": len(narration),
                 "tape": Path(tape[0]).name if tape else None,
+                # The filename carries the identifier, so a render always says
+                # which archive.org item it actually pulled from.
+                "tape_source": "upload" if options.tape_path else ("archive.org" if tape else None),
                 "tape_offset_s": tape[1] if tape else None,
                 "stock": stock.name if stock else None,
                 "bed": archive.bed,

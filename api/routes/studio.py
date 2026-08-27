@@ -41,6 +41,8 @@ class GenerateIn(BaseModel):
     overlay: float | None = Field(default=None, ge=0.0, le=1.0)
     use_stock: bool = True
     tape_offset_s: float | None = Field(default=None, ge=0.0)
+    #: pin a specific archive.org item instead of letting the search pick
+    archive_item: str | None = Field(default=None, max_length=200)
 
 
 class RenderOut(BaseModel):
@@ -152,6 +154,7 @@ def generate(
             "overlay": payload.overlay,
             "use_stock": payload.use_stock,
             "tape_offset_s": payload.tape_offset_s,
+            "archive_item": payload.archive_item,
         },
     )
     db.add(row)

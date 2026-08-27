@@ -109,7 +109,9 @@ def test_readiness_names_the_variable_that_fixes_it() -> None:
 
 
 def test_unfetchable_archive_says_so_even_when_keys_are_set() -> None:
-    ready = archives.readiness(archives.get("af1"), has_tts=True, has_stock=True)
+    # STARGATE is 12,473 documents and no tape, so it is the only source that
+    # can have every key set and still need a file from a human.
+    ready = archives.readiness(archives.get("stargate"), has_tts=True, has_stock=True)
     assert ready.ok
     assert any("upload" in note for note in ready.notes)
 
@@ -320,3 +322,81 @@ def test_frame_count_follows_duration_and_fps(tmp_path: Path) -> None:
     archive = archives.get("apollo")
     written = overlay.render_frames(archive, tmp_path / "n", fps=2)
     assert written == int(round(archive.duration_s() * 2))
+
+
+# --- getting the recording -------------------------------------------------
+
+
+def test_every_archive_with_audio_can_find_it_without_a_key() -> None:
+    """Only STARGATE is documents; the rest have a recording somewhere public.
+
+    None of this needs an API key - archive.org's search and metadata
+    endpoints are open - so a source that cannot be fetched is a gap in the
+    registry, not a billing question.
+    """
+    for archive_id in archives.ORDER:
+        archive = archives.get(archive_id)
+        if archive_id == "stargate":
+            assert not archive.fetchable
+            continue
+        assert archive.fetchable, f"{archive_id} has neither an item nor a query"
+
+
+def _cached(monkeypatch, tmp_path: Path, *names: str) -> None:
+    """Point the tape cache at tmp_path and pre-create the files named."""
+    from core import produce
+
+    monkeypatch.setattr(produce, "tape_cache", lambda: tmp_path)
+    for name in names:
+        (tmp_path / name).write_bytes(b"audio")
+
+
+def test_pinned_item_is_tried_before_the_search(monkeypatch, tmp_path: Path) -> None:
+    from core import produce
+
+    seen: list[str] = []
+
+    def fake_item(item: str):
+        seen.append(item)
+        return (item, "tape.mp3")
+
+    monkeypatch.setattr(produce, "_audio_from_item", fake_item)
+    monkeypatch.setattr(
+        produce, "search_archive_org", lambda q, **k: pytest.fail("search should not run")
+    )
+    _cached(monkeypatch, tmp_path, "my-item-tape.mp3")
+
+    path = produce.fetch_archive_audio(archives.get("nixon"), override_item="my-item")
+    assert seen == ["my-item"]
+    assert path == tmp_path / "my-item-tape.mp3"
+
+
+def test_search_skips_items_with_nothing_playable(monkeypatch, tmp_path: Path) -> None:
+    """A hit with no audio in it is not a reason to stop looking."""
+    from core import produce
+
+    monkeypatch.setattr(produce, "search_archive_org", lambda q, **k: ["empty", "good"])
+    monkeypatch.setattr(
+        produce, "_audio_from_item", lambda item: (item, "t.mp3") if item == "good" else None
+    )
+    _cached(monkeypatch, tmp_path, "good-t.mp3")
+
+    path = produce.fetch_archive_audio(archives.get("nixon"))
+    assert path is not None
+    assert "good" in path.name
+
+
+def test_a_dead_search_is_not_a_crash(monkeypatch) -> None:
+    from core import produce
+
+    monkeypatch.setattr(produce, "search_archive_org", lambda q, **k: [])
+    assert produce.fetch_archive_audio(archives.get("nixon")) is None
+
+
+def test_video_containers_are_accepted_last(monkeypatch) -> None:
+    """Some sources only exist publicly as video; ffmpeg reads their audio."""
+    from core import produce
+
+    order = produce.AUDIO_FORMAT_PREFERENCE
+    assert ".mp3" in order
+    assert order.index(".mp4") == len(order) - 1

@@ -132,8 +132,12 @@ class Archive:
     #: Pexels searches, tried in order, for the footage underneath
     stock_terms: tuple[str, ...]
     title_card: tuple[str, str]
-    #: archive.org identifier, when the recording can be fetched directly
+    #: archive.org identifier, when one is known and stable
     archive_item: str | None
+    #: archive.org search, used when no identifier is pinned or the pinned one
+    #: has gone. Identifiers move and items get taken down; a query keeps
+    #: working, and the render records which item it actually used.
+    archive_query: str | None
     #: where a person can go and listen to the real thing
     listen_url: str
     #: seconds into the fetched recording where the interesting part starts
@@ -160,7 +164,7 @@ class Archive:
     @property
     def fetchable(self) -> bool:
         """Whether the worker can get the recording without a human."""
-        return self.archive_item is not None
+        return bool(self.archive_item or self.archive_query)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -172,6 +176,7 @@ class Archive:
             "listen_url": self.listen_url,
             "fetchable": self.fetchable,
             "archive_item": self.archive_item,
+            "archive_query": self.archive_query,
             "tape_offset_s": self.tape_offset_s,
             "stock_terms": list(self.stock_terms),
             "duration_s": round(self.duration_s(), 1),
@@ -206,6 +211,7 @@ APOLLO = Archive(
     stock_terms=("earth from space", "space nebula", "rocket launch", "stars night sky"),
     title_card=("APOLLO 13", "55:55:20 ground elapsed"),
     archive_item="Apollo13Audio",
+    archive_query='title:("apollo 13") AND mediatype:audio',
     listen_url="https://apolloinrealtime.org/13/",
     tape_offset_s=0.0,
     # The cold open plays the recording, so it is a tape beat: it must never be
@@ -284,6 +290,8 @@ AIR_FORCE_ONE = Archive(
     ),
     title_card=("AIR FORCE ONE", "22 Nov 1963 · 14:32 CST"),
     archive_item=None,
+    archive_query='title:("air force one") AND (title:(1963) OR description:(kennedy)) '
+    'AND mediatype:audio',
     listen_url="https://www.archives.gov/research/jfk/air-force-one-tape",
     tape_offset_s=0.0,
     hook_cold=Beat("hook", 3.0, "This tape sat in a box for forty-eight years."),
@@ -331,6 +339,7 @@ BUZZER = Archive(
     stock_terms=("radio tower night", "empty forest fog", "abandoned building", "static noise"),
     title_card=("UVB-76", "4625 kHz · continuous"),
     archive_item="sraa-the-buzzer-uvb-76-numbers-station-may-13-2018",
+    archive_query='(title:("uvb-76") OR title:("the buzzer")) AND mediatype:audio',
     listen_url="https://shortwavearchive.com/",
     tape_offset_s=0.0,
     hook_cold=Beat("hook", 3.0, "This has been transmitting since before you were born."),
@@ -369,6 +378,9 @@ GIMBAL = Archive(
     stock_terms=("fighter jet", "clouds aerial view", "military aircraft", "sky horizon"),
     title_card=("GIMBAL", "Dept. of Defense · released 2020"),
     archive_item=None,
+    archive_query=(
+        "title:(gimbal) AND (description:(navy) OR description:(uap) OR description:(ufo))"
+    ),
     listen_url="https://www.navair.navy.mil/foia/documents",
     tape_offset_s=0.0,
     hook_cold=Beat("hook", 3.0, "The Pentagon released this themselves."),
@@ -429,6 +441,7 @@ STARGATE = Archive(
     stock_terms=("ink in water", "smoke abstract", "desert landscape", "old paper texture"),
     title_card=("PROJECT STARGATE", "Session transcript · declassified 2017"),
     archive_item=None,
+    archive_query=None,
     listen_url="https://www.cia.gov/readingroom/collection/stargate",
     tape_offset_s=0.0,
     hook_cold=Beat("hook", 3.0, "The CIA paid people to do this for twenty years."),
@@ -476,6 +489,7 @@ NIXON = Archive(
     stock_terms=("old reel to reel tape", "vintage office", "typewriter", "washington dc"),
     title_card=("EOB 342", "23 June 1972 · 10:04 a.m."),
     archive_item=None,
+    archive_query='(title:("nixon") AND title:("tape")) AND mediatype:audio',
     listen_url="https://millercenter.org/the-presidency/secret-white-house-tapes",
     tape_offset_s=0.0,
     hook_cold=Beat("hook", 3.0, "He recorded himself. On purpose."),
