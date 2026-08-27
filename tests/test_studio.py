@@ -400,3 +400,49 @@ def test_video_containers_are_accepted_last(monkeypatch) -> None:
     order = produce.AUDIO_FORMAT_PREFERENCE
     assert ".mp3" in order
     assert order.index(".mp4") == len(order) - 1
+
+
+# --- the working directory -------------------------------------------------
+
+
+def test_workspace_creates_a_missing_work_dir(monkeypatch, tmp_path: Path) -> None:
+    """A fresh container has no WORK_DIR - nothing in the image creates it.
+
+    This is the failure that crashed the first real render: mkdtemp(dir=...)
+    raises FileNotFoundError rather than creating its parent, so the render
+    died with a bare "No such file or directory" naming a scratch path.
+    """
+    from core import produce
+
+    missing = tmp_path / "does" / "not" / "exist"
+    monkeypatch.setattr(produce.settings, "work_dir", missing)
+    assert not missing.exists()
+
+    made = produce.workspace()
+    assert made == missing
+    assert made.is_dir()
+
+
+def test_workspace_nests_and_is_idempotent(monkeypatch, tmp_path: Path) -> None:
+    from core import produce
+
+    monkeypatch.setattr(produce.settings, "work_dir", tmp_path / "w")
+    first = produce.workspace("tape")
+    second = produce.workspace("tape")
+    assert first == second == tmp_path / "w" / "tape"
+    assert first.is_dir()
+
+
+def test_a_render_can_start_with_no_work_dir(monkeypatch, tmp_path: Path) -> None:
+    """The scratch directory is made before mkdtemp is asked to use it."""
+    import tempfile as tf
+
+    from core import produce
+
+    missing = tmp_path / "app" / ".work"
+    monkeypatch.setattr(produce.settings, "work_dir", missing)
+
+    # Exactly what produce() does before it touches anything else.
+    root = Path(tf.mkdtemp(prefix="studio-", dir=str(produce.workspace())))
+    assert root.is_dir()
+    assert root.parent == missing

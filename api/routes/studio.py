@@ -22,7 +22,7 @@ from core import archives, tts
 from core.config import settings
 from core.db import get_db
 from core.models import Render
-from core.produce import preflight
+from core.produce import preflight, workspace
 from core.storage import get_storage
 from worker.queue import enqueue
 from worker.tasks.produce import run as produce_run
@@ -229,8 +229,7 @@ def attach_tape(
     """
     row = _get(render_id, db)
 
-    inbox = Path(settings.work_dir) / "uploads"
-    inbox.mkdir(parents=True, exist_ok=True)
+    inbox = workspace("uploads")
     suffix = Path(file.filename or "tape.mp3").suffix or ".mp3"
     with tempfile.NamedTemporaryFile(dir=inbox, suffix=suffix, delete=False) as handle:
         shutil.copyfileobj(file.file, handle)

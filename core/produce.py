@@ -104,10 +104,22 @@ class Result:
 # --- the recording ---------------------------------------------------------
 
 
-def tape_cache() -> Path:
-    path = Path(settings.work_dir) / "tape"
+def workspace(*parts: str) -> Path:
+    """A directory under WORK_DIR, created if it is not there yet.
+
+    A fresh container has no WORK_DIR at all - it is a scratch path, not
+    something the image ships - so every caller has to be prepared to make it.
+    `tempfile.mkdtemp(dir=...)` is the one that does not: it raises rather than
+    creating a missing parent, which is how a render failed with a bare
+    "No such file or directory" naming a path nothing had created yet.
+    """
+    path = Path(settings.work_dir).joinpath(*parts)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def tape_cache() -> Path:
+    return workspace("tape")
 
 
 def search_archive_org(query: str, *, rows: int = 8) -> list[str]:
@@ -415,8 +427,12 @@ def produce(options: Options, *, work_dir: Path | None = None, keep: bool = Fals
     timeline = archive.timeline(options.voice_hook)
     warnings: list[str] = []
 
-    root = Path(work_dir or tempfile.mkdtemp(prefix="studio-", dir=str(settings.work_dir)))
-    root.mkdir(parents=True, exist_ok=True)
+    if work_dir is None:
+        # workspace() first: mkdtemp will not create the parent for us.
+        root = Path(tempfile.mkdtemp(prefix="studio-", dir=str(workspace())))
+    else:
+        root = Path(work_dir)
+        root.mkdir(parents=True, exist_ok=True)
 
     try:
         # 1. narration ------------------------------------------------------
