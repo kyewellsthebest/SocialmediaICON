@@ -1,7 +1,7 @@
 """Studio renders: original videos made from public-record audio.
 
-Revision ID: 0004_studio
-Revises: 0003_credentials
+Revision ID: 0004
+Revises: 0003
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0004_studio"
-down_revision = "0003_credentials"
+revision = "0004"
+down_revision = "0003"
 branch_labels = None
 depends_on = None
 
