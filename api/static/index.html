@@ -25,6 +25,8 @@
     <circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
   <symbol id="i-source" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/></symbol>
+  <symbol id="i-studio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="5" width="14" height="14" rx="2"/><path d="m16 10 6-3v10l-6-3z"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></symbol>
   <symbol id="i-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -58,6 +60,7 @@
     </div>
 
     <nav class="tabs-top" id="tabs-top">
+      <a href="#/studio" data-view="studio"><svg><use href="#i-studio"/></svg>Studio</a>
       <a href="#/overview" data-view="overview"><svg><use href="#i-home"/></svg>Overview</a>
       <a href="#/trending" data-view="trending"><svg><use href="#i-trend"/></svg>Trending</a>
       <a href="#/review" data-view="review"><svg><use href="#i-review"/></svg>Review<span class="badge" id="badge-top" hidden>0</span></a>
@@ -71,6 +74,76 @@
   </header>
 
   <main>
+    <section class="view" id="view-studio" hidden>
+      <div class="view-head">
+        <div>
+          <h2>Studio</h2>
+          <p>Original videos from public-record audio. Pick a source, press generate, watch what comes out. Nothing posts on its own.</p>
+        </div>
+        <button class="btn btn-primary" id="studio-go">Generate video</button>
+      </div>
+
+      <div class="studio-grid">
+        <div class="grid" style="gap:14px; align-content:start">
+          <div class="card">
+            <div class="card-head"><h3>Source</h3><span class="hint">six archives</span></div>
+            <div class="src-picker" id="studio-sources"></div>
+            <p class="prov" id="studio-prov" style="margin-top:12px"></p>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>Look</h3><span class="hint">applies to this render</span></div>
+            <div class="dials">
+              <div class="dial">
+                <div class="row-between"><span class="label">Grade</span><span class="val" id="grade-val">88%</span></div>
+                <input type="range" id="studio-grade" min="0" max="100" value="88">
+                <span class="hint">How hard the footage is pushed into this source&rsquo;s world</span>
+              </div>
+              <div class="dial">
+                <div class="row-between"><span class="label">Overlay</span><span class="val" id="overlay-val">62%</span></div>
+                <input type="range" id="studio-overlay" min="0" max="100" value="62">
+                <span class="hint">How present the instrument layer is on top</span>
+              </div>
+              <div class="dial">
+                <span class="label">Opening</span>
+                <div class="switch" role="group" aria-label="Opening">
+                  <button id="hook-cold" aria-pressed="true">Cold open</button>
+                  <button id="hook-voice" aria-pressed="false">AI presenter</button>
+                </div>
+              </div>
+              <div class="dial">
+                <span class="label">Footage</span>
+                <div class="switch" role="group" aria-label="Footage">
+                  <button id="stock-on" aria-pressed="true">Stock clip</button>
+                  <button id="stock-off" aria-pressed="false">Drawn plate</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>Renders</h3><span class="hint">newest first</span></div>
+            <div id="studio-renders"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="gap:14px; align-content:start">
+          <div class="card">
+            <div class="card-head"><h3>Latest</h3><span class="hint" id="studio-latest-status">—</span></div>
+            <div class="phone-wrap"><div class="phone-frame" id="studio-player">
+              <div class="placeholder">Nothing rendered yet</div>
+            </div></div>
+            <div id="studio-latest-meta" style="margin-top:12px"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>Keys</h3><span class="hint">set in Railway</span></div>
+            <div id="studio-keys"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="view" id="view-overview" hidden>
       <div class="view-head">
         <h2>Overview</h2>
@@ -215,8 +288,8 @@
   </main>
 
   <nav class="tabbar" id="tabbar">
+    <a href="#/studio" data-view="studio"><svg><use href="#i-studio"/></svg>Studio</a>
     <a href="#/overview" data-view="overview"><svg><use href="#i-home"/></svg>Overview</a>
-    <a href="#/trending" data-view="trending"><svg><use href="#i-trend"/></svg>Trending</a>
     <a href="#/review" data-view="review"><svg><use href="#i-review"/></svg>Review<span class="badge" id="badge" hidden>0</span></a>
     <a href="#/posts" data-view="posts"><svg><use href="#i-posts"/></svg>Posts</a>
     <button id="more-btn" aria-label="More"><svg><use href="#i-more"/></svg>More</button>

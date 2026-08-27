@@ -17,6 +17,20 @@ budget).
 
 ---
 
+## The studio
+
+As well as clipping other people's videos, this makes its own: real
+public-record audio — Apollo 13's flight loop, the Nixon tapes, the Pentagon's
+UAP releases — with an AI narrator over the top, free stock footage underneath,
+and a drawn instrument overlay that is identical on every post. That overlay is
+the point: the footage changes every video, the scanlines and telemetry and
+timecode do not, and that is what makes a post recognisable in a feed.
+
+Press **Generate video** in the dashboard's Studio tab. Nothing posts on its
+own. Two optional keys (`OPENAI_API_KEY`, `PEXELS_API_KEY`) add the narration
+and the footage; without them a render still happens and tells you what is
+missing. See [docs/DEPLOY.md](docs/DEPLOY.md#the-studio).
+
 ## Quickstart (Phase 1, local, no cloud accounts)
 
 Needs Python 3.11 and **ffmpeg** (a system binary, not a pip package).

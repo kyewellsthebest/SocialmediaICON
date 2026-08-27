@@ -4,7 +4,16 @@
    hover everywhere. */
 
 const TOKEN_KEY = "clipengine.token";
-const state = { token: localStorage.getItem(TOKEN_KEY) || "", view: "overview", data: {}, openPost: null, inflight: 0 };
+const state = { token: localStorage.getItem(TOKEN_KEY) || "", view: "studio", data: {}, openPost: null, inflight: 0 };
+
+/* The studio is the only view that keeps settings between visits: they are
+   what you are actually tuning, and losing them on every tab switch would
+   make comparing two renders impossible. */
+const studio = {
+  archives: [], keys: {}, source: null,
+  grade: 88, overlay: 62, voiceHook: false, useStock: true,
+  latest: null, poll: null,
+};
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -424,7 +433,148 @@ async function renderSettings(first) {
     : `<div class="empty">No accounts yet. Approved clips need one to know where to go.</div>`;
 }
 
+/* ---------- studio ---------- */
+
+function studioTiles() {
+  return studio.archives.map((entry) => {
+    const a = entry.archive;
+    const on = a.id === studio.source;
+    return `<button class="src-tile js-src" data-id="${esc(a.id)}" aria-pressed="${on}">
+      <span class="nm">${esc(a.name)}</span>
+      <span class="sb">${esc(String(a.source).split(" · ")[0])} · ${a.duration_s}s</span>
+      <span class="swatch" style="background:${esc(a.accent)}"></span>
+    </button>`;
+  }).join("");
+}
+
+function studioKeys() {
+  return Object.entries(studio.keys).map(([name, k]) => `
+    <div class="keyrow" data-set="${!!k.set}">
+      <span class="dot"></span>
+      <span class="var">${esc(k.var)}</span>
+      <span class="what">${esc(k.what)}</span>
+    </div>`).join("");
+}
+
+function renderCard(r) {
+  const warn = (r.warnings || []).length
+    ? `<div class="warnbox"><b>${r.warnings.length} thing${r.warnings.length > 1 ? "s" : ""} missing</b>${esc(r.warnings.join(" · "))}</div>`
+    : "";
+  const err = r.error ? `<div class="warnbox" style="border-left-color:var(--critical)"><b>failed</b>${esc(r.error.slice(-400))}</div>` : "";
+  const busy = r.status === "queued" || r.status === "running";
+  return `<div class="item">
+    <div class="item-top">
+      <div class="item-title">${esc(r.archive_name)} <span class="hint">#${r.id}</span></div>
+      ${pill(r.status)}
+    </div>
+    <div class="item-sub">
+      <span>${r.duration_s ? clock(r.duration_s) : "—"}</span>
+      <span>${ago(r.created_at)}</span>
+      ${r.elapsed_s ? `<span>rendered in ${Math.round(r.elapsed_s)}s</span>` : ""}
+      ${r.cost_usd ? `<span>$${r.cost_usd.toFixed(3)}</span>` : ""}
+      ${r.options && r.options.voice_hook ? `<span>ai hook</span>` : ""}
+      ${r.approved ? `<span class="pill" data-state="good">kept</span>` : ""}
+    </div>
+    ${warn}${err}
+    <div class="item-foot">
+      <div class="row">
+        ${r.url ? `<button class="btn btn-sm js-watch" data-id="${r.id}">Watch</button>` : ""}
+        ${r.url && !r.approved ? `<button class="btn btn-sm js-keep" data-id="${r.id}">Keep</button>` : ""}
+      </div>
+      <button class="btn btn-sm btn-danger js-del-render" data-id="${r.id}" ${busy ? "disabled" : ""}>Delete</button>
+    </div>
+  </div>`;
+}
+
+function showInPlayer(r) {
+  const frame = $("#studio-player");
+  const status = $("#studio-latest-status");
+  const meta = $("#studio-latest-meta");
+  if (!frame) return;
+
+  if (!r) {
+    frame.innerHTML = `<div class="placeholder">Nothing rendered yet</div>`;
+    status.textContent = "—";
+    meta.innerHTML = "";
+    return;
+  }
+  status.textContent = r.status;
+  if (r.url) {
+    frame.innerHTML = `<video src="${esc(media(r.url))}" controls playsinline preload="metadata"></video>`;
+  } else {
+    frame.innerHTML = `<div class="placeholder">${esc(r.status === "failed" ? "render failed" : "rendering…")}</div>`;
+  }
+  const l = r.layers || {};
+  const rows = [
+    ["narration", l.narration_lines ? `${l.narration_lines} lines` : "none"],
+    ["tape", l.tape || "none"],
+    ["footage", l.stock || "drawn plate"],
+    ["bed", l.bed || "—"],
+    ["grade", l.grade != null ? `${Math.round(l.grade * 100)}%` : "—"],
+    ["overlay", l.overlay != null ? `${Math.round(l.overlay * 100)}%` : "—"],
+  ];
+  meta.innerHTML = `<div class="checklist">${rows.map(([k, v]) =>
+    `<div class="check-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>`;
+}
+
+function pollStudio() {
+  clearInterval(studio.poll);
+  studio.poll = setInterval(async () => {
+    if (state.view !== "studio") return clearInterval(studio.poll);
+    try {
+      const rows = await api("/studio/renders?limit=20");
+      $("#studio-renders").innerHTML = rows.length
+        ? `<div class="list">${rows.map(renderCard).join("")}</div>`
+        : `<div class="empty">No renders yet. Press <b>Generate video</b>.</div>`;
+      const live = rows.find((r) => r.status === "queued" || r.status === "running");
+      const newest = rows[0] || null;
+      if (newest && (!studio.latest || newest.id !== studio.latest.id || newest.status !== studio.latest.status)) {
+        studio.latest = newest;
+        showInPlayer(newest);
+      }
+      if (!live) clearInterval(studio.poll);
+    } catch { clearInterval(studio.poll); }
+  }, 3000);
+}
+
+async function renderStudio(first) {
+  if (first) {
+    $("#studio-sources").innerHTML = skelLines(3);
+    $("#studio-renders").innerHTML = skelCards(2);
+  }
+  const [meta, rows] = await Promise.all([api("/studio/archives"), api("/studio/renders?limit=20")]);
+  studio.archives = meta.archives;
+  studio.keys = meta.keys;
+  if (!studio.source && studio.archives.length) studio.source = studio.archives[0].archive.id;
+  if (first && meta.defaults) {
+    studio.grade = Math.round(meta.defaults.grade * 100);
+    studio.overlay = Math.round(meta.defaults.overlay * 100);
+    $("#studio-grade").value = studio.grade;
+    $("#studio-overlay").value = studio.overlay;
+    $("#grade-val").textContent = `${studio.grade}%`;
+    $("#overlay-val").textContent = `${studio.overlay}%`;
+  }
+
+  $("#studio-sources").innerHTML = studioTiles();
+  $("#studio-keys").innerHTML = studioKeys();
+
+  const chosen = studio.archives.find((e) => e.archive.id === studio.source);
+  if (chosen) {
+    const notes = chosen.readiness.notes || [];
+    $("#studio-prov").innerHTML = `<b>Transcript:</b> ${esc(chosen.archive.provenance)}`
+      + (notes.length ? `<br><span class="hint">${esc(notes.join(" · "))}</span>` : "");
+  }
+
+  $("#studio-renders").innerHTML = rows.length
+    ? `<div class="list">${rows.map(renderCard).join("")}</div>`
+    : `<div class="empty">No renders yet. Press <b>Generate video</b>.</div>`;
+
+  if (rows.length && !studio.latest) { studio.latest = rows[0]; showInPlayer(rows[0]); }
+  if (rows.some((r) => r.status === "queued" || r.status === "running")) pollStudio();
+}
+
 const RENDERERS = {
+  studio: renderStudio,
   overview: renderOverview, trending: renderTrending, review: renderReview,
   posts: renderPosts, sources: renderSources, settings: renderSettings,
 };
@@ -444,7 +594,7 @@ function setBadge(n) {
 }
 
 async function show(view) {
-  if (!RENDERERS[view]) view = "overview";
+  if (!RENDERERS[view]) view = "studio";
   state.view = view;
   $$(".view").forEach((el) => (el.hidden = el.id !== `view-${view}`));
   $$("[data-view]").forEach((a) =>
@@ -457,7 +607,7 @@ async function show(view) {
     if (err.message !== "unauthorised") toast(`Could not load ${view}: ${err.message}`, "critical");
   }
 }
-const route = () => show((location.hash || "#/overview").replace("#/", ""));
+const route = () => show((location.hash || "#/studio").replace("#/", ""));
 
 /* ---------- sheet ---------- */
 
@@ -465,6 +615,7 @@ function openSheet() {
   $("#sheet-root").innerHTML = `<div class="sheet-back" data-close></div>
     <div class="sheet" role="dialog" aria-label="More">
       <div class="handle"></div>
+      <a href="#/trending" data-close><svg><use href="#i-trend"/></svg>Trending</a>
       <a href="#/sources" data-close><svg><use href="#i-source"/></svg>Sources</a>
       <a href="#/settings" data-close><svg><use href="#i-settings"/></svg>Settings</a>
       <button id="sheet-theme"><svg><use href="#i-theme"/></svg>Switch theme</button>
@@ -652,6 +803,58 @@ document.addEventListener("click", async (event) => {
       return renderSettings();
     }
 
+    /* ---- studio ---- */
+    if (t.classList.contains("js-src")) {
+      studio.source = t.dataset.id;
+      return renderStudio();
+    }
+    if (t.id === "hook-cold" || t.id === "hook-voice") {
+      studio.voiceHook = t.id === "hook-voice";
+      $("#hook-cold").setAttribute("aria-pressed", String(!studio.voiceHook));
+      $("#hook-voice").setAttribute("aria-pressed", String(studio.voiceHook));
+      return;
+    }
+    if (t.id === "stock-on" || t.id === "stock-off") {
+      studio.useStock = t.id === "stock-on";
+      $("#stock-on").setAttribute("aria-pressed", String(studio.useStock));
+      $("#stock-off").setAttribute("aria-pressed", String(!studio.useStock));
+      return;
+    }
+    if (t.id === "studio-go") {
+      if (!studio.source) return toast("Pick a source first.", "critical");
+      const row = await withBusy(t, () => api("/studio/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          archive_id: studio.source,
+          voice_hook: studio.voiceHook,
+          grade: studio.grade / 100,
+          overlay: studio.overlay / 100,
+          use_stock: studio.useStock,
+        }),
+      }));
+      studio.latest = row;
+      showInPlayer(row);
+      toast("Rendering. About ninety seconds — it will appear below.");
+      await renderStudio();
+      return pollStudio();
+    }
+    if (t.classList.contains("js-watch")) {
+      const row = await api(`/studio/renders/${t.dataset.id}`);
+      studio.latest = row;
+      showInPlayer(row);
+      return $("#studio-player").scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    if (t.classList.contains("js-keep")) {
+      await withBusy(t, () => api(`/studio/renders/${t.dataset.id}/approve`, { method: "POST" }));
+      toast("Kept.");
+      return renderStudio();
+    }
+    if (t.classList.contains("js-del-render")) {
+      await withBusy(t, () => api(`/studio/renders/${t.dataset.id}`, { method: "DELETE" }));
+      if (studio.latest && String(studio.latest.id) === t.dataset.id) { studio.latest = null; showInPlayer(null); }
+      return renderStudio();
+    }
+
     if (t.dataset.post) return showPostDetail(Number(t.dataset.post));
   } catch (err) {
     if (err.message !== "unauthorised") toast(err.message, "critical");
@@ -660,6 +863,17 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("change", (e) => {
   if (e.target.id === "trending-filter" || e.target.id === "trending-source") renderTrending();
+});
+
+document.addEventListener("input", (e) => {
+  if (e.target.id === "studio-grade") {
+    studio.grade = Number(e.target.value);
+    $("#grade-val").textContent = `${studio.grade}%`;
+  }
+  if (e.target.id === "studio-overlay") {
+    studio.overlay = Number(e.target.value);
+    $("#overlay-val").textContent = `${studio.overlay}%`;
+  }
 });
 
 document.addEventListener("mouseover", (event) => {

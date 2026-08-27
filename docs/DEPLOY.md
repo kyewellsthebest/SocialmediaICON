@@ -467,3 +467,72 @@ often does not.
 
 Only native `v.redd.it` video is tracked. Crossposts to YouTube are skipped,
 since downloading those runs into the block this exists to avoid.
+
+---
+
+## The studio
+
+Original videos made from public-record audio: archive recording, AI narration,
+stock footage underneath, and a drawn instrument overlay on top. It does not
+touch the clip pipeline and does not need any of the clip pipeline's keys.
+
+It is deliberately manual. You press **Generate video** in the dashboard, wait
+about ninety seconds, and watch what comes out. Nothing posts on its own.
+
+### Variables to add in Railway
+
+Add these to the **web** and **worker** services (the worker does the render;
+the web service needs them to report what is configured).
+
+| Variable | Needed? | What it buys |
+|---|---|---|
+| `OPENAI_API_KEY` | for narration | The AI narrator. About $0.015 a minute of speech — roughly £1.50/month at ten videos a day. |
+| `PEXELS_API_KEY` | for footage | Stock clips under the overlay. Free, no attribution, 200 requests an hour. Get one at <https://www.pexels.com/api/>. |
+
+Neither is required. Without `OPENAI_API_KEY` a render is archive audio and
+captions; without `PEXELS_API_KEY` the overlay plays over a drawn gradient. The
+Studio tab lists what is missing and what you would get instead.
+
+Optional, all with sensible defaults:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TTS_VOICE` | `onyx` | The deep one. `ash` and `ballad` are the other two worth trying. |
+| `TTS_INSTRUCTIONS` | see `.env.example` | Plain-English direction for delivery. This is most of what stops it sounding like an assistant reading a script — worth tuning before anything else. |
+| `STUDIO_GRADE` | `0.88` | How hard footage is pushed into each source's palette, 0–1. |
+| `STUDIO_OVERLAY` | `0.62` | How present the instrument layer is, 0–1. |
+| `STUDIO_FPS` | `24` | 24 reads as film and is a third fewer overlay frames to draw than 30. |
+| `STUDIO_CRF` | `20` | Lower is better quality and a bigger file. |
+
+### After deploying
+
+1. `alembic upgrade head` — adds the `renders` table (migration `0004_studio`).
+2. Open the dashboard. **Studio** is the first tab.
+3. Pick a source, press **Generate video**.
+
+A render is roughly 35 seconds of Pillow drawing the overlay frames and 55
+seconds of ffmpeg compositing. With `REDIS_URL` set it runs on the worker; if
+Redis is missing it runs in the web process instead, which works but ties up a
+request handler for the duration.
+
+### Which sources can fetch their own audio
+
+`Apollo 13` and `UVB-76` pull their recording from archive.org automatically.
+The other four — Air Force One, Gimbal, STARGATE, the Nixon tapes — have audio
+that is public but not behind a URL a worker can take, so they render with
+narration over ambience until you attach a file:
+
+```
+POST /api/studio/renders/{id}/tape     (multipart, field name "file")
+```
+
+### The rule the code enforces
+
+Every caption line carries a `verbatim` flag. A line marked verbatim is quoted
+from the record and must stay word for word; anything else is narration written
+here. A test (`test_only_tape_lines_are_ever_marked_verbatim`) fails the build
+if a written line is ever marked as a quotation, because the entire premise of
+the format is that the recording is real.
+
+Air Force One, UVB-76 and STARGATE ship **no** quoted lines for that reason —
+their captions must come from the real transcript before anything is published.

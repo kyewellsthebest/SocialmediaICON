@@ -305,6 +305,41 @@ class Credential(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
 
 
+# --- Phase 5: the studio -----------------------------------------------------
+
+RENDER_STATUSES = ("queued", "running", "ready", "failed")
+
+
+class Render(TimestampMixin, Base):
+    """One video the studio made, and everything that went into it.
+
+    Kept separate from `clips` on purpose. A clip is a cut out of somebody
+    else's video and carries a licence question; a render is made here from
+    public-record audio and carries none. They travel to the same platforms but
+    they are not the same object, and collapsing them would put a licence
+    column on rows that have no licence to record.
+    """
+
+    __tablename__ = "renders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    archive_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    storage_key: Mapped[str | None] = mapped_column(Text)
+    duration_s: Mapped[float | None] = mapped_column(Float)
+    #: what was asked for: voice hook, grade, overlay, stock, tape offset
+    options: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: what actually made it in - which is rarely all of it
+    layers: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: the layers that did not, in words that name the variable that fixes them
+    warnings: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    cost_usd: Mapped[float | None] = mapped_column(Float)
+    elapsed_s: Mapped[float | None] = mapped_column(Float)
+    error: Mapped[str | None] = mapped_column(Text)
+    #: nothing reaches a platform until a person has watched it
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
 class ApiQuota(Base):
     """Daily API spend, so a scout run can refuse to blow the free tier."""
 

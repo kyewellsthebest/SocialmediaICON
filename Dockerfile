@@ -14,8 +14,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 # ffmpeg does the cutting, reframing and caption burn-in; without it ingest and
 # render fail at runtime rather than at build time.
+# fonts-dejavu-core is not optional: libass burns the captions and Pillow draws
+# the overlay HUD, and both silently fall back to something unreadable without
+# a real font on disk.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

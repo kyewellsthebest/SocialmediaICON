@@ -136,6 +136,48 @@ class Settings(BaseSettings):
     # fortnight before anything lapses.
     token_refresh_interval_days: int = 14
 
+    # --- studio: original content from public-record audio ---------------
+    # The studio makes videos rather than clipping them: real archive audio,
+    # an AI narrator over the top, stock footage underneath, and a drawn
+    # instrument overlay that never changes. Nothing here is needed by the
+    # clip pipeline, so every key is optional and the studio reports what is
+    # missing rather than failing at render time.
+
+    # Narration. gpt-4o-mini-tts bills per minute of audio, not per character,
+    # and takes a plain-English `instructions` field - which is what stops it
+    # sounding like an assistant reading a script.
+    openai_api_key: str | None = None
+    tts_model: str = "gpt-4o-mini-tts"
+    tts_voice: str = "onyx"
+    tts_instructions: str = (
+        "Male, low register. Documentary narration. Measured and unhurried, "
+        "slightly weary. Do not sound impressed by what you are saying. Fall "
+        "in pitch at the end of every sentence. Leave a beat before the final "
+        "clause."
+    )
+
+    # Stock footage. Pexels is free, has a documented API, and licenses for
+    # commercial use with no attribution - the only stock source that
+    # automates cleanly. 200 requests an hour is far more than this needs.
+    pexels_api_key: str | None = None
+    # Clips are cached by search term so the same twenty downloads serve
+    # hundreds of renders. Raising this buys variety at the cost of disk.
+    stock_cache_size: int = 40
+
+    # Render shape. 24fps is deliberate: it is a third fewer overlay frames
+    # to draw than 30 and reads as film rather than video.
+    studio_fps: int = 24
+    studio_crf: int = 20
+    # How hard the footage is pushed into the source's world, 0..1. At 0 the
+    # stock clip shows through untouched and looks like stock; at 1 it is
+    # crushed far enough that two clips from different shoots match.
+    studio_grade: float = 0.88
+    # How opaque the drawn instrument layer sits over it, 0..1.
+    studio_overlay: float = 0.62
+    # Approve-before-post. While this is on, a finished render waits in the
+    # studio until you have watched it; nothing reaches a platform on its own.
+    studio_manual_only: bool = True
+
     # dashboard access (the app is public on Railway unless this is set)
     dashboard_token: str | None = None
 
@@ -272,6 +314,23 @@ class Settings(BaseSettings):
     @property
     def keywords(self) -> list[str]:
         return [k.strip() for k in self.scout_keywords.split(",") if k.strip()]
+
+    @property
+    def has_tts(self) -> bool:
+        return bool(self.openai_api_key)
+
+    @property
+    def has_stock(self) -> bool:
+        return bool(self.pexels_api_key)
+
+    @property
+    def studio_ready(self) -> bool:
+        """Enough to render something worth watching.
+
+        Narration is the one part with no free fallback: without it a video is
+        archive audio and captions, which works but is not the format.
+        """
+        return self.has_tts
 
     @property
     def transcription_key(self) -> str | None:
