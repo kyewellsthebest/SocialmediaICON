@@ -60,6 +60,53 @@ REACTIONS = re.compile(
 )
 
 
+#: What kind of reaction, not just how much of one.
+#:
+#: This is the part a loudness curve can never tell you. Forty people typing
+#: KEKW and forty typing "NOOOO" produce identical spikes on every numeric
+#: signal in this repo, and they are completely different videos - different
+#: hook, different caption, different music, different audience. Chat is the
+#: only place that distinction is written down.
+#:
+#: Regex over a fixed vocabulary rather than a sentiment model, deliberately.
+#: Chat is not English - it is emotes, single letters and deliberate
+#: misspelling - and a general sentiment model reads "L" and "OMEGALUL" as
+#: neutral noise while scoring "I love this" as the strongest line in the
+#: window. The vocabulary is small, public, and changes slowly.
+EMOTIONS: dict[str, re.Pattern[str]] = {
+    "funny": re.compile(
+        r"(KEKW|LULW|OMEGALUL|LUL\b|PepeLaugh|ICANT|LMAO|LMFAO|"
+        r"\bha(?:ha)+\b|\blo+l+\b|\bdying\b|\bcrying\b|\bwheeze)",
+        re.IGNORECASE,
+    ),
+    "shock": re.compile(
+        r"(monkaS|monkaW|WTF|OMG|OH MY|NO WAY|NOWAY|WHAT THE|HOLY|"
+        r"\bJESUS\b|SHEESH|\bWHAT\?+|HUH\?+|D:|POGGERS|\bWOAH\b|\bWHOA\b)",
+        re.IGNORECASE,
+    ),
+    "hype": re.compile(
+        r"(\bPOG\b|PogChamp|LETS ?GO|LFG\b|EZ Clap|\bW\b|GOATED|"
+        r"INSANE|CRACKED|\bCLUTCH\b|BANGER)",
+        re.IGNORECASE,
+    ),
+    "sad": re.compile(
+        r"(Sadge|PepeHands|FeelsBadMan|\bNO+O+\b|\bnooo|\brip\b|"
+        r"\bsorry\b|\bpoor\b|heartbreak|\bF\b)",
+        re.IGNORECASE,
+    ),
+    "cringe": re.compile(
+        r"(\bL\b|\byikes\b|\boof\b|\bcringe\b|Aware\b|"
+        r"\bawkward\b|\bbruh\b|\bwhy\b.{0,12}\bdo that\b)",
+        re.IGNORECASE,
+    ),
+    "angry": re.compile(
+        r"(\bratio\b|\bcope\b|\bmald|\btrash\b|\bscam\b|"
+        r"\brigged\b|\bfake\b|\bclown\b|\bdisgusting\b)",
+        re.IGNORECASE,
+    ),
+}
+
+
 class ChatError(RuntimeError):
     pass
 
@@ -79,6 +126,10 @@ class Message:
     @property
     def reactions(self) -> int:
         return len(REACTIONS.findall(self.text))
+
+    def emotions(self) -> set[str]:
+        """Which feelings this line expresses. A line can carry more than one."""
+        return {name for name, pattern in EMOTIONS.items() if pattern.search(self.text)}
 
 
 @dataclass
@@ -293,6 +344,42 @@ def _to_message(raw: dict[str, Any], started_at: datetime) -> Message | None:
         text=str(text),
         user=str(user),
     )
+
+
+def mood_around(
+    messages: list[Message], at_s: float, window_s: float = 8.0
+) -> dict[str, Any]:
+    """What the crowd felt at this moment, and how strongly they agreed.
+
+    `dominant` is the emotion, `confidence` is the share of emotive lines that
+    agreed on it. The second number matters as much as the first: chat split
+    evenly between "funny" and "angry" is a controversy, chat 90% on "shock"
+    is a highlight, and posting them the same way is how a page loses an
+    audience. A window with no emotive lines returns dominant=None rather
+    than guessing.
+    """
+    low, high = at_s - window_s, at_s + window_s
+    counts: dict[str, int] = {}
+    emotive = 0
+    for message in messages:
+        if not low <= message.at_s < high:
+            continue
+        found = message.emotions()
+        if found:
+            emotive += 1
+        for name in found:
+            counts[name] = counts.get(name, 0) + 1
+
+    if not counts:
+        return {"dominant": None, "confidence": 0.0, "emotive_lines": 0, "counts": {}}
+
+    dominant, top = max(counts.items(), key=lambda kv: kv[1])
+    return {
+        "dominant": dominant,
+        "confidence": round(top / emotive, 3),
+        "emotive_lines": emotive,
+        "counts": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
+    }
 
 
 def quotes_around(messages: list[Message], at_s: float, window_s: float = 6.0) -> list[str]:

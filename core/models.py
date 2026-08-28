@@ -340,6 +340,51 @@ class Render(TimestampMixin, Base):
     approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+class Catch(TimestampMixin, Base):
+    """A moment caught live, and the text record that outlives the video.
+
+    Deliberately narrow. The stream it came from is gigabytes and is deleted
+    the moment the clip is cut; what stays is this row - where it happened,
+    why the bot thought so, and what chat was feeling. That record is small
+    enough to keep forever and is the only thing worth keeping forever,
+    because it is what tells you which triggers actually produced views.
+
+    No frames, no envelopes, no contact sheets, no transcripts of the whole
+    stream. Those are working data, and working data that outlives its job is
+    just a disk bill.
+    """
+
+    __tablename__ = "catches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    platform: Mapped[str] = mapped_column(String(16), nullable=False, default="kick")
+    channel: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: the page a human can open to see the source - the whole provenance
+    #: trail, in one column
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    #: seconds into the stream, as best it can be known live
+    at_s: Mapped[float | None] = mapped_column(Float)
+    duration_s: Mapped[float | None] = mapped_column(Float)
+    #: where the clip itself lives, once uploaded. Null while it is local.
+    storage_key: Mapped[str | None] = mapped_column(Text)
+
+    #: what fired the trigger, per signal, exactly as core.moments computed it
+    why: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    score: Mapped[float | None] = mapped_column(Float)
+    #: chat's verdict: dominant emotion, agreement, counts per feeling
+    mood: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: the handful of lines chat actually typed, with counts. Not the whole log.
+    quotes: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    peak_viewers: Mapped[int | None] = mapped_column(Integer)
+
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="caught")
+    #: set once the buffer it came from has been deleted, so an orphaned
+    #: working directory is visible rather than silently occupying disk
+    source_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
 class ApiQuota(Base):
     """Daily API spend, so a scout run can refuse to blow the free tier."""
 

@@ -31,6 +31,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 TIMEOUT_S = 30.0
 #: Enough to prove the transfer is real without pulling a whole stream.
@@ -165,6 +166,104 @@ def _impersonating_get(url: str):  # noqa: ANN202 - curl_cffi Response
     from curl_cffi import requests as cffi
 
     return cffi.get(url, impersonate="chrome", timeout=TIMEOUT_S)
+
+
+def probe_kick_live(channel: str, out_dir: str, seconds: float = 45.0) -> list[Result]:
+    """The one that matters: can we hold a live stream in a rolling buffer?
+
+    Everything about catching moments live rests on this. If the playback URL
+    resolves and ffmpeg can segment it, the buffer works and the rest is
+    arithmetic we have already tested. If it does not, no amount of chat
+    analysis helps, because there is no video to cut.
+    """
+    import yt_dlp
+
+    from core import ytdlp
+    from core.live import RollingBuffer
+
+    out: list[Result] = []
+    started = time.time()
+
+    def call(opts: dict) -> dict:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(f"https://kick.com/{channel}", download=False)
+
+    try:
+        info = ytdlp.run(call, ytdlp.base_options(skip_download=True)) or {}
+    except Exception as exc:  # noqa: BLE001
+        out.append(Result(
+            "kick", f"live /{channel}",
+            detail=f"{type(exc).__name__}: {str(exc)[:160]}",
+            elapsed_s=time.time() - started,
+        ))
+        return out
+
+    formats = info.get("formats") or []
+    playback = next(
+        (f["url"] for f in reversed(formats) if f.get("url")), info.get("url")
+    )
+    out.append(Result(
+        "kick", f"live /{channel}",
+        ok=bool(playback),
+        detail=(
+            f"{info.get('concurrent_view_count') or '?'} viewers, "
+            f"{len(formats)} formats, {str(info.get('title'))[:34]!r}"
+        ),
+        media_url=playback,
+        elapsed_s=time.time() - started,
+    ))
+    if not playback:
+        return out
+
+    # Buffer it for real, and watch the size stop growing. A number that
+    # plateaus is the entire storage claim, measured rather than asserted.
+    work = Path(out_dir) / f"live-{channel}"
+    buffer = RollingBuffer(
+        url=playback, work_dir=work, window_s=20.0, segment_s=2.0, channel=channel
+    )
+    started = time.time()
+    sizes: list[float] = []
+    try:
+        buffer.start()
+        while time.time() - started < seconds:
+            time.sleep(5.0)
+            status = buffer.status()
+            sizes.append(status["megabytes"])
+            if not status["running"]:
+                break
+
+        status = buffer.status()
+        note = buffer.failure()
+        out.append(Result(
+            "kick", "rolling buffer",
+            ok=status["held_s"] > 0,
+            detail=(
+                f"held {status['held_s']:.0f}s in {status['megabytes']:.1f}MB, "
+                f"sizes {'->'.join(f'{s:.1f}' for s in sizes[-4:])}"
+                if status["held_s"] else f"nothing buffered: {note[:120]}"
+            ),
+            elapsed_s=time.time() - started,
+        ))
+
+        if status["held_s"] > 12:
+            started = time.time()
+            clip = buffer.extract(work / "cut.mp4", ago_s=2.0, lead_s=8.0, trail_s=2.0)
+            out.append(Result(
+                "kick", "cut from the past",
+                ok=clip.exists(),
+                detail=f"{clip.stat().st_size / 1e6:.1f}MB clip out of the buffer",
+                bytes_read=clip.stat().st_size,
+                elapsed_s=time.time() - started,
+            ))
+    except Exception as exc:  # noqa: BLE001
+        out.append(Result("kick", "rolling buffer", detail=f"{type(exc).__name__}: {exc}"))
+    finally:
+        buffer.discard()
+        out.append(Result(
+            "kick", "buffer discarded", ok=not work.exists(),
+            detail="nothing left on disk" if not work.exists() else "FILES REMAIN",
+        ))
+    return out
 
 
 def probe_kick(download: bool, out_dir: str, url_override: str | None) -> list[Result]:
@@ -368,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--kick-url", help="test this Kick clip or VOD instead of discovering one")
     parser.add_argument("--youtube-url", help="test this video instead of the default")
     parser.add_argument("--twitch-url", help="test this clip instead of querying Helix")
+    parser.add_argument("--live", metavar="CHANNEL", help="buffer a live Kick channel end to end")
+    parser.add_argument("--live-seconds", type=float, default=45.0)
     parser.add_argument("--json", action="store_true", help="machine readable output")
     args = parser.parse_args(argv)
 
@@ -379,6 +480,10 @@ def main(argv: list[str] | None = None) -> int:
     wanted = [n.strip() for n in args.only.split(",")] if args.only else list(PROBES)
 
     results: list[Result] = []
+    if args.live:
+        results.extend(probe_kick_live(args.live, args.out, args.live_seconds))
+        wanted = [n for n in wanted if n != "kick"]
+
     for name in wanted:
         probe = PROBES.get(name)
         if probe is None:
