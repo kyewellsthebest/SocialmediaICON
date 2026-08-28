@@ -193,7 +193,9 @@ def envelope(src: Path | str, *, window_ms: int = WINDOW_MS) -> Envelope:
 # --- the audio, as something to look at -------------------------------------
 
 
-def waveform_png(src: Path | str, dest: Path | str, *, width: int = 1800, height: int = 320) -> Path:
+def waveform_png(
+    src: Path | str, dest: Path | str, *, width: int = 1800, height: int = 320
+) -> Path:
     """The loudness shape of the whole file in one image."""
     require_binaries()
     dest = Path(dest)
