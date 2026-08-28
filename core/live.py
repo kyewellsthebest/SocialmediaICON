@@ -283,3 +283,181 @@ class RollingBuffer:
             end - start, self.channel or self.url, ago_s, dest.name,
         )
         return dest
+
+
+# --- paying for the job, not for the stream ---------------------------------
+
+#: What a buffer is for. The two jobs need wildly different bitrates and there
+#: is no reason to pay the higher one for both.
+#:
+#: Detection asks "did something happen at 14:02:31". Every signal that
+#: answers it - chat velocity, loudness jumps, scene cuts, motion centroid -
+#: is resolution independent. core.reframe already makes the point: it decides
+#: where to point the camera from 64x36 greyscale frames. A scene cut is just
+#: as detectable at 160p as at 1080p, and audio does not have a resolution
+#: at all.
+#:
+#: Delivery is the thirty seconds that actually gets posted, cropped to
+#: portrait and upscaled. That one genuinely wants the pixels.
+DETECT, DELIVER = "detect", "deliver"
+
+
+@dataclass(frozen=True)
+class Variant:
+    """One rendition offered by an HLS master playlist."""
+
+    url: str
+    bandwidth_bps: int
+    width: int = 0
+    height: int = 0
+    audio_only: bool = False
+
+    @property
+    def mbps(self) -> float:
+        return self.bandwidth_bps / 1e6
+
+    def gb_per_day(self, streams: int = 1) -> float:
+        return self.bandwidth_bps * 86_400 * streams / 8 / 1e9
+
+    def label(self) -> str:
+        if self.audio_only:
+            return f"audio-only {self.bandwidth_bps // 1000}k"
+        return f"{self.height}p {self.bandwidth_bps // 1000}k"
+
+
+def parse_master(playlist: str, base_url: str = "") -> list[Variant]:
+    """Every rendition an HLS master playlist advertises, cheapest first.
+
+    Audio-only renditions are declared with EXT-X-MEDIA rather than
+    EXT-X-STREAM-INF and carry no BANDWIDTH attribute, so they are easy to
+    miss - and they are the cheapest thing on the ladder by a factor of forty.
+    """
+    from urllib.parse import urljoin
+
+    out: list[Variant] = []
+    lines = [line.strip() for line in playlist.splitlines()]
+
+    for i, line in enumerate(lines):
+        if line.startswith("#EXT-X-MEDIA:") and "TYPE=AUDIO" in line:
+            uri = _attribute(line, "URI").strip('"')
+            if uri:
+                out.append(
+                    Variant(
+                        url=urljoin(base_url, uri) if base_url else uri,
+                        # Not advertised. 128kbps is the usual live audio
+                        # rendition and is only used for ordering.
+                        bandwidth_bps=128_000,
+                        audio_only=True,
+                    )
+                )
+        elif line.startswith("#EXT-X-STREAM-INF:"):
+            uri = next(
+                (
+                    lines[j]
+                    for j in range(i + 1, len(lines))
+                    if lines[j] and not lines[j].startswith("#")
+                ),
+                "",
+            )
+            if not uri:
+                continue
+            resolution = _attribute(line, "RESOLUTION")
+            width, height = (0, 0)
+            if "x" in resolution:
+                try:
+                    width, height = (int(v) for v in resolution.split("x", 1))
+                except ValueError:
+                    width, height = (0, 0)
+            try:
+                bandwidth = int(_attribute(line, "BANDWIDTH") or 0)
+            except ValueError:
+                bandwidth = 0
+            out.append(
+                Variant(
+                    url=urljoin(base_url, uri) if base_url else uri,
+                    bandwidth_bps=bandwidth,
+                    width=width,
+                    height=height,
+                )
+            )
+
+    return sorted(out, key=lambda v: v.bandwidth_bps)
+
+
+def _attribute(line: str, name: str) -> str:
+    """Read NAME=value out of an HLS tag, respecting quoted commas."""
+    body = line.split(":", 1)[1] if ":" in line else line
+    out: list[str] = []
+    depth = 0
+    field = ""
+    for char in body:
+        if char == '"':
+            depth ^= 1
+        if char == "," and not depth:
+            out.append(field)
+            field = ""
+        else:
+            field += char
+    out.append(field)
+    for part in out:
+        key, _, value = part.partition("=")
+        if key.strip().upper() == name.upper():
+            return value.strip()
+    return ""
+
+
+#: What one stream's detection feed may cost. Ten of these is the whole
+#: monitoring bill, so a megabit each is about 108GB a day - affordable.
+#: Above it the picture stops being worth what it costs: measured over
+#: simulated marginal moments, dropping video entirely costs around twelve
+#: points of recall, and no twelve points are worth six megabits a stream.
+DETECT_MAX_BPS = 1_000_000
+
+
+def choose_variant(
+    variants: list[Variant],
+    mode: str = DETECT,
+    *,
+    min_height: int = 160,
+    max_bps: int = DETECT_MAX_BPS,
+) -> Variant:
+    """The cheapest rendition that can still do the job asked of it.
+
+    For detection that is the cheapest thing with a usable picture - a scene
+    cut, a loudness jump and a motion centroid all survive 160p intact, which
+    was checked rather than assumed: the same clip at 6000k and at 230k gave
+    the same cut at the same second, the same audio jump within a decibel,
+    and pan paths of 1.42 against 1.41.
+
+    But only up to a price. A ladder whose smallest picture is 1080p is
+    offering nothing cheap, and paying six megabits a stream to monitor is
+    the entire problem this exists to solve. Past the ceiling it takes
+    audio-only and accepts the lost recall, because that trade is survivable
+    and the bandwidth bill is not.
+
+    For delivery it is simply the best available, since this is what ships.
+    """
+    if not variants:
+        raise LiveError("the master playlist advertised no renditions")
+
+    if mode == DELIVER:
+        watchable = [v for v in variants if not v.audio_only]
+        return max(watchable or variants, key=lambda v: v.bandwidth_bps)
+
+    pictures = [v for v in variants if not v.audio_only and v.height >= min_height]
+    affordable = [v for v in pictures if v.bandwidth_bps <= max_bps]
+    if affordable:
+        return min(affordable, key=lambda v: v.bandwidth_bps)
+
+    audio = [v for v in variants if v.audio_only]
+    if audio:
+        cheapest = min(pictures, key=lambda v: v.bandwidth_bps) if pictures else None
+        log.warning(
+            "live: cheapest picture is %.1f Mbps, over the %.1f Mbps detection "
+            "ceiling - monitoring on audio only",
+            cheapest.mbps if cheapest else 0.0, max_bps / 1e6,
+        )
+        return min(audio, key=lambda v: v.bandwidth_bps)
+
+    # No audio rendition either: the cheapest thing there is, over budget.
+    return min(variants, key=lambda v: v.bandwidth_bps)

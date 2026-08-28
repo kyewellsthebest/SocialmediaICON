@@ -201,3 +201,80 @@ class TestChatRetention:
         status = log.status()
         assert status["dropped"] > 0
         assert status["held_s"] <= 10.0
+
+
+LADDER = """#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="Audio Only",DEFAULT=YES,URI="audio.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS="avc1.64002a,mp4a.40.2"
+1080p60.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=852x480
+480p.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=230000,RESOLUTION=284x160
+160p.m3u8
+"""
+
+
+class TestPayingForTheJob:
+    """Detection and delivery need different bitrates by a factor of 26."""
+
+    def test_every_rendition_is_found_including_audio_only(self):
+        from core.live import parse_master
+
+        found = parse_master(LADDER, "https://cdn.example/live/")
+        assert len(found) == 4
+        assert [v.bandwidth_bps for v in found] == sorted(v.bandwidth_bps for v in found)
+        assert any(v.audio_only for v in found), (
+            "audio-only is declared with EXT-X-MEDIA and carries no BANDWIDTH, "
+            "so it is easy to miss - and it is the cheapest thing on the ladder"
+        )
+
+    def test_relative_urls_are_resolved_against_the_playlist(self):
+        from core.live import parse_master
+
+        found = parse_master(LADDER, "https://cdn.example/live/master.m3u8")
+        assert all(v.url.startswith("https://cdn.example/live/") for v in found)
+
+    def test_a_codec_string_containing_a_comma_does_not_break_parsing(self):
+        """CODECS="avc1,mp4a" splits the tag if commas are read naively."""
+        from core.live import parse_master
+
+        found = [v for v in parse_master(LADDER) if v.height == 1080]
+        assert found and found[0].bandwidth_bps == 6_000_000
+
+    def test_detection_takes_the_cheapest_rendition_with_a_picture(self):
+        from core.live import DETECT, choose_variant, parse_master
+
+        chosen = choose_variant(parse_master(LADDER), DETECT)
+        assert chosen.height == 160
+        assert not chosen.audio_only, (
+            "losing the picture costs real recall on moments chat barely reacted to"
+        )
+
+    def test_delivery_takes_the_best_picture(self):
+        from core.live import DELIVER, choose_variant, parse_master
+
+        assert choose_variant(parse_master(LADDER), DELIVER).height == 1080
+
+    def test_audio_only_is_the_fallback_when_there_is_no_small_rendition(self):
+        from core.live import DETECT, choose_variant, parse_master
+
+        thin = """#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="Audio",URI="audio.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080
+1080p.m3u8
+"""
+        assert choose_variant(parse_master(thin), DETECT).audio_only
+
+    def test_the_saving_is_the_whole_point(self):
+        from core.live import DELIVER, DETECT, choose_variant, parse_master
+
+        found = parse_master(LADDER)
+        detect = choose_variant(found, DETECT)
+        deliver = choose_variant(found, DELIVER)
+        assert deliver.gb_per_day(10) / detect.gb_per_day(10) > 20
+
+    def test_an_empty_playlist_is_an_error_not_a_silent_default(self):
+        from core.live import LiveError, choose_variant
+
+        with pytest.raises(LiveError, match="no renditions"):
+            choose_variant([])
