@@ -385,6 +385,87 @@ async function renderSources(first) {
     : `<div class="empty"><strong>No sources yet.</strong><br>Add one above, or clip something from Trending.</div>`;
 }
 
+/* A probe result the user can act on: the verdict in words, the numbers that
+   decide the bandwidth bill, and the raw JSON underneath for pasting. */
+/* yt-dlp appends its own boilerplate to every error - "please report this
+   issue", "confirm you are on the latest version" - which is three lines of
+   noise in a panel this size. Keep the first clause, which is the finding. */
+function shortError(text) {
+  const cut = String(text || "")
+    .split(/\(caused by|please report|Confirm you are/i)[0]
+    .replace(/^[A-Za-z]*Error:\s*/, "")
+    .replace(/ERROR:\s*\[[^\]]+\]\s*\S+:\s*/, "")
+    .trim();
+  return cut.length > 150 ? cut.slice(0, 150) + "…" : cut;
+}
+
+function renderProbe(data, buffering) {
+  const raw = $("#probe-raw");
+  raw.hidden = false;
+  raw.textContent = JSON.stringify(data, null, 2);
+
+  let tone = "warning";
+  let headline = "";
+  let detail = "";
+
+  if (buffering) {
+    if (data.network_blocked_locally) {
+      tone = "warning";
+      headline = "Inconclusive — this server's own network refused the connection";
+      detail = "Kick was never contacted. Try again in a moment.";
+    } else if (data.playback_url_served && data.buffered) {
+      tone = "good";
+      headline = "Kick serves this server, and the buffer holds it";
+      detail = "The live plan works from here.";
+    } else if (data.playback_url_served) {
+      tone = "warning";
+      headline = "Kick served a URL, but the buffer did not fill";
+      detail = "The stream resolved and then would not flow — see the detail below.";
+    } else {
+      tone = "critical";
+      headline = "Kick did not hand over a playback URL";
+      detail = "This looks like a datacenter-IP refusal. A residential proxy is the fix.";
+    }
+    $("#probe-verdict").innerHTML = `<div class="check-row">
+      <div class="what"><span>${esc(headline)}</span><small>${esc(detail)}</small></div>
+      <span class="pill" data-state="${tone}">${tone === "good" ? "works" : tone === "critical" ? "blocked" : "unclear"}</span>
+    </div>` + (data.checks || []).map((c) => `<div class="check-row">
+      <div class="what"><span>${esc(c.what)}</span><small>${esc(shortError(c.detail))}</small></div>
+      <span class="pill" data-state="${c.ok ? "good" : "warning"}">${c.ok ? "ok" : "no"}</span>
+    </div>`).join("");
+    return;
+  }
+
+  if (!data.ok) {
+    $("#probe-verdict").innerHTML = `<div class="check-row">
+      <div class="what"><span>Could not read the ladder</span><small>${esc(shortError(data.error) || "unknown")}</small></div>
+      <span class="pill" data-state="critical">blocked</span>
+    </div>`;
+    return;
+  }
+
+  const rows = (data.ladder || []).map((v) => `<div class="check-row">
+    <div class="what"><span>${esc(v.label)}</span><small>${v.gb_per_day_x10} GB/day across 10 streams</small></div>
+    <span class="mono" style="color:var(--ink-2);font-size:12.5px">${v.mbps} Mbps</span>
+  </div>`).join("");
+
+  $("#probe-verdict").innerHTML = `<div class="check-row">
+      <div class="what"><span>Kick served this server</span>
+        <small>${data.live ? "live now" : "not live"}${data.viewers ? " · " + data.viewers + " watching" : ""}</small></div>
+      <span class="pill" data-state="good">works</span>
+    </div>
+    <div class="check-row">
+      <div class="what"><span>Monitor on ${esc(data.detect.label)}</span>
+        <small>${data.detect.gb_per_day_x10} GB/day for all 10 streams</small></div>
+      <span class="pill" data-state="good">detect</span>
+    </div>
+    <div class="check-row">
+      <div class="what"><span>Post from ${esc(data.deliver.label)}</span>
+        <small>only for the clip itself, not continuously</small></div>
+      <span class="pill" data-state="good">deliver</span>
+    </div>` + rows;
+}
+
 async function renderSettings(first) {
   if (first) { $("#connections").innerHTML = skelLines(8); $("#env-config").innerHTML = skelLines(8); }
   const data = await api("/settings");
@@ -801,6 +882,20 @@ document.addEventListener("click", async (event) => {
     if (t.classList.contains("js-del-account")) {
       await withBusy(t, () => api(`/settings/accounts/${t.dataset.id}`, { method: "DELETE" }));
       return renderSettings();
+    }
+
+    /* ---- kick reachability ---- */
+    if (t.id === "probe-ladder" || t.id === "probe-buffer") {
+      const channel = ($("#probe-channel").value || "").trim().replace(/^.*kick\.com\//, "");
+      if (!channel) return toast("Paste a channel name first.", "critical");
+      const buffering = t.id === "probe-buffer";
+      const path = buffering
+        ? `/probe/kick?channel=${encodeURIComponent(channel)}&seconds=30`
+        : `/probe/ladder?channel=${encodeURIComponent(channel)}`;
+      if (buffering) toast("Holding the stream for 30 seconds…");
+      const data = await withBusy(t, () => api(path));
+      renderProbe(data, buffering);
+      return;
     }
 
     /* ---- studio ---- */

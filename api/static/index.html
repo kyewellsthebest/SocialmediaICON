@@ -246,6 +246,30 @@
           <div class="checklist" id="env-config"></div>
         </div>
       </div>
+      <!-- Can this deployment actually reach Kick? Everything in the live
+           plan rests on the answer, and the answer differs per machine - so
+           it has to be askable from the box that would do the fetching. -->
+      <div class="card">
+        <div class="card-head"><h3>Kick reachability</h3><span class="hint">does this server get served</span></div>
+        <p style="color:var(--ink-2);font-size:13px;margin:0 0 10px">
+          Pick anyone live on kick.com right now and paste their channel name.
+          <b>Ladder</b> is instant and prices the bandwidth. <b>Buffer</b> takes
+          about 30 seconds because it really holds the stream.
+        </p>
+        <div class="grid" style="gap:10px">
+          <div class="field">
+            <label for="probe-channel">Channel name (the bit after kick.com/)</label>
+            <input type="text" id="probe-channel" placeholder="DeenTheGreat" autocapitalize="off" autocorrect="off" spellcheck="false">
+          </div>
+          <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-primary" id="probe-ladder">Check ladder</button>
+            <button class="btn" id="probe-buffer">Test buffer (30s)</button>
+          </div>
+        </div>
+        <div id="probe-verdict" style="margin-top:12px"></div>
+        <pre id="probe-raw" class="mono" style="margin-top:10px;white-space:pre-wrap;word-break:break-word;font-size:11.5px;color:var(--ink-2);max-height:340px;overflow:auto" hidden></pre>
+      </div>
+
       <div class="card">
         <div class="card-head"><h3>Niche &amp; keywords</h3><span class="hint">what the scout searches</span></div>
         <div class="grid" style="gap:10px">
