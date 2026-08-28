@@ -347,6 +347,110 @@ def rank_candidates(niche: str, candidates: list[Candidate], texts: list[str]) -
     return candidates
 
 
+# --- the studio -----------------------------------------------------------
+
+STUDIO_SYSTEM = (
+    "You are choosing one stretch of a real archive recording to build a short "
+    "vertical video around, and writing the narration that frames it.\n\n"
+    "Two rules matter more than anything else.\n"
+    "1. You may only choose a stretch that exists in the transcript below. Every "
+    "timestamp you return must be one you can see. The audience will hear the "
+    "recording, so a stretch you invented is immediately obvious.\n"
+    "2. Your narration must never claim the recording says something it does "
+    "not. Describe, set up, and land it - do not paraphrase it as though "
+    "quoting. If the transcript is unclear or mundane, say so in `why` and pick "
+    "the least bad stretch rather than inventing drama that is not there.\n\n"
+    "What makes a stretch worth using: something changes, someone reacts, a "
+    "decision is made, or a phrase lands. Procedural chatter with no turn in it "
+    "is not a moment, however clearly recorded.\n\n"
+    "The narration is three short lines, spoken by a low, unhurried documentary "
+    "voice:\n"
+    "- hook: three seconds, said before anything is heard. Give a reason to stay "
+    "without describing what is coming.\n"
+    "- context: said over the title, immediately before the recording plays. "
+    "This is the one that has to work hardest - the viewer is about to hear "
+    "unfamiliar voices and needs to know who is speaking and what is happening, "
+    "or the recording is just noise to them.\n"
+    "- closer: said after the recording. Land it or leave it open. Never "
+    "summarise what was just heard.\n\n"
+    "Return STRICT JSON only - no preamble, no markdown."
+)
+
+STUDIO_USER = """ARCHIVE: {name}
+SOURCE: {source}
+
+TRANSCRIPT (timestamps in seconds, from the start of this scan):
+{words_with_timestamps}
+
+Choose one stretch between {min_s:.0f} and {max_s:.0f} seconds long.
+
+Return JSON:
+{{ "start_s": number, "end_s": number,
+   "why": string,
+   "hook": string, "context": string, "closer": string }}
+
+Each narration line is one sentence, at most 18 words, written to be spoken
+aloud. No stage directions, no quotation marks around anything the recording
+says."""
+
+STUDIO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "start_s": {"type": "number"},
+        "end_s": {"type": "number"},
+        "why": {"type": "string"},
+        "hook": {"type": "string"},
+        "context": {"type": "string"},
+        "closer": {"type": "string"},
+    },
+    "required": ["start_s", "end_s", "hook", "context", "closer"],
+    "additionalProperties": False,
+}
+
+
+def find_moment(
+    archive_name: str, archive_source: str, words: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Pick the strongest stretch of a recording and write narration for it.
+
+    The transcript goes in whole rather than windowed: these are minutes of
+    tape, not hours of podcast, and the judgement is comparative - the best
+    stretch is only knowable against the rest.
+    """
+    from core.tape import DEFAULT_MOMENT_S, MAX_MOMENT_S, MIN_MOMENT_S
+
+    lines: list[str] = []
+    for index in range(0, len(words), 12):
+        chunk = words[index : index + 12]
+        stamp = float(chunk[0]["start"])
+        lines.append(f"[{stamp:7.1f}] " + " ".join(w["w"] for w in chunk))
+
+    payload = json_message(
+        STUDIO_SYSTEM,
+        STUDIO_USER.format(
+            name=archive_name,
+            source=archive_source,
+            words_with_timestamps="\n".join(lines),
+            min_s=MIN_MOMENT_S,
+            max_s=MAX_MOMENT_S,
+        ),
+        STUDIO_SCHEMA,
+    )
+
+    start = float(payload.get("start_s", 0.0))
+    end = float(payload.get("end_s", start + DEFAULT_MOMENT_S))
+    if end <= start:
+        end = start + DEFAULT_MOMENT_S
+    return {
+        "start_s": start,
+        "end_s": end,
+        "why": str(payload.get("why", "")),
+        "hook": str(payload.get("hook", "")).strip(),
+        "context": str(payload.get("context", "")).strip(),
+        "closer": str(payload.get("closer", "")).strip(),
+    }
+
+
 def write_metadata(niche: str, clip_text: str) -> dict[str, Any]:
     payload = json_message(
         METADATA_SYSTEM,

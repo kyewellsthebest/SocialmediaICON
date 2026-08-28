@@ -147,8 +147,20 @@ class Settings(BaseSettings):
     # and takes a plain-English `instructions` field - which is what stops it
     # sounding like an assistant reading a script.
     openai_api_key: str | None = None
+    # openai | elevenlabs. ElevenLabs is the better voice and costs about four
+    # pounds a month more at ten videos a day; OpenAI is the cheaper default
+    # and takes a plain-English instructions field.
+    tts_provider: str = "openai"
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "onyx"
+
+    # ElevenLabs. The voice is named rather than an id: ids are opaque and
+    # change per account, and the client resolves a name against /v1/voices.
+    elevenlabs_api_key: str | None = None
+    elevenlabs_voice: str = "Adam"
+    # v3 is the best and dearest; turbo is half the price and close enough for
+    # narration that sits under a recording.
+    elevenlabs_model: str = "eleven_multilingual_v2"
     tts_instructions: str = (
         "Male, low register. Documentary narration. Measured and unhurried, "
         "slightly weary. Do not sound impressed by what you are saying. Fall "
@@ -166,6 +178,10 @@ class Settings(BaseSettings):
 
     # Render shape. 24fps is deliberate: it is a third fewer overlay frames
     # to draw than 30 and reads as film rather than video.
+    # How much of a long recording to transcribe looking for a moment. Half an
+    # hour of mono 16 kHz mp3 is about 14 MB, inside OpenAI's 25 MB limit, and
+    # costs roughly a penny to transcribe.
+    studio_scan_minutes: float = 25.0
     studio_fps: int = 24
     studio_crf: int = 20
     # How hard the footage is pushed into the source's world, 0..1. At 0 the
@@ -316,8 +332,19 @@ class Settings(BaseSettings):
         return [k.strip() for k in self.scout_keywords.split(",") if k.strip()]
 
     @property
+    def tts_backend(self) -> str:
+        return self.tts_provider.strip().lower()
+
+    @property
     def has_tts(self) -> bool:
+        if self.tts_backend == "elevenlabs":
+            return bool(self.elevenlabs_api_key)
         return bool(self.openai_api_key)
+
+    @property
+    def has_whisper(self) -> bool:
+        """Whether the recording can be transcribed with the keys present."""
+        return bool(self.openai_api_key or self.transcription_key)
 
     @property
     def has_stock(self) -> bool:
