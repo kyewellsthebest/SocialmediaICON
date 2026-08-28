@@ -610,3 +610,40 @@ class TestGeoBlocking:
         message = str(caught.value)
         assert "region locked" in message
         assert "cookies" not in message.split("]")[1].lower()
+
+
+class TestImpersonation:
+    """Kick is unreachable without a browser TLS fingerprint.
+
+    yt-dlp's Kick extractor passes impersonate=True on every request, so when
+    curl_cffi is missing the request is never made and Cloudflare's 403 gets
+    blamed on Kick. That misreading cost this project a source, so the state
+    is reported rather than assumed.
+    """
+
+    def test_reports_the_targets_that_are_actually_available(self):
+        state = ytdlp.impersonation()
+        assert state["available"] is True, (
+            "curl_cffi should be installed - it is a hard dependency for Kick"
+        )
+        assert state["targets"] > 0
+        assert state["reason"] == ""
+
+    def test_missing_support_is_reported_not_raised(self, monkeypatch):
+        class Broken:
+            def __enter__(self):
+                raise ImportError("no curl_cffi")
+
+            def __exit__(self, *_):
+                return False
+
+        import yt_dlp
+
+        monkeypatch.setattr(yt_dlp, "YoutubeDL", lambda *a, **k: Broken())
+        state = ytdlp.impersonation()
+        assert state["available"] is False
+        assert state["targets"] == 0
+        assert "curl_cffi" in state["reason"] or "ImportError" in state["reason"]
+
+    def test_describe_carries_it_to_the_dashboard(self):
+        assert "impersonation" in ytdlp.describe()

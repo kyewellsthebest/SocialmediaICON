@@ -245,6 +245,7 @@ def describe() -> dict[str, Any]:
         "player_clients": player_clients(),
         "proxy_set": proxies() != [None],
         "proxy_count": len([p for p in proxies() if p]),
+        "impersonation": impersonation(),
     }
 
 
@@ -412,3 +413,33 @@ def run(call: Callable[[dict[str, Any]], Any], options: dict[str, Any]) -> Any:
         ) from last
 
     raise BotCheck(prefix + BOT_CHECK_HELP) from last
+
+
+def impersonation() -> dict[str, Any]:
+    """Can yt-dlp pretend to be a browser, and which ones?
+
+    Cloudflare fingerprints the TLS handshake, so a request that looks like
+    Python is refused before anything reads the URL. yt-dlp can imitate a real
+    browser's handshake, but only when curl_cffi is installed - and when it is
+    not, the failure surfaces as a 403 from the site, which reads exactly like
+    the site having closed its doors. It has not. The dependency is missing.
+
+    Kick's extractor asks for impersonation on every request, so for Kick this
+    is not a tuning knob, it is the difference between working and not.
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        return {"available": False, "targets": 0, "reason": "yt-dlp is not installed"}
+
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            targets = list(ydl._get_available_impersonate_targets())
+    except Exception as exc:  # noqa: BLE001 - a status read must never break the page
+        return {"available": False, "targets": 0, "reason": f"{type(exc).__name__}: {exc}"}
+
+    return {
+        "available": bool(targets),
+        "targets": len(targets),
+        "reason": "" if targets else "curl_cffi is not installed - Kick will 403",
+    }

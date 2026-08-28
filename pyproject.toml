@@ -18,6 +18,11 @@ dependencies = [
   "anthropic>=0.40",
   "httpx>=0.27",
   "yt-dlp>=2024.8.6",
+  # Browser TLS impersonation. Kick sits behind Cloudflare, which rejects
+  # Python's TLS fingerprint outright; yt-dlp's Kick extractor asks for
+  # impersonation and cannot get it without this. Without curl_cffi every
+  # Kick request is a 403 that looks like the site being closed.
+  "curl_cffi>=0.7",
   "pillow>=10.3",  # draws the studio's instrument overlay frame by frame
 ]
 

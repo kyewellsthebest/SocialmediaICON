@@ -179,7 +179,17 @@ def ytdlp_status() -> dict[str, Any]:
     still fail there - share with all three.
     """
     payload = ytdlp.describe()
-    if not payload["cookies_loaded"]:
+    # Impersonation first: without it Kick is unreachable outright, which is a
+    # harder failure than any cookie problem and is fixed by a dependency
+    # rather than by anything the user has to go and fetch.
+    if not payload["impersonation"]["available"]:
+        payload["hint"] = (
+            "Browser TLS impersonation is unavailable, so Kick will answer 403 "
+            "to everything - Cloudflare rejects Python's handshake before it "
+            "reads the URL. Install curl_cffi (it is in pyproject; redeploy "
+            "if this service predates it)."
+        )
+    elif not payload["cookies_loaded"]:
         payload["hint"] = (
             "No cookies loaded. Paste the contents of a cookies.txt into "
             "YTDLP_COOKIES and share it with web, worker and scheduler."
