@@ -152,3 +152,52 @@ class TestMood:
 
     def test_a_line_can_carry_two_feelings(self):
         assert chat.Message(0, "OMG KEKW").emotions() == {"shock", "funny"}
+
+
+class TestChatRetention:
+    """Chat must forget on the same timer as the video it describes."""
+
+    def test_messages_older_than_the_window_are_dropped(self):
+        log = chat.LiveLog(window_s=60.0)
+        log.extend([chat.Message(float(t), f"m{t}") for t in range(0, 200)])
+        assert log.held_s() <= 60.0
+        assert log.dropped == 139
+        assert log.recent()[0].at_s >= 139.0
+
+    def test_the_hard_cap_catches_a_flood_the_window_cannot(self):
+        """A raid puts a million lines inside a five minute window."""
+        log = chat.LiveLog(window_s=300.0, max_messages=1_000)
+        # 50k messages all within one second - the window is satisfied and
+        # would keep every one of them.
+        log.extend([chat.Message(10.0, "RAID") for _ in range(50_000)])
+        assert len(log.messages) == 1_000
+        assert log.dropped == 49_000
+
+    def test_memory_is_bounded_across_a_long_session(self):
+        log = chat.LiveLog(window_s=300.0)
+        for second in range(0, 8 * 3600, 2):  # eight hours, 30 msg/s
+            log.extend([chat.Message(float(second), "KEKW") for _ in range(60)])
+        assert len(log.messages) <= log.max_messages
+        assert log.held_s() <= 300.0
+
+    def test_a_curve_is_rebased_onto_what_is_still_held(self):
+        log = chat.LiveLog(window_s=60.0)
+        # Hours into a stream, so raw offsets are huge.
+        log.extend([chat.Message(20_000.0 + t, "KEKW") for t in range(0, 60)])
+        curve = log.curve()
+        assert curve.duration_s <= 60.0
+        assert len(curve.counts) <= 62, "the curve must not span the whole stream"
+        assert sum(curve.counts) == len(log.messages)
+
+    def test_an_empty_log_reports_zero_rather_than_failing(self):
+        log = chat.LiveLog()
+        assert log.held_s() == 0.0
+        assert log.curve().duration_s == 0.0
+        assert log.status()["messages"] == 0
+
+    def test_what_was_dropped_is_visible(self):
+        log = chat.LiveLog(window_s=10.0)
+        log.extend([chat.Message(float(t), "x") for t in range(100)])
+        status = log.status()
+        assert status["dropped"] > 0
+        assert status["held_s"] <= 10.0

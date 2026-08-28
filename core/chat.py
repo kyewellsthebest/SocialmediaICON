@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -396,3 +397,90 @@ def quotes_around(messages: list[Message], at_s: float, window_s: float = 6.0) -
     """
     low, high = at_s - window_s, at_s + window_s
     return [m.text for m in messages if low <= m.at_s < high]
+
+
+@dataclass
+class LiveLog:
+    """Chat for a live channel, kept only as long as the video it explains.
+
+    The video buffer forgets on a timer; this has to forget on the same one.
+    A chat log that outlives the frames it describes is the same leak in a
+    cheaper unit - a busy channel runs 30-60 messages a second, so ten
+    streams held for a full session is tens of millions of objects in RAM,
+    and every one of them is describing video that was deleted hours ago.
+
+    Bounded twice, because either bound alone can fail. The window is what
+    matters and does the work; the hard cap on count is a backstop for the
+    case the window cannot handle - a raid or a bot flood, where a few
+    seconds of chat is a million lines and the window is still technically
+    being honoured while memory is gone.
+    """
+
+    window_s: float = 300.0
+    #: Backstop against a flood. Roughly a minute of a very busy channel.
+    max_messages: int = 20_000
+    messages: deque[Message] = field(default_factory=deque)
+    #: Messages discarded so far - visible, because silently dropping the
+    #: evidence for a moment is exactly the kind of thing that gets noticed
+    #: three weeks later as "the scores look wrong sometimes".
+    dropped: int = 0
+    _newest_s: float = 0.0
+
+    def add(self, message: Message) -> None:
+        self.messages.append(message)
+        self._newest_s = max(self._newest_s, message.at_s)
+        self.prune()
+
+    def extend(self, messages: list[Message]) -> None:
+        for message in messages:
+            self.messages.append(message)
+            self._newest_s = max(self._newest_s, message.at_s)
+        self.prune()
+
+    def prune(self, *, now_s: float | None = None) -> int:
+        """Drop anything older than the window. Returns how many went."""
+        edge = (self._newest_s if now_s is None else now_s) - self.window_s
+        went = 0
+        while self.messages and self.messages[0].at_s < edge:
+            self.messages.popleft()
+            went += 1
+        while len(self.messages) > self.max_messages:
+            self.messages.popleft()
+            went += 1
+        self.dropped += went
+        return went
+
+    def held_s(self) -> float:
+        if not self.messages:
+            return 0.0
+        return self.messages[-1].at_s - self.messages[0].at_s
+
+    def recent(self) -> list[Message]:
+        """What is still held, oldest first."""
+        return list(self.messages)
+
+    def curve(self, *, bucket_s: float = BUCKET_S) -> Curve:
+        """Bucket what is held, on a timeline starting at the oldest message.
+
+        Offsets are rebased to the window rather than to the start of the
+        stream, because the start of the stream is hours ago and has been
+        deleted. Everything downstream measures against the buffer it can
+        actually cut from.
+        """
+        held = self.recent()
+        if not held:
+            return Curve(bucket_s=bucket_s, duration_s=0.0)
+        origin = held[0].at_s
+        rebased = [
+            Message(at_s=m.at_s - origin, text=m.text, user=m.user) for m in held
+        ]
+        return build_curve(rebased, duration_s=self.held_s(), bucket_s=bucket_s)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "messages": len(self.messages),
+            "held_s": round(self.held_s(), 1),
+            "window_s": self.window_s,
+            "dropped": self.dropped,
+            "at_cap": len(self.messages) >= self.max_messages,
+        }
