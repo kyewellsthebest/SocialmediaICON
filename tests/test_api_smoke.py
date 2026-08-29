@@ -32,18 +32,19 @@ def test_dashboard_and_assets_are_served(client):
 
 def test_routes_needing_postgres_answer_503_not_500(client, monkeypatch):
     monkeypatch.setattr(settings, "database_url", None)
-    response = client.get("/api/review/queue")
+    response = client.get("/api/live/catches")
     assert response.status_code == 503
     assert "DATABASE_URL" in response.json()["detail"]
 
 
 def test_token_gate(client, monkeypatch):
     monkeypatch.setattr(settings, "dashboard_token", "sekrit")
-    assert client.get("/api/overview").status_code == 401
-    assert client.get("/api/overview", headers={"X-Dashboard-Token": "nope"}).status_code == 401
+    assert client.get("/api/live/catches").status_code == 401
+    assert client.get("/api/live/catches", headers={"X-Dashboard-Token": "nope"}).status_code == 401
     # right token gets past auth (503 here only because there is no database)
-    assert client.get("/api/overview", headers={"X-Dashboard-Token": "sekrit"}).status_code != 401
-    assert client.get("/api/overview?token=sekrit").status_code != 401
+    good = client.get("/api/live/catches", headers={"X-Dashboard-Token": "sekrit"})
+    assert good.status_code != 401
+    assert client.get("/api/live/catches?token=sekrit").status_code != 401
 
 
 def test_health_stays_public_when_a_token_is_set(client, monkeypatch):

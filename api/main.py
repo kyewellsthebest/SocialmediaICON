@@ -21,7 +21,7 @@ from core.db import session_scope
 from core.storage import get_storage
 
 from .deps import require_token
-from .routes import analytics, clips, live, overview, probe, review, sources, studio, trending
+from .routes import live, probe
 from .routes import settings as settings_routes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -46,16 +46,9 @@ app.add_middleware(
 # Every data route sits behind the dashboard token.
 protected = [Depends(require_token)]
 for router in (
-    overview.router,
-    trending.router,
-    sources.router,
-    clips.router,
-    review.router,
-    analytics.router,
-    studio.router,
-    settings_routes.router,
-    probe.router,
     live.router,
+    probe.router,
+    settings_routes.router,
 ):
     app.include_router(router, prefix="/api", dependencies=protected)
 

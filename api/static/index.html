@@ -3,327 +3,121 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#171716" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
-<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="color-scheme" content="light dark">
 <title>Clip engine</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎬</text></svg>">
 <link rel="stylesheet" href="/static/app.css?v=__V__">
 </head>
 <body>
 
-<svg style="display:none" aria-hidden="true">
-  <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></symbol>
-  <symbol id="i-trend" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></symbol>
-  <symbol id="i-review" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 9 5 3-5 3z"/></symbol>
-  <symbol id="i-posts" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
-  <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-    <circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
-  <symbol id="i-source" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/></symbol>
-  <symbol id="i-studio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="2" y="5" width="14" height="14" rx="2"/><path d="m16 10 6-3v10l-6-3z"/></symbol>
-  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></symbol>
-  <symbol id="i-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h12"/></symbol>
-  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></symbol>
-  <symbol id="i-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-    <circle cx="12" cy="12" r="8"/><path d="M12 4v16" /><path d="M12 4a8 8 0 0 1 0 16" fill="currentColor"/></symbol>
-</svg>
-
-<div id="progress" hidden><span></span></div>
-
 <!-- token gate -->
-<div id="gate" class="gate" hidden>
-  <div class="brand"><span class="dot">🎬</span></div>
+<div class="gate" id="gate" hidden>
   <h2>Clip engine</h2>
-  <p style="color: var(--ink-2)">Enter your dashboard token — the <code>DASHBOARD_TOKEN</code> you set in Railway.</p>
-  <input type="password" id="gate-token" placeholder="dashboard token" autocomplete="current-password" enterkeyhint="go">
+  <p class="muted">Enter your dashboard token — the <code>DASHBOARD_TOKEN</code> set in Railway.</p>
+  <div class="field">
+    <input type="password" id="gate-token" placeholder="dashboard token" autocomplete="current-password" enterkeyhint="go">
+  </div>
   <button class="btn btn-primary" id="gate-go">Unlock</button>
-  <p id="gate-error" style="color: var(--critical); font-size: 13px" hidden>That token was rejected.</p>
+  <p class="muted" id="gate-error" hidden style="color:var(--critical)">That token was rejected.</p>
 </div>
 
 <div id="app" hidden>
-  <header class="topbar">
-    <div class="brand">
-      <span class="dot">🎬</span>
-      <span class="who">
-        <h1>Clip engine</h1>
-        <small id="env-label">loading…</small>
-      </span>
-    </div>
 
-    <nav class="tabs-top" id="tabs-top">
-      <a href="#/studio" data-view="studio"><svg><use href="#i-studio"/></svg>Studio</a>
-      <a href="#/overview" data-view="overview"><svg><use href="#i-home"/></svg>Overview</a>
-      <a href="#/trending" data-view="trending"><svg><use href="#i-trend"/></svg>Trending</a>
-      <a href="#/review" data-view="review"><svg><use href="#i-review"/></svg>Review<span class="badge" id="badge-top" hidden>0</span></a>
-      <a href="#/posts" data-view="posts"><svg><use href="#i-posts"/></svg>Posts</a>
-      <a href="#/sources" data-view="sources"><svg><use href="#i-source"/></svg>Sources</a>
-      <a href="#/settings" data-view="settings"><svg><use href="#i-settings"/></svg>Settings</a>
-    </nav>
-
-    <button class="icon-btn" id="refresh" aria-label="Refresh"><svg><use href="#i-refresh"/></svg></button>
-    <button class="icon-btn" id="theme" aria-label="Switch theme"><svg><use href="#i-theme"/></svg></button>
+  <header class="top">
+    <button class="burger" id="burger" aria-label="Menu" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <h1 id="title">Live</h1>
+    <span class="pill" id="top-state" data-state="warning">idle</span>
   </header>
 
+  <div class="drawer-scrim" id="scrim" data-open="false"></div>
+  <aside class="drawer" id="drawer" data-open="false">
+    <header>
+      <h2>Clip engine</h2>
+      <p class="label" id="drawer-sub">watching kick</p>
+    </header>
+    <nav>
+      <a href="#/live" data-view="live">Live<span class="label" id="nav-live"></span></a>
+      <a href="#/clips" data-view="clips">Clips<span class="label" id="nav-clips"></span></a>
+      <a href="#/settings" data-view="settings">Settings</a>
+    </nav>
+    <footer>
+      <button class="btn btn-quiet" id="theme">Switch theme</button>
+    </footer>
+  </aside>
+
   <main>
-    <section class="view" id="view-studio" hidden>
-      <div class="view-head">
-        <div>
-          <h2>Studio</h2>
-          <p>Original videos from public-record audio. Pick a source, press generate, watch what comes out. Nothing posts on its own.</p>
-        </div>
-        <button class="btn btn-primary" id="studio-go">Generate video</button>
-      </div>
 
-      <div class="studio-grid">
-        <div class="grid" style="gap:14px; align-content:start">
-          <div class="card">
-            <div class="card-head"><h3>Source</h3><span class="hint">six archives</span></div>
-            <div class="src-picker" id="studio-sources"></div>
-            <p class="prov" id="studio-prov" style="margin-top:12px"></p>
+    <!-- ============ LIVE ============ -->
+    <section class="view" id="view-live">
+      <div class="card">
+        <div class="spread">
+          <div>
+            <h3 id="live-head">Not watching</h3>
+            <p class="muted" id="live-sub">Press start to watch the top streams.</p>
           </div>
-
-          <div class="card">
-            <div class="card-head"><h3>Look</h3><span class="hint">applies to this render</span></div>
-            <div class="dials">
-              <div class="dial">
-                <div class="row-between"><span class="label">Grade</span><span class="val" id="grade-val">88%</span></div>
-                <input type="range" id="studio-grade" min="0" max="100" value="88">
-                <span class="hint">How hard the footage is pushed into this source&rsquo;s world</span>
-              </div>
-              <div class="dial">
-                <div class="row-between"><span class="label">Overlay</span><span class="val" id="overlay-val">62%</span></div>
-                <input type="range" id="studio-overlay" min="0" max="100" value="62">
-                <span class="hint">How present the instrument layer is on top</span>
-              </div>
-              <div class="dial">
-                <span class="label">Opening</span>
-                <div class="switch" role="group" aria-label="Opening">
-                  <button id="hook-cold" aria-pressed="true">Cold open</button>
-                  <button id="hook-voice" aria-pressed="false">AI presenter</button>
-                </div>
-              </div>
-              <div class="dial">
-                <span class="label">Footage</span>
-                <div class="switch" role="group" aria-label="Footage">
-                  <button id="stock-on" aria-pressed="true">Stock clip</button>
-                  <button id="stock-off" aria-pressed="false">Drawn plate</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-head"><h3>Renders</h3><span class="hint">newest first</span></div>
-            <div id="studio-renders"></div>
-          </div>
-        </div>
-
-        <div class="grid" style="gap:14px; align-content:start">
-          <div class="card">
-            <div class="card-head"><h3>Latest</h3><span class="hint" id="studio-latest-status">—</span></div>
-            <div class="phone-wrap"><div class="phone-frame" id="studio-player">
-              <div class="placeholder">Nothing rendered yet</div>
-            </div></div>
-            <div id="studio-latest-meta" style="margin-top:12px"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-head"><h3>Keys</h3><span class="hint">set in Railway</span></div>
-            <div id="studio-keys"></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="view" id="view-overview" hidden>
-      <div class="view-head">
-        <h2>Overview</h2>
-        <p>What the pipeline has done, and what it is costing.</p>
-      </div>
-      <div class="grid kpis" id="kpis"></div>
-      <div class="grid cols">
-        <div class="card">
-          <div class="card-head"><h3>Average views per post</h3><span class="hint">latest reading</span></div>
-          <div id="platform-chart"></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>Recent activity</h3></div>
-          <div id="activity"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="view" id="view-trending" hidden>
-      <div class="view-head">
-        <div>
-          <h2>Trending</h2>
-          <p>Ranked by speed, likes and how strong the most-replayed peak is. Only clip what you have the rights to.</p>
+          <span class="pill" id="live-state" data-state="warning">idle</span>
         </div>
         <div class="row">
-          <select id="trending-filter" style="flex:1 1 150px">
-            <option value="new" selected>Not yet clipped</option>
-            <option value="">All</option>
-            <option value="queued">Queued</option>
-            <option value="clipped">Clipped</option>
-            <option value="ignored">Hidden</option>
-          </select>
-          <select id="trending-source" class="btn ghost" aria-label="Source">
-            <option value="">All sources</option>
-            <option value="youtube">YouTube</option>
-            <option value="reddit">Reddit</option>
-          </select>
-          <button class="btn btn-primary" id="scan-now">Scan now</button>
-          <button class="btn ghost" id="trend-tidy">Tidy list</button>
+          <button class="btn btn-primary" id="live-start">Start watching</button>
+          <button class="btn" id="live-stop">Stop</button>
+          <button class="btn btn-quiet" id="live-refresh">Refresh</button>
         </div>
+        <div class="stats" id="live-caps"></div>
       </div>
-      <div id="trending-body"></div>
+
+      <div id="streams"></div>
+      <div class="card" id="live-errors" hidden>
+        <header><h3>Recent problems</h3></header>
+        <pre class="raw" id="live-errors-body"></pre>
+      </div>
     </section>
 
-    <section class="view" id="view-review" hidden>
+    <!-- ============ CLIPS ============ -->
+    <section class="view" id="view-clips" hidden>
       <div class="view-head">
-        <h2>Review</h2>
-        <p>Watch it, fix the caption, approve or bin it. Nothing posts until you approve.</p>
+        <h2>Clips</h2>
+        <p>Caught and held. Nothing is posted anywhere.</p>
       </div>
-      <div id="review-body"></div>
+      <div id="clips"></div>
     </section>
 
-    <section class="view" id="view-posts" hidden>
-      <div class="view-head">
-        <h2>Posts</h2>
-        <p>Everything that went out, with the numbers pulled back in.</p>
-      </div>
-      <div id="posts-body"></div>
-      <div class="card" id="post-detail" hidden></div>
-    </section>
-
-    <section class="view" id="view-sources" hidden>
-      <div class="view-head">
-        <h2>Sources</h2>
-        <p>Long-form videos in the pipeline. <code>none</code> is refused in production.</p>
-      </div>
-      <div class="card">
-        <div class="grid" style="gap:10px">
-          <div class="field">
-            <label for="src-url">Video URL</label>
-            <input type="text" id="src-url" placeholder="https://youtube.com/watch?v=…" inputmode="url">
-          </div>
-          <div class="field">
-            <label for="src-niche">Niche</label>
-            <input type="text" id="src-niche" placeholder="optional">
-          </div>
-          <div class="field">
-            <label for="src-file">…or upload a video file</label>
-            <input type="file" id="src-file" accept="video/*">
-            <p class="hint">Download it yourself, drop it here. Skips the bit YouTube blocks.</p>
-          </div>
-          <button class="btn btn-primary" id="src-add">Add to pipeline</button>
-        </div>
-      </div>
-      <div id="sources-body"></div>
-    </section>
-
+    <!-- ============ SETTINGS ============ -->
     <section class="view" id="view-settings" hidden>
       <div class="view-head">
         <h2>Settings</h2>
-        <p>Secrets live in Railway and are never shown here — this only reports what is present.</p>
-      </div>
-      <div class="grid cols">
-        <div class="card">
-          <div class="card-head"><h3>Connections</h3><span class="hint">what is wired up</span></div>
-          <div class="checklist" id="connections"></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>Operating config</h3><span class="hint">from environment</span></div>
-          <div class="checklist" id="env-config"></div>
-        </div>
-      </div>
-      <!-- Can this deployment actually reach Kick? Everything in the live
-           plan rests on the answer, and the answer differs per machine - so
-           it has to be askable from the box that would do the fetching. -->
-      <div class="card">
-        <div class="card-head"><h3>Kick reachability</h3><span class="hint">does this server get served</span></div>
-        <p style="color:var(--ink-2);font-size:13px;margin:0 0 10px">
-          Pick anyone live on kick.com right now and paste their channel name.
-          <b>Ladder</b> is instant and prices the bandwidth. <b>Buffer</b> takes
-          about 30 seconds because it really holds the stream.
-        </p>
-        <div class="grid" style="gap:10px">
-          <div class="field">
-            <label for="probe-channel">Channel name (the bit after kick.com/)</label>
-            <input type="text" id="probe-channel" placeholder="DeenTheGreat" autocapitalize="off" autocorrect="off" spellcheck="false">
-          </div>
-          <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-primary" id="probe-ladder">Check ladder</button>
-            <button class="btn" id="probe-buffer">Test buffer (30s)</button>
-          </div>
-        </div>
-        <div id="probe-verdict" style="margin-top:12px"></div>
-        <pre id="probe-raw" class="mono" style="margin-top:10px;white-space:pre-wrap;word-break:break-word;font-size:11.5px;color:var(--ink-2);max-height:340px;overflow:auto" hidden></pre>
+        <p>Secrets live in Railway. This only reports what is present.</p>
       </div>
 
       <div class="card">
-        <div class="card-head"><h3>Niche &amp; keywords</h3><span class="hint">what the scout searches</span></div>
-        <div class="grid" style="gap:10px">
-          <div class="field">
-            <label for="niche-name">Niche</label>
-            <input type="text" id="niche-name" placeholder="e.g. fitness">
-          </div>
-          <div class="field">
-            <label for="niche-keywords">Keywords (comma separated)</label>
-            <input type="text" id="niche-keywords" placeholder="kettlebell form, home workout mistakes">
-          </div>
-          <button class="btn btn-primary" id="niche-save">Save niche</button>
-        </div>
-        <div id="niches-body" style="margin-top:12px"></div>
+        <header><h3>Capture</h3></header>
+        <div class="stats" id="capture-config"></div>
       </div>
+
       <div class="card">
-        <div class="card-head"><h3>Accounts</h3><span class="hint">where approved clips go</span></div>
-        <div class="grid" style="gap:10px">
-          <div class="row">
-            <div class="field" style="flex:1 1 130px">
-              <label for="acct-platform">Platform</label>
-              <select id="acct-platform">
-                <option value="youtube">YouTube</option>
-                <option value="tiktok">TikTok</option>
-                <option value="instagram">Instagram</option>
-                <option value="facebook">Facebook</option>
-                <option value="snapchat">Snapchat</option>
-              </select>
-            </div>
-            <div class="field" style="flex:1 1 150px">
-              <label for="acct-handle">Handle</label>
-              <input type="text" id="acct-handle" placeholder="@yourhandle">
-            </div>
-          </div>
-          <button class="btn btn-primary" id="acct-add">Add account</button>
+        <header><h3>Kick reachability</h3><span class="label">does this server get served</span></header>
+        <p class="muted">Paste anyone live on kick.com. Ladder is instant; buffer really holds the stream for 30 seconds.</p>
+        <div class="field">
+          <label class="label" for="probe-channel">Channel name</label>
+          <input type="text" id="probe-channel" placeholder="DeenTheGreat" autocapitalize="off" autocorrect="off" spellcheck="false">
         </div>
-        <div id="accounts-body" style="margin-top:12px"></div>
+        <div class="row">
+          <button class="btn btn-primary" id="probe-ladder">Check ladder</button>
+          <button class="btn" id="probe-buffer">Test buffer (30s)</button>
+        </div>
+        <div id="probe-verdict"></div>
+      </div>
+
+      <div class="card">
+        <header><h3>Connections</h3></header>
+        <div class="stats" id="connections"></div>
       </div>
     </section>
-  </main>
 
-  <nav class="tabbar" id="tabbar">
-    <a href="#/studio" data-view="studio"><svg><use href="#i-studio"/></svg>Studio</a>
-    <a href="#/overview" data-view="overview"><svg><use href="#i-home"/></svg>Overview</a>
-    <a href="#/review" data-view="review"><svg><use href="#i-review"/></svg>Review<span class="badge" id="badge" hidden>0</span></a>
-    <a href="#/posts" data-view="posts"><svg><use href="#i-posts"/></svg>Posts</a>
-    <button id="more-btn" aria-label="More"><svg><use href="#i-more"/></svg>More</button>
-  </nav>
+  </main>
 </div>
 
-<div id="sheet-root"></div>
-<div class="tooltip" id="tooltip" hidden></div>
 <div class="toast" id="toast" hidden></div>
-
 <script src="/static/app.js?v=__V__"></script>
 </body>
 </html>
