@@ -1,4 +1,4 @@
-"""'REDIS_URL is not set' is three different faults wearing one message.
+"""A missing connection variable is three different faults wearing one message.
 
 The variable was never added; it was added but the Railway reference resolved
 to nothing; or it is right there in the environment and something between
@@ -67,3 +67,37 @@ class TestItNeverLeaksTheValue:
         """The one value worth echoing: it is a template, not a credential."""
         monkeypatch.setenv("REDIS_URL", "${{Redis.REDIS_URL}}")
         assert "${{Redis.REDIS_URL}}" in redis_diagnosis()
+
+
+class TestItWorksForAnyConnectionVariable:
+    """The same fault hit DATABASE_URL a day later, so it is not Redis-specific."""
+
+    def test_the_database_variable_gets_the_same_treatment(self, monkeypatch):
+        from core.envcheck import explain
+
+        monkeypatch.setenv("DATABASE_URL", "")
+        found = explain("DATABASE_URL", service_hint="Postgres")
+        assert "EMPTY" in found
+        assert "Postgres" in found, "the hint names the service to look for"
+
+    def test_unrelated_variables_are_not_listed(self, monkeypatch):
+        """PG as a substring matches plenty of noise; a noisy list goes unread."""
+        from core.envcheck import explain
+
+        monkeypatch.setenv("USE_BUILTIN_RIPGREP", "1")
+        monkeypatch.setenv("REDISHOST", "h")
+        found = explain("REDIS_URL")
+        assert "REDISHOST" in found
+        assert "RIPGREP" not in found
+
+    def test_the_cli_entry_point_prints_and_succeeds(self, capsys, monkeypatch):
+        from core.envcheck import main
+
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        assert main(["REDIS_URL"]) == 0
+        assert "absent" in capsys.readouterr().out
+
+    def test_the_cli_refuses_without_a_name(self):
+        from core.envcheck import main
+
+        assert main([]) == 2

@@ -20,8 +20,12 @@ fatal() {
 }
 
 require_database() {
-  have_connection database || fatal \
-    "DATABASE_URL is not set." \
+  have_connection database && return 0
+  # The reason matters more than the fact: empty, unexpanded and absent are
+  # three different faults and only one of them means "you forgot".
+  python -m core.envcheck DATABASE_URL >&2 || true
+  fatal \
+    "DATABASE_URL is not usable." \
     "" \
     "In Railway: add a Postgres database to this project, then set this" \
     "service's variable to reference it:" \
@@ -49,8 +53,10 @@ PYCHECK
 }
 
 require_redis() {
-  have_connection redis || fatal \
-    "REDIS_URL is not set, and the $ROLE cannot queue work without it." \
+  have_connection redis && return 0
+  python -m core.envcheck REDIS_URL >&2 || true
+  fatal \
+    "REDIS_URL is not usable, and the $ROLE cannot queue work without it." \
     "" \
     "In Railway: add a Redis database, then set this service's variable to:" \
     "" \
