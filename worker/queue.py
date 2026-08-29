@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -73,6 +74,49 @@ MISSING_REDIS = """FATAL: REDIS_URL is not set, and the worker has nothing to ta
        Set it on every service, not just this one."""
 
 
+def redis_diagnosis() -> str:
+    """Say *why* there is no Redis URL, not merely that there is none.
+
+    "Not set" is three different faults wearing one message: the variable was
+    never added, it was added but resolved to an empty string because the
+    reference names a service that does not exist, or it is present in the
+    environment and something between there and here is dropping it. Each has
+    a different fix and they are indistinguishable from the outside, which is
+    how an afternoon disappears.
+
+    Names only, never values - these are credentials.
+    """
+    import os
+
+    raw = os.environ.get("REDIS_URL")
+    lines = []
+
+    if raw is None:
+        lines.append("REDIS_URL is absent from this process's environment entirely.")
+        lines.append("The variable was never added to THIS service - Railway does not")
+        lines.append("share variables between services, so adding it to web does not")
+        lines.append("give it to worker or scheduler.")
+    elif not raw.strip():
+        lines.append("REDIS_URL is present but EMPTY.")
+        lines.append("That is what a Railway reference looks like when it cannot")
+        lines.append("resolve - check the service name in ${{...}} matches exactly,")
+        lines.append("including its capitals.")
+    elif raw.startswith("${{"):
+        lines.append(f"REDIS_URL is the literal text {raw!r}.")
+        lines.append("Railway did not expand the reference; retype it in the Railway")
+        lines.append("variables editor rather than pasting it as raw text.")
+    else:
+        lines.append("REDIS_URL *is* set in the environment, so this is our bug, not")
+        lines.append("a configuration one. Please send this line to the developer.")
+
+    related = sorted(
+        k for k in os.environ if "REDIS" in k.upper() or "DATABASE" in k.upper()
+    )
+    lines.append("")
+    lines.append(f"Related variables this process can see: {', '.join(related) or 'none'}")
+    return "\n       ".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     names = argv or list(QUEUE_NAMES)
@@ -82,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     # stack trace repeated every restart buries the one line that says so.
     if not settings.has_redis:
         print(MISSING_REDIS, file=sys.stderr)
+        print(f"\n       {redis_diagnosis()}\n", file=sys.stderr)
+        # Crash-looping every two seconds buries the explanation under a
+        # thousand copies of itself. Pause so the message stays readable in
+        # the log viewer, and so a restart storm does not bill for nothing.
+        time.sleep(15)
         return 1
 
     from rq import Worker

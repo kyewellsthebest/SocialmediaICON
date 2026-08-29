@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from core.config import settings
-from worker.queue import MISSING_REDIS, enqueue, get_redis
+from worker.queue import MISSING_REDIS, enqueue, get_redis, redis_diagnosis
 
 log = logging.getLogger("scheduler")
 
@@ -148,6 +148,8 @@ def main() -> int:
     if not settings.has_redis:
         if settings.is_prod:
             print(MISSING_REDIS, file=sys.stderr)
+            print(f"\n       {redis_diagnosis()}\n", file=sys.stderr)
+            time.sleep(15)
             return 1
         log.warning("REDIS_URL is not set - running jobs inline (development only)")
 
