@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import time
 
+from core import livestate
 from core.config import settings
 from core.supervisor import TICK_S, Supervisor
 
@@ -36,6 +37,7 @@ def run(max_seconds: float | None = None) -> dict:
     supervisor = Supervisor()
     _current = supervisor
     supervisor.running = True
+    livestate.clear()
     started = time.time()
     caught = 0
 
@@ -49,11 +51,20 @@ def run(max_seconds: float | None = None) -> dict:
 
             caught += len(supervisor.tick())
 
+            # The dashboard is served by a different process on a different
+            # container, so the only way it can show any of this is if the
+            # snapshot is written somewhere both can reach.
+            livestate.publish(supervisor.status())
+
+            if livestate.stop_requested():
+                log.info("live_watch: stop requested")
+                break
             if max_seconds is not None and time.time() - started >= max_seconds:
                 break
             time.sleep(TICK_S)
     finally:
         supervisor.stop()
+        livestate.clear()
 
     return {
         "ok": True,
@@ -64,7 +75,8 @@ def run(max_seconds: float | None = None) -> dict:
 
 
 def stop() -> dict:
-    if _current is None or not _current.running:
-        return {"ok": False, "reason": "nothing is running"}
-    _current.running = False
-    return {"ok": True}
+    """Ask the loop to finish - usually from the web process, not this one."""
+    livestate.request_stop()
+    if _current is not None:
+        _current.running = False
+    return {"ok": True, "requested": True}

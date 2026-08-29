@@ -25,39 +25,61 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/live", tags=["live"])
 
 
+def _idle(hint: str) -> dict[str, Any]:
+    return {
+        "running": False,
+        "enabled": settings.live_enabled,
+        "slots": settings.live_slots,
+        "posting_enabled": settings.live_posting_enabled,
+        "caps": {
+            "per_day": settings.live_clips_per_day,
+            "min_gap_minutes": settings.live_min_gap_minutes,
+        },
+        "streams": [],
+        "errors": [],
+        "hint": hint,
+    }
+
+
 @router.get("")
 def status() -> dict[str, Any]:
-    """Everything the watcher can see, for the Live view."""
-    from worker.tasks.live_watch import current
+    """Everything the watcher can see, for the Live view.
 
-    supervisor = current()
-    if supervisor is None or not supervisor.running:
-        return {
-            "running": False,
-            "enabled": settings.live_enabled,
-            "slots": settings.live_slots,
-            "posting_enabled": settings.live_posting_enabled,
-            "caps": {
-                "per_day": settings.live_clips_per_day,
-                "min_gap_minutes": settings.live_min_gap_minutes,
-            },
-            "streams": [],
-            "errors": [],
-            "hint": (
-                "Set LIVE_ENABLED=true and press Start."
-                if not settings.live_enabled
-                else "Not running - press Start."
-            ),
-        }
-    return supervisor.status()
+    Read from the shared snapshot rather than from memory: the supervisor
+    lives in the worker process and this one is the web. A status held in a
+    module global here would read "not running" forever while three buffers
+    were quietly filling in another container.
+    """
+    from core import livestate
+
+    found = livestate.read()
+    if found:
+        return found
+    if not settings.live_enabled:
+        return _idle("Set LIVE_ENABLED=true on the web and worker, then press Start.")
+    if not settings.has_redis:
+        return _idle("REDIS_URL is not set, so the watcher cannot be started or read.")
+    return _idle("Not running - press Start.")
 
 
 @router.post("/start")
 def start() -> dict[str, Any]:
     if not settings.live_enabled:
         raise HTTPException(400, "LIVE_ENABLED is not set on this service")
-    enqueue("worker.tasks.live_watch.run")
-    return {"ok": True, "queued": True}
+    if not settings.has_redis:
+        raise HTTPException(503, "REDIS_URL is not set, so there is no worker to run this")
+
+    from core import livestate
+
+    if livestate.read():
+        return {"ok": True, "already_running": True}
+
+    # The queue name comes first; the watcher has its own so a run lasting
+    # hours cannot sit in front of every other job. job_timeout has to be
+    # long for the same reason - the default hour would kill it mid-stream.
+    livestate.clear()
+    job = enqueue("live", "worker.tasks.live_watch.run", job_timeout=24 * 3600)
+    return {"ok": True, "queued": True, "job": getattr(job, "id", None)}
 
 
 @router.post("/stop")

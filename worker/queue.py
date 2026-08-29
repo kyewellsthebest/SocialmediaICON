@@ -24,6 +24,9 @@ QUEUE_NAMES = (
     "render",
     "publish",
     "metrics",
+    # The live watcher. Its own queue because the job runs for hours and
+    # would otherwise block every render behind it.
+    "live",
 )
 
 _redis: Any = None
