@@ -406,6 +406,16 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   border-bottom: 1px solid var(--rule);
 }
 .check-row:last-child { border-bottom: none; }
+/* A check row is a label above its explanation, not one run-on string. The
+   two elements had no layout rule, so a long detail ran straight on from the
+   heading and read as a single unbroken sentence. */
+.check-row .what { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
+.check-row .what > span { color: var(--ink-2); }
+.check-row .what > small {
+  font-family: var(--sans); font-size: 12px; line-height: 1.45;
+  text-transform: none; letter-spacing: .01em; color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
 .check-row .k { flex: 1 1 auto; min-width: 0; color: var(--ink-2); text-transform: none; letter-spacing: .02em; font-family: var(--sans); font-size: 13.5px; }
 .check-row .v { font-family: var(--mono); font-size: 12px; color: var(--ink); }
 .check-row .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--rule-hard); flex: none; }
