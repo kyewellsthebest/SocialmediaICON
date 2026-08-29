@@ -20,7 +20,7 @@ fatal() {
 }
 
 require_database() {
-  [ -n "${DATABASE_URL:-}" ] || fatal \
+  have_connection database || fatal \
     "DATABASE_URL is not set." \
     "" \
     "In Railway: add a Postgres database to this project, then set this" \
@@ -31,13 +31,34 @@ require_database() {
     "Every service (web, worker, scheduler) needs it."
 }
 
+# A Railway ${{Service.VAR}} reference that cannot resolve arrives as an empty
+# string, and one pasted as text arrives with its braces intact. Both are
+# useless and neither is "unset", so ask whether there is a connection to be
+# had at all rather than whether one variable is non-empty: Python knows how to
+# recover one from the other names the managed databases publish, and this must
+# not refuse to boot in a case Python can handle.
+have_connection() {
+  python - "$1" <<'PYCHECK'
+import sys
+
+from core.config import settings
+
+which = sys.argv[1]
+sys.exit(0 if (settings.redis_url if which == "redis" else settings.database_url) else 1)
+PYCHECK
+}
+
 require_redis() {
-  [ -n "${REDIS_URL:-}" ] || fatal \
+  have_connection redis || fatal \
     "REDIS_URL is not set, and the $ROLE cannot queue work without it." \
     "" \
     "In Railway: add a Redis database, then set this service's variable to:" \
     "" \
-    "    REDIS_URL=\${{Redis.REDIS_URL}}"
+    "    REDIS_URL=\${{Redis.REDIS_URL}}" \
+    "" \
+    "If it is already set, the reference did not resolve and arrives empty." \
+    "Use Railway's variable picker rather than typing the reference, and" \
+    "check the service really is called Redis, capitals included."
 }
 
 # Postgres can still be accepting connections a few seconds after the container

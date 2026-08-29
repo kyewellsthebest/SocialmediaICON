@@ -11,6 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -292,6 +293,65 @@ class Settings(BaseSettings):
         return all(
             [self.r2_account_id, self.r2_access_key_id, self.r2_secret_access_key, self.r2_bucket]
         )
+
+    # --- surviving an unresolved Railway reference -------------------------
+    #
+    # A ${{Service.VAR}} reference that cannot resolve does not fail loudly -
+    # it becomes an empty string, which reads exactly like "never configured"
+    # and sends you to the wrong fix. The managed databases publish the same
+    # connection under several names, so rather than depend on one reference
+    # being typed correctly, take whichever arrived.
+    #
+    # Empty is treated as absent throughout, because that is what it means.
+
+    @staticmethod
+    def _first(*names: str) -> str | None:
+        import os
+
+        for name in names:
+            value = (os.environ.get(name) or "").strip()
+            if value and not value.startswith("${{"):
+                return value
+        return None
+
+    @staticmethod
+    def _usable(value: str | None) -> bool:
+        """A value that is empty, or still a template, is not a URL.
+
+        An unexpanded ${{...}} is worse than an empty one: it is truthy, so it
+        sails past every "is it set" check and fails much later as a DNS
+        lookup for a hostname with braces in it.
+        """
+        text = (value or "").strip()
+        return bool(text) and not text.startswith("${{")
+
+    @model_validator(mode="after")
+    def _recover_connection_urls(self) -> Settings:
+        if not self._usable(self.redis_url):
+            found = self._first("REDIS_URL", "REDIS_PRIVATE_URL", "REDIS_PUBLIC_URL")
+            if found is None:
+                found = self._assemble_redis()
+            object.__setattr__(self, "redis_url", found)
+
+        if not self._usable(self.database_url):
+            object.__setattr__(
+                self,
+                "database_url",
+                self._first("DATABASE_URL", "DATABASE_PRIVATE_URL", "DATABASE_PUBLIC_URL"),
+            )
+        return self
+
+    @classmethod
+    def _assemble_redis(cls) -> str | None:
+        """Build a URL from the parts Railway's Redis also publishes."""
+        host = cls._first("REDISHOST", "REDIS_HOST")
+        if not host:
+            return None
+        port = cls._first("REDISPORT", "REDIS_PORT") or "6379"
+        user = cls._first("REDISUSER", "REDIS_USER") or "default"
+        password = cls._first("REDISPASSWORD", "REDIS_PASSWORD")
+        credentials = f"{user}:{password}@" if password else ""
+        return f"redis://{credentials}{host}:{port}"
 
     @property
     def sqlalchemy_url(self) -> str:
