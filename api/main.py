@@ -21,7 +21,7 @@ from core.db import session_scope
 from core.storage import get_storage
 
 from .deps import require_token
-from .routes import analytics, clips, overview, probe, review, sources, studio, trending
+from .routes import analytics, clips, live, overview, probe, review, sources, studio, trending
 from .routes import settings as settings_routes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -55,6 +55,7 @@ for router in (
     studio.router,
     settings_routes.router,
     probe.router,
+    live.router,
 ):
     app.include_router(router, prefix="/api", dependencies=protected)
 

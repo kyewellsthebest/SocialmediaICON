@@ -239,6 +239,38 @@ class Settings(BaseSettings):
     cost_per_source: float = 0.55
     monthly_budget: float = 100.0
 
+    # --- live capture -------------------------------------------------
+    #
+    # How many streams to hold at once. Three rather than ten: each buffer is
+    # a continuous download, and the clips that get posted have to be 1080p,
+    # which means the buffer itself has to hold 1080p. Ten of those is 900GB
+    # a day; three is 275GB, and three of the biggest channels produce far
+    # more clippable material than ten posts a day can use anyway.
+    live_enabled: bool = False
+    live_slots: int = 3
+    #: Rank a stream must fall past before it is dropped, so two channels
+    #: trading places around the cutoff do not cause a reconnect each time.
+    live_drop_rank: int = 6
+    live_window_s: float = 300.0
+    live_segment_s: float = 4.0
+    #: The clip that ships. Buffering below this caps what can ever be posted,
+    #: because you cannot recover detail that was never downloaded.
+    live_delivery_height: int = 1080
+    #: Lead and trail around the moment. Chat reacts after the fact, so most
+    #: of the clip is what happened before the reaction.
+    live_lead_s: float = 22.0
+    live_trail_s: float = 8.0
+    #: How hard chat has to spike, as a multiple of its own recent baseline.
+    live_trigger_ratio: float = 3.0
+    #: Nothing is posted anywhere yet - clips are cut and held for review.
+    live_posting_enabled: bool = False
+    #: Caps. Ten a day is what one page can post without the median dragging
+    #: reach down; an hour apart is what stops a burst reading as automated.
+    live_clips_per_day: int = 10
+    live_min_gap_minutes: int = 60
+    #: Directory polling. The listing moves slowly and every call is a request.
+    live_roster_poll_s: float = 300.0
+
     # local working dirs (used when R2 is not configured)
     local_storage_dir: Path = REPO_ROOT / ".storage"
     work_dir: Path = REPO_ROOT / ".work"

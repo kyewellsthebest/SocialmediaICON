@@ -23,6 +23,9 @@ dependencies = [
   # impersonation and cannot get it without this. Without curl_cffi every
   # Kick request is a 403 that looks like the site being closed.
   "curl_cffi>=0.7",
+  # Kick chat arrives over a Pusher websocket - the same public feed a
+  # logged-out viewer gets. Replay polling is the wrong shape for live.
+  "websockets>=13.0",
   "pillow>=10.3",  # draws the studio's instrument overlay frame by frame
 ]
 
