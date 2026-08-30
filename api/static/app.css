@@ -111,8 +111,16 @@ html { -webkit-text-size-adjust: 100%; }
    gone. Every panel in this file is display-typed, so this has to be global. */
 [hidden] { display: none !important; }
 
+/* Grid and flex children default to min-width: auto, which is "never smaller
+   than my content" - so one long word, one wide row of bars or one number
+   with no break in it pushes the whole page wider than the phone and the
+   layout slides sideways under the top bar. Every container in this file is
+   grid or flex, so the floor comes off all of them at once. */
+main > *, .view > *, .card > *, .stats > *, .row > *, .spread > * { min-width: 0; }
+
 body {
   margin: 0;
+  overflow-x: hidden;
   background: var(--ground);
   color: var(--ink);
   font-family: var(--sans);
@@ -248,8 +256,10 @@ main { padding: 14px; display: grid; gap: 12px; max-width: 720px; margin: 0 auto
 .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
 @media (min-width: 520px) { .stats { grid-template-columns: repeat(4, 1fr); } }
 .stat { background: var(--surface); padding: 9px 10px; display: grid; gap: 2px; min-width: 0; }
-.stat b { font-family: var(--mono); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.stat span { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.stat b { font-family: var(--mono); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat span { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stat[data-hot="true"] b { color: var(--accent); }
 
 /* ---------- live chat ---------- */
@@ -268,7 +278,11 @@ main { padding: 14px; display: grid; gap: 12px; max-width: 720px; margin: 0 auto
 .chat .empty { color: var(--ink-3); font-style: italic; }
 
 .bars { display: grid; gap: 5px; }
-.bar { display: grid; grid-template-columns: 78px 1fr 44px; align-items: center; gap: 8px; font-size: 12px; }
+/* The first column is a signal name and some of them are long ("chat_requests"),
+   so it is a fraction rather than a fixed width and clips rather than pushing. */
+.bar { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 9fr) 42px;
+  align-items: center; gap: 8px; font-size: 12px; }
+.bar .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Both are spans, and height does not apply to an inline box - without the
    display these render as an empty track with no fill at all. */
 .bar .track { display: block; height: 6px; background: var(--sunken); border-radius: 3px; overflow: hidden; }
@@ -330,17 +344,52 @@ pre.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family
 .stream-row .go { color: var(--ink-3); font-size: 20px; flex: none; }
 
 .shot {
-  width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
+  width: 100%; height: 100%; aspect-ratio: 16 / 9; object-fit: cover;
   background: var(--sunken); border-radius: var(--r); display: block;
 }
+
+/* ---------- the stream itself ---------- */
+
+/* Kick's own player, embedded. The bot watches a copy on the worker's disk in
+   another container; showing that here would mean serving every byte twice,
+   so the page watches the stream the same way a person would. */
+.player {
+  position: relative; width: 100%; aspect-ratio: 16 / 9;
+  background: #000; border: 1px solid var(--rule); border-radius: var(--r);
+  overflow: hidden; display: grid; place-items: center;
+}
+.player iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.player .off { color: var(--ink-3); font-size: 13px; }
+
+/* Three players cannot all talk at once, so sound is a per-stream toggle and
+   the page only ever unmutes one. */
+.player .sound {
+  position: absolute; right: 8px; bottom: 8px; z-index: 2;
+  width: 40px; height: 40px; display: grid; place-content: center;
+  font-size: 17px; line-height: 1; cursor: pointer;
+  background: rgba(0, 0, 0, .62); color: #fff;
+  border: 1px solid rgba(255, 255, 255, .25); border-radius: var(--r);
+}
+.player .sound[data-on="true"] { background: var(--accent); border-color: var(--accent); }
+
+/* ---------- a preference with an explanation ---------- */
+
+.check { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
+.check span { font-size: 14px; }
+.check small { display: block; color: var(--ink-3); font-size: 12.5px; margin-top: 2px; }
 
 /* ---------- live audio ---------- */
 
 /* One bar per sample of the loudness curve. Loud is amber, quiet fades toward
    the rule colour, so the shape reads before any number does. */
-.wave { display: flex; align-items: flex-end; gap: 1px; height: 74px;
+/* min-width on the bars plus a gap gives this a minimum width of its own -
+   a few hundred samples cannot be squeezed below a few hundred pixels - which
+   is what was carrying the sound card off the side of a phone. The count is
+   capped in fitBars(); overflow: hidden is the belt to that pair of braces. */
+.wave { display: flex; align-items: flex-end; gap: 1px; height: 74px; overflow: hidden;
   background: var(--ground); border: 1px solid var(--rule); border-radius: var(--r); padding: 5px; }
-.wave i { flex: 1 1 auto; min-width: 1px; background: var(--accent); border-radius: 1px; display: block; }
+.wave i { flex: 1 1 0; min-width: 0; background: var(--accent); border-radius: 1px; display: block; }
 .spectro { width: 100%; border: 1px solid var(--rule); border-radius: var(--r); background: #000; display: block; }
 
 /* ---------- inspect sheet ---------- */

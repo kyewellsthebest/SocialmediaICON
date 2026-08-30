@@ -261,6 +261,9 @@ class Settings(BaseSettings):
     #: of the clip is what happened before the reaction.
     live_lead_s: float = 22.0
     live_trail_s: float = 8.0
+    #: The longest a clip may run. Short-form platforms stop rewarding much
+    #: past this, and a moment that has not ended in a minute is a segment.
+    live_max_clip_s: float = 59.0
     #: How hard chat has to spike, as a multiple of its own recent baseline.
     live_trigger_ratio: float = 3.0
     #: Nothing is posted anywhere yet - clips are cut and held for review.

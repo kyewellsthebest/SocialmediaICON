@@ -198,3 +198,56 @@ class TestQuotesDoNotAssumeOrder:
             signals, duration_s=duration, clip_s=30.0, top=1, messages=msgs
         )[0]
         assert "KEKW" in best.quotes, f"expected the reaction in {best.quotes[:5]}"
+
+
+class TestWhereTheMomentEnds:
+    """A fixed thirty seconds cut the good ones off and padded the thin ones.
+
+    What actually ends a moment is chat going back to normal, so that is what
+    these plant: a baseline, a burst of a known length, and a check that the
+    answer lands where the burst stopped.
+    """
+
+    def _curve(self, *, idle: float, burst_from: float, burst_to: float,
+               burst: float, length: float = 300.0) -> chat.Curve:
+        spec = []
+        t = 0.0
+        while t < length:
+            rate = burst if burst_from <= t < burst_to else idle
+            for i in range(int(rate)):
+                spec.append((t, "KEKW", f"u{i}"))
+            t += 1.0
+        return chat.build_curve(_messages(spec), duration_s=length, bucket_s=1.0)
+
+    def test_a_burst_that_stops_ends_the_clip_near_where_it_stopped(self):
+        curve = self._curve(idle=2, burst_from=120.0, burst_to=145.0, burst=30)
+        found = moments.moment_end(curve, 120.0, min_s=8.0)
+        assert found == pytest.approx(28.0, abs=4.0)
+
+    def test_a_moment_that_never_calms_down_is_capped(self):
+        curve = self._curve(idle=2, burst_from=120.0, burst_to=300.0, burst=30)
+        assert moments.moment_end(curve, 120.0, min_s=8.0, max_s=59.0) == 59.0
+
+    def test_a_short_reaction_still_gets_a_watchable_minimum(self):
+        curve = self._curve(idle=2, burst_from=120.0, burst_to=124.0, burst=30)
+        assert moments.moment_end(curve, 120.0, min_s=20.0) == 20.0
+
+    def test_it_never_exceeds_the_cap(self):
+        curve = self._curve(idle=2, burst_from=120.0, burst_to=300.0, burst=40)
+        assert moments.moment_end(curve, 120.0, min_s=8.0, max_s=37.0) == 37.0
+
+    def test_a_busy_channel_is_judged_against_its_own_idle_rate(self):
+        """300 a minute is dead air on one stream and a peak on another."""
+        busy = self._curve(idle=25, burst_from=120.0, burst_to=140.0, burst=60)
+        quiet = self._curve(idle=1, burst_from=120.0, burst_to=140.0, burst=8)
+        assert moments.moment_end(busy, 120.0, min_s=8.0) == pytest.approx(
+            moments.moment_end(quiet, 120.0, min_s=8.0), abs=5.0
+        )
+
+    def test_an_empty_curve_falls_back_to_the_minimum(self):
+        empty = chat.Curve(bucket_s=1.0, duration_s=0.0)
+        assert moments.moment_end(empty, 120.0, min_s=14.0) == 14.0
+
+    def test_a_peak_past_the_end_of_the_curve_does_not_crash(self):
+        curve = self._curve(idle=2, burst_from=120.0, burst_to=140.0, burst=30)
+        assert moments.moment_end(curve, 9999.0, min_s=11.0) == 11.0

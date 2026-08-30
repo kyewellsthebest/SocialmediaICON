@@ -60,6 +60,19 @@ AUDIO_EVERY_S = 20.0
 #: How much of the recent past to measure. Long enough to show a shape, short
 #: enough that the decode stays well under a second.
 AUDIO_WINDOW_S = 24.0
+#: Below this the room is silent rather than merely quiet. LosPollosTV asleep
+#: read -57.9 mean and -40.2 peak; a person talking sits above -30.
+DORMANT_DB = -45.0
+DORMANT_PEAK_DB = -25.0
+#: Mean per-pixel frame difference. A locked-off shot of a sleeping room is
+#: near zero; anyone moving in frame is an order of magnitude above it.
+DORMANT_MOTION = 0.004
+#: How long it has to stay that way. One reading is a pause; three in a row,
+#: a minute apart in practice, is nobody home.
+DORMANT_READINGS = 3
+#: How long a sleeping stream is passed over before it is considered again.
+#: Long enough not to thrash, short enough that waking up is noticed.
+DORMANT_REST_S = 900.0
 #: A thirty second 1080p clip is about 30MB. Anything much past that is
 #: not a clip and does not belong in Redis.
 MAX_INLINE_CLIP_BYTES = 60 * 1024 * 1024
@@ -90,6 +103,15 @@ class Watched:
     #: The most recent audio reading, refreshed on its own slower timer.
     audio: dict[str, Any] = field(default_factory=dict)
     audio_at: float = 0.0
+    #: Consecutive readings with nobody apparently there. Consecutive, not a
+    #: running average: someone who goes quiet and then speaks is not asleep,
+    #: and an average would take minutes to forgive them.
+    asleep_readings: int = 0
+    activity: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def dormant(self) -> bool:
+        return self.asleep_readings >= DORMANT_READINGS
 
     def stop(self) -> None:
         self.chat.stop()
@@ -159,6 +181,65 @@ class Watched:
             "has_spectrogram": spectrogram is not None,
         }
 
+    def read_activity(self) -> dict[str, Any]:
+        """Is anything actually happening, or is the streamer asleep?
+
+        A stream with nobody in front of it cannot produce a clip, and while
+        it holds a slot the fourth-placed stream - which might - is not being
+        watched at all. LosPollosTV asleep on camera with 13,000 people
+        watching a bed is the case this exists for: the viewer count says
+        nothing, and chat carries on talking regardless.
+
+        Two signals, and both have to agree. Silence alone is a pause between
+        sentences; stillness alone is someone reading. Together, sustained,
+        it is an empty chair.
+        """
+        audio = self.audio if self.audio.get("ok") else {}
+        mean_db = audio.get("mean_db")
+        peak_db = audio.get("peak_db")
+
+        motion = self.read_motion()
+        quiet = mean_db is not None and mean_db <= DORMANT_DB
+        # A peak that never rises either says nobody has said anything at all,
+        # not merely that the average is low.
+        never_loud = peak_db is not None and peak_db <= DORMANT_PEAK_DB
+        still = motion is not None and motion <= DORMANT_MOTION
+
+        return {
+            "mean_db": mean_db,
+            "peak_db": peak_db,
+            "motion": motion,
+            "quiet": bool(quiet and never_loud),
+            "still": bool(still),
+            "asleep_now": bool(quiet and never_loud and still),
+        }
+
+    def read_motion(self) -> float | None:
+        """How much the picture is moving, 0..1, from tiny greyscale frames.
+
+        The same measurement core.reframe uses to decide where to point the
+        crop, at the same cost: 64x36 frames, four a second. Deciding whether
+        anybody is there does not need detail either.
+        """
+        from core import reframe
+
+        segments = self.buffer.segments()
+        if len(segments) < 2:
+            return None
+        joined = f"concat:{'|'.join(str(seg.path) for seg in segments[-2:])}"
+        try:
+            rows = reframe.motion_columns(joined)
+        except Exception:  # noqa: BLE001 - a missing reading is not a fault
+            return None
+        if len(rows) < 2:
+            return None
+
+        # Mean absolute difference per pixel, normalised. A still camera on a
+        # sleeping room sits near zero; a person talking is far above it.
+        total = sum(sum(row) for row in rows[1:])
+        pixels = max(1, (len(rows) - 1) * len(rows[0]) * 36)
+        return round(total / pixels / 255.0, 5)
+
     def signals(self) -> dict[str, Any]:
         """Everything the bot can currently see for this channel.
 
@@ -186,6 +267,8 @@ class Watched:
             "uptime_s": round(time.time() - self.started_at),
             "buffer": self.buffer.status(),
             "audio": self.audio,
+            "activity": self.activity,
+            "dormant": self.dormant,
             "chat": {
                 **self.chat.status(),
                 "per_minute": round(sum(curve.counts) / max(curve.duration_s / 60.0, 1e-6), 1),
@@ -216,6 +299,16 @@ class Supervisor:
     ))
     watching: dict[str, Watched] = field(default_factory=dict)
     last_roster_poll: float = 0.0
+    #: Channels found asleep, and when they may be picked up again. A stream
+    #: that wakes before this is simply picked up at the next poll like any
+    #: other; the delay only stops the roster re-attaching to a sleeping room
+    #: five seconds after letting go of it.
+    dormant_until: dict[str, float] = field(default_factory=dict)
+    #: Channels that only hold a slot because someone above them is asleep.
+    #: They give it back the moment that stream is worth trying again - the
+    #: roster on its own would keep a stand-in for hours, because by then it
+    #: has tenure and its rank is perfectly respectable.
+    fillers: set[str] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
     running: bool = False
 
@@ -225,13 +318,72 @@ class Supervisor:
         """Refresh which channels are worth holding, and act on the change."""
         now = time.time() if now is None else now
         listing = roster.fetch_kick_live(limit=25, language="en")
+        self.dormant_until = {c: t for c, t in self.dormant_until.items() if t > now}
+
+        # Hand the sleeping ones back before the roster decides anything, so
+        # it sees the free slot in the same pass rather than the next one.
+        for channel, watched in list(self.watching.items()):
+            if watched.dormant:
+                self.dormant_until[channel] = now + DORMANT_REST_S
+                self.roster.watching.pop(channel, None)
+                self.release(channel)
+
         moved = self.roster.update(listing, now=now)
         by_channel = {live_.channel: live_ for live_ in listing}
+        ranks = {live_.channel: i + 1 for i, live_ in enumerate(listing)}
 
         for channel in moved["stop"]:
             self.release(channel)
+
+        # The roster ranks by viewers and knows nothing about who is awake, so
+        # it will hand back the stream we just let go of. Refuse it here.
+        resting = [c for c in moved["start"] if c in self.dormant_until]
+        for channel in resting:
+            moved["start"].remove(channel)
+            self.roster.watching.pop(channel, None)
+
         for channel in moved["start"]:
             self.attach(channel, entry=by_channel.get(channel))
+
+        def rank(channel: str) -> int:
+            return ranks.get(channel, len(ranks) + 1)
+
+        def waiting_above(channel: str) -> list[str]:
+            """Streams that outrank this one and are not being watched."""
+            return [
+                other.channel for other in listing
+                if other.channel not in self.watching
+                and other.channel not in self.dormant_until
+                and rank(other.channel) < rank(channel)
+            ]
+
+        # A stand-in hands the slot back as soon as the stream it covered for
+        # is due another look. Without this, second place never returns: the
+        # roster sees a settled fourth place with tenure and no reason to move.
+        for filler in sorted(self.fillers & set(self.watching), key=rank, reverse=True):
+            if len(self.watching) <= settings.live_slots and waiting_above(filler):
+                self.fillers.discard(filler)
+                self.roster.watching.pop(filler, None)
+                self.release(filler)
+                moved["stop"].append(filler)
+
+        # Fill whatever is now free from further down the listing, skipping
+        # anyone still resting. This is what puts fourth place on screen while
+        # second place is asleep.
+        for live_ in listing:
+            if len(self.watching) >= settings.live_slots:
+                break
+            if live_.channel in self.watching or live_.channel in self.dormant_until:
+                continue
+            if self.attach(live_.channel, entry=live_) is None:
+                continue
+            self.roster.watching[live_.channel] = roster.Watched(
+                channel=live_.channel, started_at=now, last_seen_ok=now,
+                last_rank=rank(live_.channel), viewers=live_.viewers,
+            )
+            moved["start"].append(live_.channel)
+            if any(rank(c) < rank(live_.channel) for c in self.dormant_until):
+                self.fillers.add(live_.channel)
 
         for channel, watched in self.watching.items():
             entry = by_channel.get(channel)
@@ -298,6 +450,7 @@ class Supervisor:
         return watched
 
     def release(self, channel: str) -> None:
+        self.fillers.discard(channel)
         watched = self.watching.pop(channel, None)
         if watched is not None:
             watched.stop()
@@ -353,6 +506,9 @@ class Supervisor:
         found = moments.rank(
             signals,
             duration_s=curve.duration_s,
+            # The window the score is measured over, which is not the clip
+            # length: scoring wants a consistent width to compare moments
+            # fairly, and the clip wants to run as long as the moment does.
             clip_s=settings.live_lead_s + settings.live_trail_s,
             top=1,
         )
@@ -380,6 +536,24 @@ class Supervisor:
                     watched.audio = watched.read_audio(self.work_dir / "audio")
                 except Exception as exc:  # noqa: BLE001 - a graph is not the job
                     watched.audio = {"ok": False, "why": f"{type(exc).__name__}: {exc}"}
+                try:
+                    watched.activity = watched.read_activity()
+                    if watched.activity.get("asleep_now"):
+                        watched.asleep_readings += 1
+                        if watched.asleep_readings == DORMANT_READINGS:
+                            self._note(
+                                f"{channel} looks asleep or away - freeing the slot"
+                            )
+                    else:
+                        watched.asleep_readings = 0
+                except Exception:  # noqa: BLE001 - never let this stop a tick
+                    watched.asleep_readings = 0
+
+            if watched.dormant:
+                watched.last_score = 0.0
+                watched.last_why = {}
+                watched.last_reason = "asleep"
+                continue
 
             value, why, peak_s = self.score(watched)
             watched.last_score = value
@@ -419,8 +593,17 @@ class Supervisor:
         raw = out_dir / f"{watched.channel}-{stamp}-raw.mp4"
         final = out_dir / f"{watched.channel}-{stamp}.mp4"
 
+        # How long the moment actually ran, rather than a fixed length. The
+        # lead is fixed because a clip that opens on the punchline is a clip
+        # nobody understands; the tail is whatever chat says it is.
+        trail_s = moments.moment_end(
+            watched.chat.log.curve(),
+            peak_s,
+            min_s=settings.live_trail_s,
+            max_s=max(settings.live_trail_s, settings.live_max_clip_s - settings.live_lead_s),
+        )
         watched.buffer.extract(
-            raw, ago_s=ago_s, lead_s=settings.live_lead_s, trail_s=settings.live_trail_s
+            raw, ago_s=ago_s, lead_s=settings.live_lead_s, trail_s=trail_s
         )
         reframe.to_portrait(raw, final, work_dir=out_dir / "tmp")
         raw.unlink(missing_ok=True)
@@ -442,7 +625,7 @@ class Supervisor:
             "path": str(final),
             "storage_key": stored,
             "at_s": round(peak_at, 2),
-            "duration_s": settings.live_lead_s + settings.live_trail_s,
+            "duration_s": round(settings.live_lead_s + trail_s, 1),
             "score": round(sum(why.values()), 3),
             "why": {k: round(v, 3) for k, v in sorted(why.items(), key=lambda kv: -kv[1])},
             "mood": mood,

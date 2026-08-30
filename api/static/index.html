@@ -49,25 +49,8 @@
   <main>
 
     <!-- ============ LIVE ============ -->
+    <!-- No controls. It watches on its own; the top bar says how many. -->
     <section class="view" id="view-live">
-      <div class="card">
-        <div class="spread">
-          <div>
-            <h3 id="live-head">Not watching</h3>
-            <p class="muted" id="live-sub">Press start to watch the top streams.</p>
-          </div>
-          <span class="pill" id="live-state" data-state="warning">idle</span>
-        </div>
-        <div class="row">
-          <button class="btn btn-primary" id="live-start">Keep watching</button>
-          <button class="btn" id="live-stop">Stop</button>
-          <button class="btn btn-quiet" id="live-refresh">Refresh</button>
-          <button class="btn btn-quiet" id="live-why">Why not?</button>
-        </div>
-        <div id="live-why-out"></div>
-        <div class="stats" id="live-caps"></div>
-      </div>
-
       <div id="streams"></div>
       <div class="card" id="live-errors" hidden>
         <header><h3>Recent problems</h3></header>
@@ -87,6 +70,25 @@
     <!-- ============ ONE STREAM ============ -->
     <section class="view" id="view-stream" hidden>
       <a href="#/live" class="label" style="text-decoration:none">&larr; Back to live</a>
+
+      <!-- Kept out of #stream-detail on purpose. This view repaints every five
+           seconds, and re-inserting an iframe anywhere in the document makes
+           the browser reload it - so a player inside the repainted region
+           restarts from black twice a minute however carefully it is moved. -->
+      <div class="card">
+        <div class="stream-row">
+          <img class="pfp" id="stream-pfp" alt="" hidden referrerpolicy="no-referrer"
+               onerror="this.hidden = true">
+          <span class="who"><b id="stream-name"></b><small id="stream-title"></small></span>
+          <span id="stream-pill"></span>
+        </div>
+        <div class="player" id="stream-player"></div>
+        <div class="row">
+          <a class="btn btn-quiet" id="stream-open" target="_blank" rel="noopener">Open on Kick</a>
+          <span class="muted" id="stream-meta"></span>
+        </div>
+      </div>
+
       <div id="stream-detail"></div>
     </section>
 
@@ -100,6 +102,22 @@
       <div class="card">
         <header><h3>Capture</h3></header>
         <div class="stats" id="capture-config"></div>
+      </div>
+
+      <div class="card">
+        <header><h3>The watcher</h3><span class="label">runs on its own</span></header>
+        <p class="muted" id="live-sub">It restarts itself after a deploy or a crash.</p>
+        <label class="check">
+          <input type="checkbox" id="pref-video" checked>
+          <span>Play the streams on the Live page<small>Off shows a still instead. Three live players is a lot of mobile data.</small></span>
+        </label>
+        <div class="stats" id="live-caps"></div>
+        <div class="row">
+          <button class="btn btn-quiet" id="live-why">Diagnose</button>
+          <button class="btn btn-quiet" id="live-start">Start it again</button>
+          <button class="btn btn-quiet" id="live-stop">Stop watching</button>
+        </div>
+        <div id="live-why-out"></div>
       </div>
 
       <div class="card">

@@ -9,12 +9,18 @@ const $ = (s, r = document) => r.querySelector(s);
 const TOKEN_KEY = "clipengine.token";
 const POLL_MS = 5000;
 
+const VIDEO_KEY = "clipengine.video";
+
 const state = {
   token: localStorage.getItem(TOKEN_KEY) || "",
   view: "live",
   live: null,
   clips: [],
   timer: null,
+  // Which stream is allowed to make noise. Three players talking over each
+  // other is unusable, so it is one at a time or none.
+  sound: null,
+  video: localStorage.getItem(VIDEO_KEY) !== "off",
 };
 
 const esc = (v) =>
@@ -93,76 +99,126 @@ async function renderLive() {
   // as "restarting" rather than "idle" is the difference between a gap you
   // have to act on and a gap that closes itself.
   const resuming = !running && !queued && data.wanted;
-  const watching = (data.streams || []).length;
-  const label = running ? "watching" : queued ? "queued" : resuming ? "restarting" : "off";
-  const tone = running ? "live" : "warning";
-  $("#live-state").textContent = label;
-  $("#live-state").dataset.state = tone;
-  $("#top-state").textContent = running ? `${watching} live` : label;
-  $("#top-state").dataset.state = tone;
-  $("#nav-live").textContent = running ? `${watching}` : "";
+  const streams = data.streams || [];
+  const label = running ? `${streams.length} live` : queued ? "starting" : resuming ? "restarting" : "off";
+  $("#top-state").textContent = label;
+  $("#top-state").dataset.state = running ? "live" : "warning";
+  $("#nav-live").textContent = running ? String(streams.length) : "";
 
-  $("#live-head").textContent = running
-    ? `Watching ${watching} of ${data.slots}`
-    : queued
-    ? "Starting…"
-    : resuming
-    ? "Restarting…"
-    : "Stopped";
-  $("#live-sub").textContent = resuming
-    ? "It watches on its own — this restarts itself after a deploy or a crash."
-    : data.hint || (
-      data.posting_enabled ? "Posting is ON." : "Clips are held for review — nothing is posted."
-    );
-
-  const caps = data.caps || {};
-  $("#live-caps").innerHTML =
-    stat(caps.per_day ?? "—", "per day") +
-    stat(`${caps.min_gap_minutes ?? "—"}m`, "min gap") +
-    stat(caps.allowed_now === false ? "no" : "yes", "can cut now", caps.allowed_now === false) +
-    stat(data.posting_enabled ? "ON" : "off", "posting", !!data.posting_enabled);
-
-  $("#streams").innerHTML = (data.streams || []).map(streamCard).join("")
-    || `<div class="card"><p class="empty-note">${running
-        ? "Attaching to streams — the first buffer takes about fifteen seconds."
-        : "Nothing is being watched."}</p></div>`;
+  paintStreams(streams, { running, queued, resuming });
 
   const errors = data.errors || [];
   $("#live-errors").hidden = errors.length === 0;
   $("#live-errors-body").textContent = errors.join("\n");
 }
 
-function streamCard(s) {
+/* Update the cards in place rather than rebuilding them.
+
+   This poll runs every five seconds and each card holds a live player.
+   Rewriting innerHTML would tear the iframe out and put a new one back, so
+   every stream would restart from black twice a minute - which is exactly the
+   thumbnail-refresh flicker the players were meant to replace. */
+function paintStreams(streams, status) {
+  const host = $("#streams");
+  const seen = new Set();
+
+  for (const s of streams) {
+    seen.add(s.channel);
+    let card = host.querySelector(`[data-channel="${cssId(s.channel)}"]`);
+    if (!card) { card = buildStreamCard(s); host.append(card); }
+    fillStreamCard(card, s);
+  }
+
+  for (const card of [...host.querySelectorAll("[data-channel]")]) {
+    if (!seen.has(card.dataset.channel)) card.remove();
+  }
+
+  let note = host.querySelector(".empty-note-card");
+  if (streams.length) { note?.remove(); return; }
+  if (!note) {
+    note = document.createElement("div");
+    note.className = "card empty-note-card";
+    host.append(note);
+  }
+  note.innerHTML = `<p class="empty-note">${status.running
+    ? "Attaching to streams - the first buffer takes about fifteen seconds."
+    : status.queued || status.resuming
+    ? "Starting up. This takes a few seconds after a deploy."
+    : "Nothing is being watched."}</p>`;
+}
+
+/* Attribute selectors are not a safe place to interpolate a channel name. */
+const cssId = (v) => String(v).replace(/["\\]/g, "\\$&");
+
+/* Kick serves an embeddable player per channel, which is the only way to show
+   the actual stream: the buffer we hold is on the worker's disk, in another
+   container, and re-serving it would be a second copy of every byte. */
+const playerSrc = (channel, muted) =>
+  `https://player.kick.com/${encodeURIComponent(channel)}` +
+  `?autoplay=true&muted=${muted ? "true" : "false"}`;
+
+function buildStreamCard(s) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.channel = s.channel;
+  card.innerHTML = `
+    <a class="stream-row" href="#/stream/${encodeURIComponent(s.channel)}">
+      <img class="pfp" alt="" data-f="pfp" hidden referrerpolicy="no-referrer"
+           onerror="this.hidden = true">
+      <span class="who"><b data-f="name"></b><small data-f="sub"></small></span>
+      <span class="go">&rsaquo;</span>
+    </a>
+    <div class="player" data-f="player"></div>
+    <div class="stats" data-f="stats"></div>`;
+  paintPlayer(card.querySelector('[data-f="player"]'), s);
+  return card;
+}
+
+function paintPlayer(box, s) {
+  // Remembered on the box because repaints are driven by a mute tap, which
+  // knows the channel and nothing else about the stream.
+  if (s.thumbnail) box.dataset.thumb = s.thumbnail;
+  if (s.name || s.channel) box.dataset.label = s.name || s.channel;
+
+  const wanted = state.video ? playerSrc(s.channel, state.sound !== s.channel) : "";
+  if (box.dataset.src === wanted) return;
+  box.dataset.src = wanted;
+
+  if (!wanted) {
+    box.innerHTML = box.dataset.thumb
+      ? `<img class="shot" src="${esc(box.dataset.thumb)}" alt=""
+           onerror="this.remove()" referrerpolicy="no-referrer">`
+      : `<span class="off">Video is off</span>`;
+    return;
+  }
+  const loud = state.sound === s.channel;
+  box.innerHTML =
+    `<iframe src="${esc(wanted)}" title="${esc(box.dataset.label || s.channel)}"
+       allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+     <button class="sound" data-sound="${esc(s.channel)}" data-on="${loud}"
+       aria-label="${loud ? "Mute" : "Unmute"}">${loud ? "&#128266;" : "&#128263;"}</button>`;
+}
+
+function fillStreamCard(card, s) {
   const chat = s.chat || {};
   const mood = chat.mood || {};
   const requests = (chat.clip_requests || []).length;
 
-  return `<div class="card">
-    <a class="stream-row" href="#/stream/${encodeURIComponent(s.channel)}">
-      ${s.avatar
-        ? `<img class="pfp" src="${esc(s.avatar)}" alt="" loading="lazy"
-             onerror="this.remove()" referrerpolicy="no-referrer">`
-        : `<span class="pfp"></span>`}
-      <span class="who">
-        <b>${esc(s.name || s.channel)}</b>
-        <small>${Number(s.viewers || 0).toLocaleString()} watching${
-          s.category ? " · " + esc(s.category) : ""}</small>
-      </span>
-      <span class="go">›</span>
-    </a>
+  const pfp = card.querySelector('[data-f="pfp"]');
+  if (s.avatar && pfp.getAttribute("src") !== s.avatar) { pfp.src = s.avatar; pfp.hidden = false; }
 
-    ${s.thumbnail
-      ? `<img class="shot" src="${esc(s.thumbnail)}" alt="" loading="lazy"
-           onerror="this.remove()" referrerpolicy="no-referrer">`
-      : ""}
+  card.querySelector('[data-f="name"]').textContent = s.name || s.channel;
+  card.querySelector('[data-f="sub"]').textContent =
+    `${Number(s.viewers || 0).toLocaleString()} watching` +
+    (s.dormant ? " \u00b7 asleep" : s.category ? " \u00b7 " + s.category : "");
 
-    <div class="stats">
-      ${stat(chat.per_minute ?? 0, "msgs/min", (chat.per_minute || 0) > 120)}
-      ${stat(mood.dominant || "—", "mood")}
-      ${stat(requests, "clip asks", requests > 0)}
-      ${stat((s.score ?? 0).toFixed(1), "score", (s.score || 0) > 0)}
-    </div>
-  </div>`;
+  paintPlayer(card.querySelector('[data-f="player"]'), s);
+
+  card.querySelector('[data-f="stats"]').innerHTML =
+    stat(chat.per_minute ?? 0, "msgs/min", (chat.per_minute || 0) > 120) +
+    stat(s.dormant ? "asleep" : mood.dominant || "\u2014", "mood") +
+    stat(requests, "clip asks", requests > 0) +
+    stat((s.score ?? 0).toFixed(1), "score", (s.score || 0) > 0);
 }
 
 /* ---------- one stream, everything ---------- */
@@ -170,21 +226,33 @@ function streamCard(s) {
 async function renderStream() {
   const channel = decodeURIComponent((location.hash.split("/")[2] || ""));
   const box = $("#stream-detail");
-  if (!channel) { box.innerHTML = `<div class="card"><p class="empty-note">No stream.</p></div>`; return; }
+  const top = $("#stream-player").closest(".card");
+  if (!channel) {
+    top.hidden = true;
+    box.innerHTML = `<div class="card"><p class="empty-note">No stream.</p></div>`;
+    return;
+  }
 
   let s;
   try {
     s = await api(`/live/streams/${encodeURIComponent(channel)}`);
   } catch (err) {
+    // A stream that has been dropped from the roster 404s here, and leaving
+    // the old header up would say it is still being watched.
+    top.hidden = true;
+    stopPlayer();
     box.innerHTML = `<div class="card"><p class="empty-note">${esc(err.message)}</p></div>`;
     return;
   }
+  top.hidden = false;
   $("#title").textContent = s.name || s.channel;
+  paintStreamTop(s);
 
   const chat = s.chat || {};
   const mood = chat.mood || {};
   const buffer = s.buffer || {};
   const audio = s.audio || {};
+  const activity = s.activity || {};
   const why = Object.entries(s.why || {});
   const counts = Object.entries(mood.counts || {});
 
@@ -195,21 +263,19 @@ async function renderStream() {
 
   box.innerHTML = `
     <div class="card">
-      <div class="stream-row">
-        ${s.avatar ? `<img class="pfp" src="${esc(s.avatar)}" alt="">` : `<span class="pfp"></span>`}
-        <span class="who"><b>${esc(s.name || s.channel)}</b>
-          <small>${esc(s.title || "")}</small></span>
-        ${pill(chat.connected ? "chat live" : "chat down", chat.connected ? "good" : "warning")}
+      <header><h3>Is anyone there</h3>
+        <span class="label">${s.dormant ? "nobody home" : "someone is"}</span></header>
+      <div class="stats">
+        ${stat(activity.motion ?? "—", "picture moving", activity.still === true)}
+        ${stat(activity.quiet === true ? "silent" : "sound", "room",
+               activity.quiet === true)}
+        ${stat(s.dormant ? "asleep" : "awake", "verdict", !!s.dormant)}
+        ${stat(ago(s.uptime_s), "watched for")}
       </div>
-      ${s.thumbnail
-        ? `<img class="shot" src="${esc(s.thumbnail)}" alt=""
-             onerror="this.remove()" referrerpolicy="no-referrer">`
+      ${s.dormant
+        ? `<p class="muted">Silent and still for long enough to count as away.
+             The slot goes to the next stream down until this one moves again.</p>`
         : ""}
-      <div class="row">
-        <a class="btn btn-quiet" href="${esc(s.page)}" target="_blank" rel="noopener">Open on Kick</a>
-        <span class="muted">${Number(s.viewers || 0).toLocaleString()} watching ·
-          up ${ago(s.uptime_s)}${s.category ? " · " + esc(s.category) : ""}</span>
-      </div>
     </div>
 
     <div class="card">
@@ -259,7 +325,29 @@ async function renderStream() {
       <div class="chat">${lines}</div>
     </div>`;
 
+  // Built after the card so the poll below can leave it alone: this view
+  // refreshes every five seconds too, and the player must survive that.
   if (audio.has_spectrogram) refreshSpectrogram(s.channel);
+}
+
+/* The header and the player: written field by field, never rebuilt. */
+function paintStreamTop(s) {
+  const chat = s.chat || {};
+  const pfp = $("#stream-pfp");
+  if (s.avatar && pfp.getAttribute("src") !== s.avatar) { pfp.src = s.avatar; pfp.hidden = false; }
+  $("#stream-name").textContent = s.name || s.channel;
+  $("#stream-title").textContent = s.title || "";
+  $("#stream-pill").innerHTML = s.dormant
+    ? pill("asleep", "warning")
+    : pill(chat.connected ? "chat live" : "chat down", chat.connected ? "good" : "warning");
+  $("#stream-open").href = s.page || `https://kick.com/${s.channel}`;
+  $("#stream-meta").textContent =
+    `${Number(s.viewers || 0).toLocaleString()} watching \u00b7 up ${ago(s.uptime_s)}` +
+    (s.category ? " \u00b7 " + s.category : "");
+
+  const box = $("#stream-player");
+  box.dataset.channel = s.channel;
+  paintPlayer(box, s);
 }
 
 /* Load the new spectrogram off-screen and only swap it in once it has
@@ -279,12 +367,25 @@ function refreshSpectrogram(channel) {
    quiet stream still shows shape rather than a flat line at the bottom. */
 function wave(curve) {
   if (!curve.length) return "";
+  curve = fitBars(curve, 64);
   const lo = Math.min(...curve), hi = Math.max(...curve);
   const span = Math.max(hi - lo, 1);
   return curve.map((v) => {
     const h = Math.max(3, Math.round(((v - lo) / span) * 100));
     return `<i style="height:${h}%;opacity:${(0.35 + 0.65 * (v - lo) / span).toFixed(2)}"></i>`;
   }).join("");
+}
+
+/* Half a minute of loudness is a few hundred samples, and a flex row of a few
+   hundred bars cannot be narrower than one pixel each - which is how the
+   sound card came to be wider than the phone it was being read on. Peak-pool
+   down to something that fits, keeping the peaks, because the peaks are the
+   whole point of looking at it. */
+function fitBars(values, most) {
+  if (values.length <= most) return values;
+  const per = values.length / most;
+  return Array.from({ length: most }, (_, i) =>
+    Math.max(...values.slice(Math.floor(i * per), Math.max(Math.floor((i + 1) * per), Math.floor(i * per) + 1))));
 }
 
 /* ---------- clips ---------- */
@@ -381,12 +482,29 @@ async function renderSettings() {
     if (err.message !== "unauthorised") toast(err.message, "critical");
     data = { connected: {} };
   }
+  // Opened cold - a bookmark straight to Settings - the Live view has never
+  // run and there is nothing to report the watcher's state from.
+  if (!state.live) { try { state.live = await api("/live"); } catch { /* reported below */ } }
+
   const live = state.live || {};
   $("#capture-config").innerHTML =
     stat(live.slots ?? "—", "streams") +
     stat(live.caps?.per_day ?? "—", "clips/day") +
     stat(`${live.caps?.min_gap_minutes ?? "—"}m`, "min gap") +
     stat("1080p", "clip quality");
+
+  // Moved off the Live page, which is now three streams and nothing else.
+  const caps = live.caps || {};
+  $("#pref-video").checked = state.video;
+  $("#live-caps").innerHTML =
+    stat(live.running ? "watching" : live.queued ? "starting" : live.wanted ? "restarting" : "off",
+         "state", !live.running) +
+    stat((live.streams || []).length, "streams up") +
+    stat(caps.allowed_now === false ? "no" : "yes", "can cut now", caps.allowed_now === false) +
+    stat(live.posting_enabled ? "ON" : "off", "posting", !!live.posting_enabled);
+  $("#live-sub").textContent = live.hint || (live.running
+    ? "Watching. It restarts itself after a deploy or a crash."
+    : "Not watching right now — it restarts itself, or start it by hand below.");
 
   const wanted = [
     ["database", "Postgres"], ["redis", "Redis"], ["r2", "R2 storage"],
@@ -456,6 +574,12 @@ async function show(view) {
   if (!VIEWS[view]) view = "live";
   state.view = view;
   $("#title").textContent = TITLES[view];
+  // A hidden iframe is still a running stream, so the players a view is
+  // leaving behind are torn down rather than left pulling video in the
+  // background. They come back when the view does; that is one deliberate
+  // reload on navigation, not one every five seconds.
+  if (view !== "stream") stopPlayer();
+  if (view !== "live") $("#streams").replaceChildren();
   for (const name of Object.keys(VIEWS)) $(`#view-${name}`).hidden = name !== view;
   // aria-current takes a value, not a presence: toggleAttribute would set it
   // to the empty string and the [aria-current="page"] rule would never match,
@@ -482,6 +606,31 @@ function showGate(on) {
 }
 
 /* ---------- events ---------- */
+
+/* Leaving the view is not enough to stop an iframe: a display: none subtree
+   keeps its media running, so the detail player is torn down by hand. */
+function stopPlayer() {
+  const box = $("#stream-player");
+  box.innerHTML = "";
+  delete box.dataset.src;
+}
+
+/* Reload only the players whose muting actually changed - paintPlayer is a
+   no-op when the src it would set is the one already there, so the other two
+   streams keep playing through the tap. */
+function repaintPlayers() {
+  for (const box of document.querySelectorAll(".player")) {
+    const channel = box.closest("[data-channel]")?.dataset.channel || box.dataset.channel;
+    if (channel) paintPlayer(box, { channel, thumbnail: "" });
+  }
+}
+
+$("#pref-video").addEventListener("change", (e) => {
+  state.video = e.target.checked;
+  if (!state.video) state.sound = null;
+  localStorage.setItem(VIDEO_KEY, state.video ? "on" : "off");
+  repaintPlayers();
+});
 
 $("#burger").addEventListener("click", () => drawer($("#drawer").dataset.open !== "true"));
 $("#scrim").addEventListener("click", () => drawer(false));
@@ -521,14 +670,19 @@ document.addEventListener("click", async (event) => {
     if (t.id === "live-start") {
       await withBusy(t, () => api("/live/start", { method: "POST" }));
       toast("Watching. It will restart itself from now on.");
-      return renderLive();
+      return renderSettings();
     }
     if (t.id === "live-stop") {
       await withBusy(t, () => api("/live/stop", { method: "POST" }));
       toast("Stopped. It will stay stopped until you start it again.");
-      return renderLive();
+      return renderSettings();
     }
-    if (t.id === "live-refresh") return withBusy(t, renderLive);
+
+    // One stream at a time, and tapping the one already talking mutes it.
+    if (t.dataset.sound) {
+      state.sound = state.sound === t.dataset.sound ? null : t.dataset.sound;
+      return repaintPlayers();
+    }
     if (t.id === "live-why") {
       const d = await withBusy(t, () => api("/live/debug"));
       const fail = (d.recent_failures || [])[0];

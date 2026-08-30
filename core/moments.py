@@ -422,3 +422,50 @@ def find(
         "frames_needed_s": round(scanned_s, 1),
         "fraction_of_video": round(scanned_s / duration_s, 4) if duration_s else 0.0,
     }
+
+
+def moment_end(
+    curve,  # noqa: ANN001 - core.chat.Curve
+    peak_s: float,
+    *,
+    min_s: float = 20.0,
+    max_s: float = 59.0,
+    settle: float = 1.35,
+) -> float:
+    """How long after the peak the moment is still going, in seconds.
+
+    A fixed length cuts the good ones short and pads the thin ones. What
+    actually ends a moment is chat going back to normal, so that is what this
+    measures: from the peak, walk forward until the rate has been near its
+    own pre-moment baseline for a few seconds running.
+
+    `settle` is a multiple of that baseline rather than an absolute rate,
+    because a channel doing 300 messages a minute idles where another one
+    peaks. The floor and the ceiling exist because a moment nobody can see the
+    start of is not worth posting, and because past a minute it is not a clip.
+    """
+    counts = curve.counts
+    if not counts:
+        return min_s
+    bucket = curve.bucket_s or 1.0
+    peak_i = max(0, min(len(counts) - 1, int(peak_s / bucket)))
+
+    # The baseline is what chat was doing *before* the moment, not including
+    # it - a window that swallows the burst calls the burst normal.
+    back = max(0, peak_i - int(45.0 / bucket))
+    history = sorted(counts[back:peak_i]) or [0]
+    baseline = max(history[len(history) // 2], 1)
+
+    calm_for = 0.0
+    needed = 3.0
+    for i in range(peak_i + 1, len(counts)):
+        if counts[i] <= baseline * settle:
+            calm_for += bucket
+            if calm_for >= needed:
+                return max(min_s, min(max_s, (i * bucket) - peak_s))
+        else:
+            calm_for = 0.0
+
+    # Still going at the edge of what chat remembers: take the cap rather
+    # than guessing an end that has not happened yet.
+    return max(min_s, min(max_s, (len(counts) * bucket) - peak_s))

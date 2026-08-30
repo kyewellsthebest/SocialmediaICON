@@ -15,7 +15,7 @@ import pytest
 
 from core import chat as chatlib
 from core.config import settings
-from core.supervisor import Supervisor, Watched
+from core.supervisor import DORMANT_READINGS, DORMANT_REST_S, Supervisor, Watched
 
 
 @dataclass
@@ -302,3 +302,197 @@ class TestTheScoreCarriesItsReasons:
         sup.tick()
         assert watched.last_why, "tick scored but threw the reasons away"
         assert watched.last_reason in watched.last_why
+
+
+class TestASleepingStreamerLosesTheSlot:
+    """The LosPollosTV case.
+
+    Second on the list, thirteen thousand people watching, and asleep on
+    camera. Chat carries on talking regardless, viewers say nothing, and the
+    slot produces no clips for hours while fourth place goes unwatched.
+    """
+
+    def _asleep(self, motion=0.0005, mean_db=-57.9, peak_db=-40.2):
+        watched = _watched(messages=_chatter())
+        watched.audio = {"ok": True, "mean_db": mean_db, "peak_db": peak_db}
+        watched.read_motion = lambda: motion
+        return watched
+
+    def test_silence_and_stillness_together_read_as_asleep(self):
+        assert self._asleep().read_activity()["asleep_now"] is True
+
+    def test_a_quiet_room_someone_is_moving_in_is_not_asleep(self):
+        """Reading, drawing, playing something quiet - all still a stream."""
+        assert self._asleep(motion=0.02).read_activity()["asleep_now"] is False
+
+    def test_a_still_shot_with_someone_talking_over_it_is_not_asleep(self):
+        watched = self._asleep(mean_db=-38.0, peak_db=-9.0)
+        assert watched.read_activity()["asleep_now"] is False
+
+    def test_one_quiet_reading_is_a_pause_not_a_bedtime(self):
+        watched = self._asleep()
+        watched.asleep_readings = 1
+        assert watched.dormant is False
+
+    def test_it_takes_a_run_of_readings(self):
+        watched = self._asleep()
+        watched.asleep_readings = DORMANT_READINGS
+        assert watched.dormant is True
+
+    def test_a_single_word_resets_the_count(self, monkeypatch):
+        sup = Supervisor()
+        watched = self._asleep(mean_db=-20.0, peak_db=-5.0)
+        watched.asleep_readings = 2
+        watched.audio_at = 0.0
+        monkeypatch.setattr(watched, "read_audio", lambda *a, **k: watched.audio)
+        sup.watching["x"] = watched
+        monkeypatch.setattr(sup, "allowed", lambda **k: False)
+        sup.tick()
+        assert watched.asleep_readings == 0
+
+    def test_a_dormant_stream_is_not_scored(self, monkeypatch):
+        sup = Supervisor()
+        watched = _watched(messages=_chatter(burst_at=150.0))
+        watched.asleep_readings = DORMANT_READINGS
+        watched.audio_at = time.time()
+        sup.watching["x"] = watched
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        cut = []
+        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
+        sup.tick()
+        assert not cut
+        assert watched.last_reason == "asleep"
+
+    def test_the_dashboard_is_told_which_stream_is_asleep(self):
+        watched = self._asleep()
+        watched.asleep_readings = DORMANT_READINGS
+        watched.activity = watched.read_activity()
+        found = watched.signals()
+        assert found["dormant"] is True
+        assert found["activity"]["motion"] is not None
+
+
+class TestTheSlotGoesToTheNextStreamDown:
+    """First, third and fourth - until second wakes up."""
+
+    def _sup(self, monkeypatch, listing):
+        sup = Supervisor()
+        monkeypatch.setattr("core.roster.fetch_kick_live", lambda **k: listing)
+
+        def attach(channel, *, entry=None, viewers=0):
+            sup.watching[channel] = _watched(channel)
+            return sup.watching[channel]
+
+        monkeypatch.setattr(sup, "attach", attach)
+        monkeypatch.setattr(sup, "release", lambda ch: sup.watching.pop(ch, None))
+        return sup
+
+    def _listing(self, *channels):
+        return [
+            type(
+                "Live", (), {
+                    "channel": c, "viewers": 10000 - i, "avatar": "", "thumbnail": "",
+                    "title": "", "category": "", "name": lambda self=None, c=c: c,
+                },
+            )()
+            for i, c in enumerate(channels)
+        ]
+
+    def test_a_sleeping_stream_is_swapped_for_the_next_one(self, monkeypatch):
+        listing = self._listing("one", "two", "three", "four", "five")
+        sup = self._sup(monkeypatch, listing)
+        sup.poll_roster()
+        assert set(sup.watching) == {"one", "two", "three"}
+
+        sup.watching["two"].asleep_readings = DORMANT_READINGS
+        sup.poll_roster()
+        assert set(sup.watching) == {"one", "three", "four"}
+
+    def test_the_roster_does_not_hand_the_sleeper_straight_back(self, monkeypatch):
+        listing = self._listing("one", "two", "three", "four", "five")
+        sup = self._sup(monkeypatch, listing)
+        sup.poll_roster()
+        sup.watching["two"].asleep_readings = DORMANT_READINGS
+        sup.poll_roster()
+        for _ in range(3):
+            sup.poll_roster()
+        assert "two" not in sup.watching, "second place is still asleep"
+        assert len(sup.watching) == settings.live_slots
+
+    def test_it_is_picked_up_again_once_the_rest_has_passed(self, monkeypatch):
+        listing = self._listing("one", "two", "three", "four", "five")
+        sup = self._sup(monkeypatch, listing)
+        sup.poll_roster()
+        sup.watching["two"].asleep_readings = DORMANT_READINGS
+        sup.poll_roster()
+        assert "two" not in sup.watching
+
+        # Ranks are unchanged, so once the rest expires second place displaces
+        # fourth exactly as it would have in the first place.
+        later = time.time() + DORMANT_REST_S + 1
+        sup.poll_roster(now=later)
+        assert "two" in sup.watching
+
+    def test_the_swap_back_settles_instead_of_thrashing(self, monkeypatch):
+        listing = self._listing("one", "two", "three", "four", "five")
+        sup = self._sup(monkeypatch, listing)
+        sup.poll_roster()
+        sup.watching["two"].asleep_readings = DORMANT_READINGS
+        sup.poll_roster()
+        later = time.time() + DORMANT_REST_S + 1
+        sup.poll_roster(now=later)
+        settled = set(sup.watching)
+        for i in range(4):
+            sup.poll_roster(now=later + i)
+        assert set(sup.watching) == settled == {"one", "two", "three"}
+
+    def test_it_never_holds_more_slots_than_it_is_allowed(self, monkeypatch):
+        listing = self._listing(*[f"c{i}" for i in range(10)])
+        sup = self._sup(monkeypatch, listing)
+        for _ in range(4):
+            sup.poll_roster()
+            assert len(sup.watching) <= settings.live_slots
+
+
+class TestTheClipRunsAsLongAsTheMomentDoes:
+    def _cut(self, sup, watched, monkeypatch, **kwargs):
+        monkeypatch.setattr(sup, "store", lambda record: record)
+        monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
+        return sup.catch(watched, why={"chat_burst": 9.0}, peak_s=120.0,
+                         now=time.time(), **kwargs)
+
+    def test_a_burst_that_dies_quickly_gives_a_short_clip(self, monkeypatch):
+        sup = Supervisor()
+        msgs = _chatter(200)
+        msgs += [chatlib.Message(120.0 + (i % 20) * 0.1, "KEKW", f"r{i}") for i in range(60)]
+        watched = _watched(messages=msgs)
+        record = self._cut(sup, watched, monkeypatch)
+        assert record["duration_s"] < settings.live_max_clip_s
+
+    def test_a_moment_that_keeps_going_is_capped_not_truncated_at_thirty(self, monkeypatch):
+        sup = Supervisor()
+        msgs = _chatter(300)
+        msgs += [
+            chatlib.Message(120.0 + t * 0.05, "KEKW", f"r{t}")
+            for t in range(3000)
+        ]
+        watched = _watched(messages=msgs)
+        record = self._cut(sup, watched, monkeypatch)
+        assert record["duration_s"] == pytest.approx(settings.live_max_clip_s, abs=0.51)
+
+    def test_no_clip_ever_exceeds_the_cap(self, monkeypatch):
+        sup = Supervisor()
+        msgs = _chatter(400) + [
+            chatlib.Message(120.0 + t * 0.02, "OMG", f"r{t}") for t in range(9000)
+        ]
+        watched = _watched(messages=msgs)
+        record = self._cut(sup, watched, monkeypatch)
+        assert record["duration_s"] <= settings.live_max_clip_s
+
+    def test_the_extract_asks_the_buffer_for_the_same_length(self, monkeypatch):
+        sup = Supervisor()
+        watched = _watched(messages=_chatter(burst_at=120.0))
+        record = self._cut(sup, watched, monkeypatch)
+        asked = watched.buffer.extracted[-1]
+        assert asked["lead_s"] == settings.live_lead_s
+        assert record["duration_s"] == pytest.approx(asked["lead_s"] + asked["trail_s"], abs=0.05)
