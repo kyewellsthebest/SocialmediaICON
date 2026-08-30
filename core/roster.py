@@ -28,6 +28,7 @@ A stream that actually ends is dropped at once - that is not noise.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -186,6 +187,41 @@ def fetch_kick_live(
     raise RuntimeError(f"no Kick live-directory endpoint answered: {last_error}")
 
 
+#: A livestream's own slug looks like "81c9c0fc-locked-in-athon-day-49-of-90":
+#: eight hex characters, a dash, then the session title. It is not a channel
+#: and https://kick.com/<that> is a 404 - which is exactly how three streams
+#: were watched, resolved and rejected on the first real run.
+SESSION_SLUG = re.compile(r"^[0-9a-f]{8}-")
+
+
+def _channel_of(row: dict[str, Any]) -> str:
+    """The channel slug, which is not the same thing as the stream's slug.
+
+    The livestreams endpoint returns one row per *session*, and that row's own
+    `slug` names the session, not the person. The channel hangs off it. Taking
+    the row's slug first therefore produces a URL that cannot be resolved, and
+    it fails late - at playback lookup, one stream at a time, with a 404 that
+    reads like the channel went offline.
+    """
+    channel = row.get("channel")
+    if isinstance(channel, dict):
+        found = channel.get("slug") or (channel.get("user") or {}).get("username")
+        if found:
+            return str(found)
+
+    # A row that is itself a channel (the channels endpoint) does carry the
+    # right slug - but only when it is not a session slug in disguise.
+    for key in ("slug", "username"):
+        found = row.get(key)
+        if found and not SESSION_SLUG.match(str(found)):
+            return str(found)
+
+    user = row.get("user")
+    if isinstance(user, dict) and user.get("username"):
+        return str(user["username"])
+    return ""
+
+
 def _parse_live(payload: Any, language: str) -> list[Live]:
     """Pull streams out of whatever shape the directory came back in."""
     rows = payload
@@ -205,12 +241,7 @@ def _parse_live(payload: Any, language: str) -> list[Live]:
         if not isinstance(row, dict):
             continue
         stream = row.get("livestream") if isinstance(row.get("livestream"), dict) else row
-        channel = (
-            row.get("slug")
-            or (row.get("channel") or {}).get("slug")
-            or stream.get("slug")
-            or ""
-        )
+        channel = _channel_of(row)
         viewers = stream.get("viewer_count") or stream.get("viewers") or 0
         spoken = str(stream.get("language") or row.get("language") or "").lower()
         # Kick writes the language as a full word; accept both, and keep rows

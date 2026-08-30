@@ -164,3 +164,71 @@ class TestParsingTheDirectory:
 
         assert _parse_live({"surprise": 1}, "en") == []
         assert _parse_live(None, "en") == []
+
+
+class TestTheChannelIsNotTheStream:
+    """The bug that made the first real run resolve nothing.
+
+    The livestreams endpoint returns one row per *session*, and that row's own
+    `slug` names the session - "81c9c0fc-locked-in-athon-day-49-of-90" - not
+    the person. The parser took it first, so every playback lookup asked for
+    kick.com/<session slug> and got a 404 that read like the channel had gone
+    offline. Three streams, three 404s, nothing watched.
+    """
+
+    #: Exactly the shape that failed, with the real values from that run.
+    SESSION_ROW = {
+        "id": 40012,
+        "slug": "81c9c0fc-locked-in-athon-day-49-of-90-w-at-ninadrama",
+        "session_title": "LOCKED-IN-ATHON DAY 49 OF 90",
+        "viewer_count": 16735,
+        "language": "English",
+        "categories": [{"name": "IRL"}],
+        "channel": {"id": 668, "slug": "deenthegreat", "user": {"username": "DeenTheGreat"}},
+    }
+
+    def test_the_channel_slug_wins_over_the_session_slug(self):
+        from core.roster import _parse_live
+
+        found = _parse_live([self.SESSION_ROW], "en")
+        assert len(found) == 1
+        assert found[0].channel == "deenthegreat"
+        assert found[0].page() == "https://kick.com/deenthegreat"
+
+    def test_a_session_slug_is_never_used_as_a_channel(self):
+        """Even with no channel object, a session slug must not be returned."""
+        from core.roster import _channel_of
+
+        assert _channel_of({"slug": "19c54e13-gamba-18-jackcom-giveaway-if-win"}) == ""
+
+    def test_a_real_channel_row_still_works(self):
+        """The channels endpoint does carry the right slug on the row itself."""
+        from core.roster import _channel_of
+
+        assert _channel_of({"slug": "xqc", "livestream": {"viewer_count": 5}}) == "xqc"
+
+    def test_a_username_is_accepted_when_there_is_no_slug(self):
+        from core.roster import _channel_of
+
+        assert _channel_of({"channel": {"user": {"username": "trainwreckstv"}}}) == "trainwreckstv"
+        assert _channel_of({"user": {"username": "adinross"}}) == "adinross"
+
+    def test_a_row_with_no_channel_anywhere_is_dropped(self):
+        from core.roster import _parse_live
+
+        assert _parse_live([{"viewer_count": 900, "session_title": "hi"}], "en") == []
+
+    def test_viewers_and_title_still_come_from_the_session(self):
+        from core.roster import _parse_live
+
+        live = _parse_live([self.SESSION_ROW], "en")[0]
+        assert live.viewers == 16735
+        assert "LOCKED-IN-ATHON" in live.title
+        assert live.category == "IRL"
+
+    def test_hex_that_is_not_a_session_slug_is_kept(self):
+        """A channel legitimately named with hex characters is not a session."""
+        from core.roster import _channel_of
+
+        assert _channel_of({"slug": "deadbeef"}) == "deadbeef"
+        assert _channel_of({"slug": "abc123-somebody"}) == "abc123-somebody"
