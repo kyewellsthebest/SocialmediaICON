@@ -103,3 +103,44 @@ class TestTheCostOfLooking:
 
         json.dumps(room.as_dict())
         assert set(room.as_dict()) >= {"average_motion", "surges", "cuts", "flashes"}
+
+
+class TestItReadsEveryFrame:
+    """The default is the source's own rate, and the reading has to mean the
+    same thing whatever that rate turns out to be."""
+
+    def test_the_default_is_the_rate_the_source_actually_runs_at(self):
+        src = clips.nightclub()
+        assert watching.watch(src).fps == watching.source_fps(src) > 0
+
+    def test_an_absurd_or_missing_rate_falls_back(self, monkeypatch):
+        src = clips.nightclub()
+        monkeypatch.setattr(watching, "probe", lambda _: _Declares(0.0))
+        assert watching.source_fps(src) == watching.FPS
+        monkeypatch.setattr(watching, "probe", lambda _: _Declares(1000.0))
+        assert watching.source_fps(src) == watching.MAX_FPS
+
+    def test_a_file_that_will_not_probe_falls_back_rather_than_raising(self, tmp_path):
+        assert watching.source_fps(tmp_path / "nothing.mp4") == watching.FPS
+
+    def test_reading_more_frames_does_not_make_a_stream_look_busier(self):
+        """Motion is per second, not per frame. Consecutive frames of a fast
+        source differ by less, so a per-frame number would say a 60fps stream
+        is calmer than the same room at 20 - and the floors that decide
+        'still' and 'too quiet to be a surge' would move with it."""
+        for clip in (clips.nightclub(), clips.still_room()):
+            slow = watching.watch(clip, fps=20.0).average_motion
+            fast = watching.watch(clip, fps=None).average_motion
+            assert abs(fast - slow) / max(slow, 1e-6) < 0.25, clip
+
+    def test_a_still_room_stays_under_the_stillness_floor_at_any_rate(self):
+        room = clips.still_room()
+        for rate in (20.0, None):
+            found = watching.watch(room, fps=rate)
+            assert found.average_motion < 0.08
+            assert sum(b - a for a, b in found.stillness) > 20.0
+
+
+class _Declares:
+    def __init__(self, fps: float) -> None:
+        self.fps = fps

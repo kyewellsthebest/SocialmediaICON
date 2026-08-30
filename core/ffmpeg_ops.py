@@ -49,6 +49,9 @@ class VideoInfo:
     height: int
     duration_s: float
     has_audio: bool
+    #: Frames a second as the container declares them. 0.0 when it declares
+    #: nothing usable, which some live segments do.
+    fps: float = 0.0
 
 
 def probe(path: Path | str) -> VideoInfo:
@@ -77,7 +80,21 @@ def probe(path: Path | str) -> VideoInfo:
         height=int(video["height"]),
         duration_s=duration,
         has_audio=any(s.get("codec_type") == "audio" for s in streams),
+        fps=_rate(video.get("avg_frame_rate") or video.get("r_frame_rate")),
     )
+
+
+def _rate(value: str | None) -> float:
+    """ffprobe writes frame rates as "60000/1001". Nothing, or a zero
+    denominator, means the container did not say."""
+    if not value:
+        return 0.0
+    top, _, bottom = str(value).partition("/")
+    try:
+        divisor = float(bottom or 1.0)
+        return float(top) / divisor if divisor else 0.0
+    except ValueError:
+        return 0.0
 
 
 def extract_audio(src: Path | str, dest: Path | str) -> Path:

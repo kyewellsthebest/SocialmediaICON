@@ -97,3 +97,42 @@ class TestFacesAreEvidence:
         from core import moments
 
         assert moments.WEIGHTS["face_reaction"] > moments.WEIGHTS["motion_surge"]
+
+
+class TestItWatchesEveryFrame:
+    """Finding a face is expensive and does not need speed; watching one is
+    cheap and does. The two rates are separate for that reason."""
+
+    def test_the_default_reads_at_the_source_rate(self):
+        src = clips.one_person()
+        found = faces.watch(src)
+        assert found.fps == faces.source_fps(src) > 0
+        assert len(found.frames) == len(found.face_change)
+
+    def test_the_cascade_still_runs_at_the_slower_rate(self):
+        """A box six times a second, carried forward in between - otherwise
+        this costs ten times what it costs."""
+        found = faces.watch(clips.one_person(), fps=30.0, detect_fps=6.0)
+        assert found.fps == 30.0
+        assert found.detect_fps == pytest.approx(6.0, abs=0.5)
+        assert len(found.frames) > 100
+
+    def test_a_carried_box_still_finds_the_person(self):
+        """Reading between detections must not lose the face that was there."""
+        slow = faces.watch(clips.one_person(), fps=6.0, detect_fps=6.0)
+        fast = faces.watch(clips.one_person(), fps=30.0, detect_fps=6.0)
+        assert fast.on_screen == pytest.approx(slow.on_screen, abs=0.15)
+        assert fast.biggest == pytest.approx(slow.biggest, abs=0.02)
+
+    def test_frames_are_streamed_not_held(self):
+        """30s of 640x360 at 60fps is 414MB if it is all held at once."""
+        pulled = faces.stream(clips.one_person(), fps=6.0)
+        first = next(pulled)
+        assert first.shape == (faces.HEIGHT, faces.WIDTH)
+        pulled.close()  # must not leave ffmpeg blocked on a pipe nobody reads
+
+    def test_a_source_with_no_frames_still_says_so(self, tmp_path):
+        empty = tmp_path / "empty.mp4"
+        empty.write_bytes(b"")
+        with pytest.raises(faces.FacesError):
+            faces.watch(empty)

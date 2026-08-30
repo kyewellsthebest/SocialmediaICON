@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.ffmpeg_ops import require_binaries
+from core.ffmpeg_ops import probe, require_binaries
 
 log = logging.getLogger(__name__)
 
@@ -39,16 +39,32 @@ log = logging.getLogger(__name__)
 #: frame, small enough that a whole clip decodes in well under a second.
 WIDTH, HEIGHT = 96, 54
 STRIDE = WIDTH * HEIGHT
-#: Twenty frames a second. Four - what the crop tracker uses - is enough to
-#: follow a person walking and too coarse to catch a punch, a flinch or a
-#: fall, which are the events worth clipping.
+#: Every frame the source sends, which is what `fps=None` asks for. Four -
+#: what the crop tracker uses - is enough to follow a person walking and too
+#: coarse to catch a punch, a flinch or a fall, which are the events worth
+#: clipping. Twenty catches those. Sixty catches the single frame where a
+#: face changes, and a single frame is all some of them last.
 #:
-#: Raising it is nearly free and that is worth knowing: the decoder has to
-#: decode every frame of the source whatever rate is asked for, so the cost is
-#: the source, not the sample. Measured on 30 seconds of 1080p60 - 1.61s at
-#: ten frames a second, 1.80s at twenty, 2.75s at all sixty. The sampling is
-#: not what any of that is paying for.
+#: Reading them all is nearly free, and that is the whole reason to do it: the
+#: decoder has to decode every frame whatever rate is asked for, so the cost
+#: is the source, not the sample. Measured on 30 seconds of 1080p60 - 1.61s at
+#: ten frames a second, 1.80s at twenty, 2.75s at all sixty. Sampling is not
+#: what any of that is paying for, so sampling less buys nothing and loses the
+#: three-frame events.
+#:
+#: The bill for both eyes together, on real 1080p60: 3.47s here and 3.46s in
+#: faces per 30-second window, which on three streams every twenty seconds is
+#: one core. The next lever, if that ever becomes the constraint, is one
+#: decode feeding both rather than two - roughly 1.7s of it is the same 1080p
+#: frames being decoded twice.
+#:
+#: This number is the fallback for a source whose frame rate the container
+#: does not declare, and the ceiling for one that declares something absurd.
 FPS = 20.0
+#: No source is read faster than this. 60 covers every Kick stream; a
+#: container claiming 1000fps is lying or is a screen recording, and either
+#: way there is nothing above 60 worth the decode.
+MAX_FPS = 60.0
 #: How far back "usual for this stream" reaches.
 BASELINE_S = 30.0
 #: No verdict before there is a past to compare against.
@@ -116,6 +132,22 @@ PROFILE = (
 )
 
 
+def source_fps(src: Path | str) -> float:
+    """The source's own frame rate, or FPS when it will not say.
+
+    Asked before the decode so that the rate stored on the reading is the
+    rate the frames were actually read at - every time downstream is an index
+    divided by this, so a wrong number here moves every event.
+    """
+    try:
+        declared = probe(src).fps
+    except Exception:  # a stream too short or too broken to probe
+        return FPS
+    if declared <= 0.0:
+        return FPS
+    return min(declared, MAX_FPS)
+
+
 def profiles(
     src: Path | str, *, fps: float = FPS, seconds: float | None = None
 ) -> list[tuple[bytes, bytes]]:
@@ -150,11 +182,25 @@ def _median(values: list[float]) -> float:
     return ordered[len(ordered) // 2]
 
 
-def watch(src: Path | str, *, fps: float = FPS, seconds: float | None = None) -> Watching:
-    """Read a stretch of video for what the picture is doing."""
+def watch(
+    src: Path | str, *, fps: float | None = None, seconds: float | None = None
+) -> Watching:
+    """Read a stretch of video for what the picture is doing.
+
+    `fps=None` - the default - reads every frame the source sends. Pass a
+    number only to read fewer on purpose.
+    """
+    if fps is None:
+        fps = source_fps(src)
     strips = profiles(src, fps=fps, seconds=seconds)
 
-    columns = [[v / 255.0 for v in change] for change, _ in strips]
+    # Per second, not per frame. Consecutive frames of a 60fps source differ
+    # by about a third of what consecutive frames of a 20fps source do, for
+    # the same thing happening in front of the same camera - so a per-frame
+    # floor that means "busy" at one rate means "asleep" at the other. Now
+    # that the rate is the source's own and varies stream to stream, every
+    # number below has to be in units the rate cannot move: change per second.
+    columns = [[v / 255.0 * fps for v in change] for change, _ in strips]
     motion = [sum(row) / WIDTH for row in columns]
     brightness = [sum(light) / WIDTH / 255.0 for _, light in strips]
     # tblend has nothing to difference the first frame against, so whatever it
@@ -171,7 +217,7 @@ def watch(src: Path | str, *, fps: float = FPS, seconds: float | None = None) ->
 
 
 def _find_surges(
-    motion: list[float], fps: float, *, over: float = 2.2, floor: float = 0.004
+    motion: list[float], fps: float, *, over: float = 2.2, floor: float = 0.08
 ) -> list[tuple[float, float]]:
     """Where the picture moved far more than this stream normally moves.
 
@@ -232,7 +278,7 @@ def _find_flashes(
 
 
 def _find_stillness(
-    motion: list[float], fps: float, *, below: float = 0.004, min_s: float = 1.5
+    motion: list[float], fps: float, *, below: float = 0.08, min_s: float = 1.5
 ) -> list[tuple[float, float]]:
     """Where nothing moved. An empty chair, a frozen stream, a held shot."""
     least = max(1, int(min_s * fps))

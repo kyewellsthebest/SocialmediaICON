@@ -16,11 +16,24 @@ So this finds faces, and then watches them. Two things come out of it:
   different answer, and it is answered by the model that watches the clip,
   on crops taken from here rather than on the whole frame.
 
-Faces are found at a lower rate than motion, and deliberately. A face does not
-change meaningfully faster than about ten times a second - an expression takes
-a third of a second to form - so sampling faster costs linearly and learns
-nothing. Motion is different: a punch, a flinch and a fall are over in three
-frames, which is why that runs at the source's own rate.
+Two rates, because the two halves cost wildly different amounts. *Finding* a
+face is the expensive half - a cascade over the whole picture, 4 seconds of
+CPU per 30-second window at ten frames a second - and it is also the half that
+does not need speed: a face does not move far in a sixth of a second, so
+finding one six times a second and carrying the box forward loses nothing.
+*Watching* a face is the cheap half - the mean absolute difference of a few
+thousand pixels inside a box already known - and it is the half that needs
+every frame, because a flinch is three frames and a face at 60fps that is only
+looked at 6 times a second is a face whose flinch was never sampled.
+
+So: found six times a second, watched sixty. Measured on 30 seconds of real
+1080p60 - 2.40s to find faces six times a second and look at nothing else,
+3.46s to find them six times a second and watch every one of the 1800 frames.
+Ten times the frames for 44% more CPU, because the decode was always the bill.
+
+The frames are read one at a time rather than held, because 30 seconds of
+640x360 at 60fps is 414MB and this has to run on three streams at once
+forever. Streamed, the whole process peaks at 62MB.
 
 Haar cascades rather than a neural detector, because a neural detector means a
 weights file to ship and 40ms a frame to pay, and this has to run on three
@@ -33,11 +46,12 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.ffmpeg_ops import require_binaries
+from core.ffmpeg_ops import probe, require_binaries
 
 log = logging.getLogger(__name__)
 
@@ -48,12 +62,16 @@ log = logging.getLogger(__name__)
 #: a third of the time, at 640x360 always. The cost of that is real and is the
 #: reason FPS below is what it is.
 WIDTH, HEIGHT = 640, 360
-#: Six a second. An expression takes about a third of a second to form, so
-#: this samples one twice, and unlike motion the cost here is not the decode -
-#: it is the detector, and it is linear in frames. Measured: 4 seconds of CPU
-#: per 30-second window at ten a second, which on three streams every twenty
-#: seconds is most of a core on its own.
-FPS = 6.0
+#: How often the cascade is run. Six a second: an expression takes about a
+#: third of a second to form, so a box is never more than a sixth of a second
+#: stale, and the cost here is not the decode - it is the detector, and it is
+#: linear in frames. Measured: 4 seconds of CPU per 30-second window at ten a
+#: second, which on three streams every twenty seconds is most of a core.
+DETECT_FPS = 6.0
+#: The fallback read rate, and the ceiling, for a source whose container will
+#: not say what it runs at. Everything else is read at the source's own rate.
+FPS = 30.0
+MAX_FPS = 60.0
 #: The smallest face worth finding, as a share of frame height. Below this it
 #: is a person in a crowd, not somebody the clip is about - and below about
 #: 22 pixels the cascade cannot see them anyway.
@@ -90,6 +108,9 @@ class Watching:
     """Who was on screen, and when something happened to their face."""
 
     fps: float
+    #: How often the cascade actually ran. Lower than `fps` on purpose: see
+    #: the module docstring.
+    detect_fps: float = 0.0
     #: Faces per sampled frame.
     frames: list[list[Face]] = field(default_factory=list)
     #: How much the pixels inside the largest face changed, per frame, 0..1.
@@ -163,8 +184,21 @@ def find(frame, width: int = WIDTH, height: int = HEIGHT) -> list[Face]:  # noqa
     ]
 
 
-def frames(src: Path | str, *, fps: float = FPS, seconds: float | None = None):  # noqa: ANN201
-    """Greyscale frames, as numpy arrays, at the face-sampling rate."""
+def source_fps(src: Path | str) -> float:
+    """The source's own frame rate, or FPS when it will not say."""
+    try:
+        declared = probe(src).fps
+    except Exception:
+        return FPS
+    return min(declared, MAX_FPS) if declared > 0.0 else FPS
+
+
+def stream(src: Path | str, *, fps: float, seconds: float | None = None) -> Iterator[Any]:
+    """Greyscale frames one at a time, never all at once.
+
+    30 seconds of 640x360 at 60fps is 414MB held, and three streams of that is
+    the whole box. Read from the pipe a frame at a time it is 230KB.
+    """
     import numpy as np
 
     require_binaries()
@@ -176,47 +210,94 @@ def frames(src: Path | str, *, fps: float = FPS, seconds: float | None = None): 
         "-vf", f"fps={fps},scale={WIDTH}:{HEIGHT},format=gray",
         "-f", "rawvideo", "-",
     ]
-    proc = subprocess.run(command, capture_output=True)
     stride = WIDTH * HEIGHT
-    raw = proc.stdout
-    if len(raw) < stride:
+    proc = subprocess.Popen(  # noqa: S603
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    seen = 0
+    try:
+        while True:
+            raw = proc.stdout.read(stride)
+            if len(raw) < stride:
+                break
+            seen += 1
+            yield np.frombuffer(raw, dtype=np.uint8).reshape(HEIGHT, WIDTH)
+    finally:
+        # A caller that stops early leaves ffmpeg writing into a pipe nobody
+        # reads, which blocks it forever.
+        if proc.poll() is None:
+            proc.kill()
+        stderr = proc.stderr.read() if proc.stderr else b""
+        proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+        proc.wait()
+    if seen == 0:
         raise FacesError(
             f"no frames from {Path(str(src)).name}: "
-            f"{proc.stderr.decode('utf-8', 'replace')[-300:]}"
+            f"{stderr.decode('utf-8', 'replace')[-300:]}"
         )
-    count = len(raw) // stride
-    return np.frombuffer(raw[: count * stride], dtype=np.uint8).reshape(
-        count, HEIGHT, WIDTH
-    )
 
 
-def watch(src: Path | str, *, fps: float = FPS, seconds: float | None = None) -> Watching:
-    """Find the people, then watch their faces."""
+def frames(src: Path | str, *, fps: float = FPS, seconds: float | None = None):  # noqa: ANN201
+    """Every frame at once, as one array. Only for tests and short clips -
+    `stream` is what the live path uses, and for the reason given there."""
     import numpy as np
 
-    shots = frames(src, fps=fps, seconds=seconds)
-    per_frame = [find(shot) for shot in shots]
+    return np.stack(list(stream(src, fps=fps, seconds=seconds)))
 
+
+def _box(face: Face) -> tuple[int, int, int, int]:
+    """A face in pixels, clamped inside the frame and never empty."""
+    x0, y0 = max(0, int(face.x * WIDTH)), max(0, int(face.y * HEIGHT))
+    x1 = min(WIDTH, max(int((face.x + face.w) * WIDTH), x0 + 1))
+    y1 = min(HEIGHT, max(int((face.y + face.h) * HEIGHT), y0 + 1))
+    return x0, y0, x1, y1
+
+
+def watch(
+    src: Path | str,
+    *,
+    fps: float | None = None,
+    detect_fps: float = DETECT_FPS,
+    seconds: float | None = None,
+) -> Watching:
+    """Find the people, then watch their faces - every frame of them.
+
+    `fps=None` reads at the source's own rate. The cascade still only runs
+    `detect_fps` times a second; in between, the last boxes are carried
+    forward, which is what makes reading every frame affordable.
+    """
+    import numpy as np
+
+    if fps is None:
+        fps = source_fps(src)
+    every = max(1, int(round(fps / max(detect_fps, 0.1))))
+
+    per_frame: list[list[Face]] = []
     # How much the pixels inside the largest face changed since the frame
     # before. Measured inside the box rather than over the whole picture,
     # because a camera panning moves every pixel and means nothing, and a face
     # going from calm to horrified moves very few and means everything.
-    change = [0.0]
-    for i in range(1, len(shots)):
-        faces = per_frame[i]
-        if not faces:
-            change.append(0.0)
-            continue
-        face = max(faces, key=lambda f: f.area)
-        x0, y0 = int(face.x * WIDTH), int(face.y * HEIGHT)
-        x1, y1 = int((face.x + face.w) * WIDTH), int((face.y + face.h) * HEIGHT)
-        x0, y0 = max(0, x0), max(0, y0)
-        x1, y1 = min(WIDTH, max(x1, x0 + 1)), min(HEIGHT, max(y1, y0 + 1))
-        before = shots[i - 1][y0:y1, x0:x1].astype(np.int16)
-        after = shots[i][y0:y1, x0:x1].astype(np.int16)
-        change.append(float(np.abs(after - before).mean()) / 255.0)
+    change: list[float] = []
+    carried: list[Face] = []
+    previous = None
 
-    found = Watching(fps=fps, frames=per_frame, face_change=change)
+    for i, shot in enumerate(stream(src, fps=fps, seconds=seconds)):
+        if i % every == 0:
+            carried = find(shot)
+        per_frame.append(carried)
+
+        if previous is None or not carried:
+            change.append(0.0)
+        else:
+            x0, y0, x1, y1 = _box(max(carried, key=lambda f: f.area))
+            before = previous[y0:y1, x0:x1].astype(np.int16)
+            after = shot[y0:y1, x0:x1].astype(np.int16)
+            change.append(float(np.abs(after - before).mean()) / 255.0)
+        previous = shot
+
+    found = Watching(fps=fps, detect_fps=fps / every, frames=per_frame, face_change=change)
     found.reactions = _find_reactions(change, fps)
     found.close_ups = _find_close_ups(per_frame, fps)
     return found
