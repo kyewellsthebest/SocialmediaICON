@@ -278,3 +278,51 @@ class TestPayingForTheJob:
 
         with pytest.raises(LiveError, match="no renditions"):
             choose_variant([])
+
+
+class TestEmotesAndVocabulary:
+    """Kick's chat is not Twitch's, and the first live run proved it."""
+
+    def test_an_emote_code_becomes_its_name(self):
+        assert chat.clean("[emote:1579046:emojiGrimacing]") == "emojiGrimacing"
+        assert chat.clean("nice [emote:37225:KEKLEO] one") == "nice KEKLEO one"
+
+    def test_cleaning_is_about_reading_it_not_about_matching_it(self):
+        """Two separate fixes, and it is worth not confusing them.
+
+        Matching KEKLEO needed the vocabulary to key on roots rather than on
+        exact Twitch names - and once it does, the root is visible inside the
+        raw code too. Cleaning is what makes the line legible on the page,
+        where "[emote:37225:KEKLEO]" is noise wrapped around a word.
+        """
+        raw = "[emote:37225:KEKLEO]"
+        assert "funny" in chat.Message(0, raw).emotions()
+        assert "funny" in chat.Message(0, chat.clean(raw)).emotions()
+        assert chat.clean(raw) == "KEKLEO", "the page should show the word, not the id"
+
+    def test_an_exact_name_list_would_have_missed_it(self):
+        """The vocabulary before the first live run only knew KEKW."""
+        import re
+
+        assert not re.search(r"KEKW", "collectiblesGoldenKEKLEO")
+        assert "funny" in chat.Message(0, "collectiblesGoldenKEKLEO").emotions()
+
+    def test_kick_emotes_match_on_their_root(self):
+        """Channel emotes wrap the root in prefixes: collectiblesGoldenKEKLEO."""
+        for text in ("KEKLEO", "collectiblesGoldenKEKLEO", "LULEO", "OMEGALULiguess"):
+            assert "funny" in chat.Message(0, text).emotions(), text
+
+    def test_the_laughing_emoji_counts(self):
+        assert "funny" in chat.Message(0, "😂😂😂😂").emotions()
+
+    def test_w_and_l_still_read_as_hype_and_cringe(self):
+        assert "hype" in chat.Message(0, "W").emotions()
+        assert "hype" in chat.Message(0, "WW").emotions()
+        assert "cringe" in chat.Message(0, "L").emotions()
+
+    def test_ordinary_words_containing_a_root_are_not_dragged_in(self):
+        """'flow' contains no root; 'below' must not read as lol."""
+        assert chat.Message(0, "below the line").emotions() == set()
+
+    def test_text_without_an_emote_is_untouched(self):
+        assert chat.clean("BRO THIS SLOT IS BANNED") == "BRO THIS SLOT IS BANNED"

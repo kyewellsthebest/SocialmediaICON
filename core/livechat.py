@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from core.chat import LiveLog, Message
+from core.chat import LiveLog, Message, clean
 
 log = logging.getLogger(__name__)
 
@@ -190,7 +190,7 @@ class LiveChat:
                 pass
         return Message(
             at_s=round(at - self.origin, 2),
-            text=str(text),
+            text=clean(text),
             user=str(sender.get("username", "")) if isinstance(sender, dict) else "",
         )
 

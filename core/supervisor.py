@@ -53,6 +53,15 @@ class SupervisorError(RuntimeError):
     pass
 
 
+#: How often to actually decode audio out of the buffer. Every tick would be
+#: three ffmpeg decodes every five seconds for a number that moves slowly;
+#: this is the one genuinely expensive thing the loop can do.
+AUDIO_EVERY_S = 20.0
+#: How much of the recent past to measure. Long enough to show a shape, short
+#: enough that the decode stays well under a second.
+AUDIO_WINDOW_S = 24.0
+
+
 @dataclass
 class Watched:
     """One channel: its buffer, its chat, and when it last produced a clip."""
@@ -65,10 +74,83 @@ class Watched:
     last_catch_at: float = 0.0
     last_score: float = 0.0
     last_reason: str = ""
+    #: What the directory said about them, for the page to render.
+    display_name: str = ""
+    avatar: str = ""
+    thumbnail: str = ""
+    title: str = ""
+    category: str = ""
+    #: The most recent audio reading, refreshed on its own slower timer.
+    audio: dict[str, Any] = field(default_factory=dict)
+    audio_at: float = 0.0
 
     def stop(self) -> None:
         self.chat.stop()
         self.buffer.discard()
+
+    def read_audio(self, out_dir: Path) -> dict[str, Any]:
+        """Decode the tail of the buffer and describe what it sounds like.
+
+        The buffer is already on disk at delivery quality, so this costs a
+        decode and no extra bandwidth. What comes back is the loudness curve -
+        the shape the page draws - plus the jumps and quiet runs that the
+        moment scorer would use, and a spectrogram, which is the one view that
+        tells speech from music from an impact at a glance.
+        """
+        from core import listen
+
+        segments = self.buffer.segments()
+        if not segments:
+            return {"ok": False, "why": "the buffer is still filling"}
+
+        # Take whole segments from the end rather than seeking: they are
+        # independently decodable, so this cannot land mid-GOP.
+        wanted: list = []
+        held = 0.0
+        for segment in reversed(segments):
+            wanted.insert(0, segment)
+            held += segment.duration_s
+            if held >= AUDIO_WINDOW_S:
+                break
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # The concat *protocol*, not the concat demuxer's list file: transport
+        # streams can simply be joined byte-wise, and ffmpeg reads that from
+        # one argument. A list file needs -f concat -safe 0 to go with it, and
+        # feeding one to a plain -i produces no error and no output - which is
+        # how the spectrogram silently came back empty the first time.
+        joined = f"concat:{'|'.join(str(seg.path) for seg in wanted)}"
+
+        try:
+            envelope = listen.envelope(joined)
+        except Exception as exc:  # noqa: BLE001 - audio is a nicety, not the job
+            return {"ok": False, "why": f"{type(exc).__name__}: {exc}"}
+
+        spectrogram: Path | None = out_dir / f"{self.channel}-spectrogram.png"
+        try:
+            listen.spectrogram_png(joined, spectrogram, width=760, height=220)
+            # Hand it to the web service, which has no access to this disk.
+            from core import livestate
+
+            livestate.put_image(f"spectrogram:{self.channel}", spectrogram.read_bytes())
+        except Exception as exc:  # noqa: BLE001
+            log.debug("supervisor: no spectrogram for %s (%s)", self.channel, exc)
+            spectrogram = None
+
+        # The page draws a bar per point, so send a fixed number of them
+        # regardless of window length rather than several hundred.
+        curve = envelope.rms_db
+        step = max(1, len(curve) // 120)
+        return {
+            "ok": True,
+            "held_s": round(envelope.duration_s, 1),
+            "loudness_db": [round(v, 1) for v in curve[::step]],
+            "mean_db": round(sum(curve) / len(curve), 1) if curve else None,
+            "peak_db": round(max(envelope.peak_db), 1) if envelope.peak_db else None,
+            "jumps": envelope.jumps()[-6:],
+            "quiet_runs": envelope.quiet_runs()[-4:],
+            "has_spectrogram": spectrogram is not None,
+        }
 
     def signals(self) -> dict[str, Any]:
         """Everything the bot can currently see for this channel.
@@ -87,9 +169,16 @@ class Watched:
         bursts = curve.bursts()
         return {
             "channel": self.channel,
+            "name": self.display_name or self.channel,
+            "avatar": self.avatar,
+            "thumbnail": self.thumbnail,
+            "title": self.title,
+            "category": self.category,
+            "page": f"https://kick.com/{self.channel}",
             "viewers": self.viewers,
             "uptime_s": round(time.time() - self.started_at),
             "buffer": self.buffer.status(),
+            "audio": self.audio,
             "chat": {
                 **self.chat.status(),
                 "per_minute": round(sum(curve.counts) / max(curve.duration_s / 60.0, 1e-6), 1),
@@ -133,18 +222,27 @@ class Supervisor:
         for channel in moved["stop"]:
             self.release(channel)
         for channel in moved["start"]:
-            entry = by_channel.get(channel)
-            self.attach(channel, viewers=entry.viewers if entry else 0)
+            self.attach(channel, entry=by_channel.get(channel))
 
         for channel, watched in self.watching.items():
             entry = by_channel.get(channel)
             if entry:
-                watched.viewers = entry.viewers
+                self._describe(watched, entry)
 
         self.last_roster_poll = now
         return moved
 
-    def attach(self, channel: str, *, viewers: int = 0) -> Watched | None:
+    @staticmethod
+    def _describe(watched: Watched, entry) -> None:  # noqa: ANN001 - roster.Live
+        """Refresh what the page shows about a stream, but not what it is."""
+        watched.viewers = entry.viewers
+        watched.display_name = entry.name()
+        watched.avatar = entry.avatar
+        watched.thumbnail = entry.thumbnail
+        watched.title = entry.title
+        watched.category = entry.category
+
+    def attach(self, channel: str, *, entry=None, viewers: int = 0) -> Watched | None:  # noqa: ANN001
         """Open a buffer and a chat socket for one channel."""
         if channel in self.watching:
             return self.watching[channel]
@@ -184,8 +282,10 @@ class Supervisor:
         watched = Watched(
             channel=channel, buffer=buffer, chat=talk, started_at=started, viewers=viewers
         )
+        if entry is not None:
+            self._describe(watched, entry)
         self.watching[channel] = watched
-        log.info("supervisor: watching %s (%d viewers)", channel, viewers)
+        log.info("supervisor: watching %s (%d viewers)", channel, watched.viewers)
         return watched
 
     def release(self, channel: str) -> None:
@@ -262,6 +362,15 @@ class Supervisor:
                 self._note(f"{channel}: buffer stopped ({watched.buffer.failure()[:120]})")
                 self.release(channel)
                 continue
+
+            # Audio is the one expensive thing in this loop, so it runs on
+            # its own timer rather than every tick.
+            if now - watched.audio_at >= AUDIO_EVERY_S:
+                watched.audio_at = now
+                try:
+                    watched.audio = watched.read_audio(self.work_dir / "audio")
+                except Exception as exc:  # noqa: BLE001 - a graph is not the job
+                    watched.audio = {"ok": False, "why": f"{type(exc).__name__}: {exc}"}
 
             value, why, peak_s = self.score(watched)
             watched.last_score = value

@@ -75,34 +75,42 @@ REACTIONS = re.compile(
 #: neutral noise while scoring "I love this" as the strongest line in the
 #: window. The vocabulary is small, public, and changes slowly.
 EMOTIONS: dict[str, re.Pattern[str]] = {
+    # Matched on roots rather than exact names. Kick's emote set is not
+    # Twitch's - the first real run watched a chat spamming KEKLEO and
+    # collectiblesGoldenKEKLEO while an exact list for KEKW saw nothing at all.
+    # KEK, LUL and OMEGALUL appear inside dozens of channel emotes, so the root
+    # is the durable thing and the full name is not.
     "funny": re.compile(
-        r"(KEKW|LULW|OMEGALUL|LUL\b|PepeLaugh|ICANT|LMAO|LMFAO|"
-        r"\bha(?:ha)+\b|\blo+l+\b|\bdying\b|\bcrying\b|\bwheeze)",
+        r"(KEK|LUL|OMEGALUL|PepeLaugh|ICANT|LMAO|LMFAO|\bROFL\b"
+        r"|\bha(?:ha)+\b|\blo+l+\b|\bdying\b|\bcrying\b|\bwheeze"
+        r"|\U0001F602|\U0001F923|\U0001F480)",  # joy, rofl, skull
         re.IGNORECASE,
     ),
     "shock": re.compile(
-        r"(monkaS|monkaW|WTF|OMG|OH MY|NO WAY|NOWAY|WHAT THE|HOLY|"
-        r"\bJESUS\b|SHEESH|\bWHAT\?+|HUH\?+|D:|POGGERS|\bWOAH\b|\bWHOA\b)",
+        r"(monkaS|monkaW|WTF|OMG|OH MY|NO WAY|NOWAY|WHAT THE|HOLY"
+        r"|\bJESUS\b|SHEESH|\bWHAT\?+|HUH\?+|D:|POGGERS|\bWOAH\b|\bWHOA\b"
+        r"|\bBRO+\b|\U0001F62E|\U0001F631)",  # open mouth, scream
         re.IGNORECASE,
     ),
     "hype": re.compile(
-        r"(\bPOG\b|PogChamp|LETS ?GO|LFG\b|EZ Clap|\bW\b|GOATED|"
-        r"INSANE|CRACKED|\bCLUTCH\b|BANGER)",
+        r"(\bPOG\b|PogChamp|LETS ?GO|LFG\b|EZ Clap|\bEZ\b|\bW+\b|GOATED"
+        r"|INSANE|CRACKED|\bCLUTCH\b|BANGER|catJAM"
+        r"|\U0001F525|\U0001F947)",  # fire, gold medal
         re.IGNORECASE,
     ),
     "sad": re.compile(
-        r"(Sadge|PepeHands|FeelsBadMan|\bNO+O+\b|\bnooo|\brip\b|"
-        r"\bsorry\b|\bpoor\b|heartbreak|\bF\b)",
+        r"(Sadge|PepeHands|FeelsBadMan|\bNO+O+\b|\bnooo|\brip\b"
+        r"|\bsorry\b|\bpoor\b|heartbreak|\bF\b|\U0001F622|\U0001F62D)",
         re.IGNORECASE,
     ),
     "cringe": re.compile(
-        r"(\bL\b|\byikes\b|\boof\b|\bcringe\b|Aware\b|"
-        r"\bawkward\b|\bbruh\b|\bwhy\b.{0,12}\bdo that\b)",
+        r"(\bL+\b|\byikes\b|\boof\b|\bcringe\b|Aware\b"
+        r"|\bawkward\b|\bweird\b|\U0001F625)",
         re.IGNORECASE,
     ),
     "angry": re.compile(
-        r"(\bratio\b|\bcope\b|\bmald|\btrash\b|\bscam\b|"
-        r"\brigged\b|\bfake\b|\bclown\b|\bdisgusting\b)",
+        r"(\bratio\b|\bcope\b|\bmald|\btrash\b|\bscam\b"
+        r"|\brigged\b|\bfake\b|\bclown\b|\bdisgusting\b|\U0001F621)",
         re.IGNORECASE,
     ),
 }
@@ -110,6 +118,18 @@ EMOTIONS: dict[str, re.Pattern[str]] = {
 
 class ChatError(RuntimeError):
     pass
+
+
+#: Kick sends emotes inline as [emote:1579046:emojiGrimacing]. Left alone that
+#: is unreadable on the page and, worse, it hides the emote from the mood
+#: reader - "KEKLEO" is the strongest funny signal a Kick chat has and it was
+#: arriving wrapped in punctuation and an id.
+EMOTE = re.compile(r"\[emote:\d+:([^\]]+)\]")
+
+
+def clean(text: str) -> str:
+    """Emote codes down to the emote's name, which is the part that means something."""
+    return EMOTE.sub(r"\1", str(text)).strip()
 
 
 @dataclass(frozen=True)
@@ -342,7 +362,7 @@ def _to_message(raw: dict[str, Any], started_at: datetime) -> Message | None:
     user = sender.get("username", "") if isinstance(sender, dict) else str(sender)
     return Message(
         at_s=round((when - started_at).total_seconds(), 2),
-        text=str(text),
+        text=clean(text),
         user=str(user),
     )
 

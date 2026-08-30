@@ -240,3 +240,54 @@ class TestTheDebugEndpoint:
         body = client.get("/api/live/debug", headers=_auth()).json()
         assert body["web"]["live_enabled"] is True
         assert body["web"]["slots"] == settings.live_slots
+
+
+class TestOneStreamAtATime:
+    """The Live page is three summaries; each stream has its own page."""
+
+    def _snapshot(self):
+        livestate.publish({
+            "running": True, "slots": 3, "streams": [
+                {"channel": "n3on", "name": "n3on", "viewers": 33890,
+                 "avatar": "https://files.kick.com/a.webp",
+                 "audio": {"ok": True, "loudness_db": [-30, -20, -10], "has_spectrogram": True},
+                 "chat": {"per_minute": 84.6}},
+                {"channel": "deenthegreat", "name": "DeenTheGreat", "viewers": 17464,
+                 "audio": {"ok": False, "why": "the buffer is still filling"}, "chat": {}},
+            ],
+        })
+
+    def test_a_watched_stream_returns_everything_about_itself(self, client):
+        self._snapshot()
+        body = client.get("/api/live/streams/n3on", headers=_auth()).json()
+        assert body["viewers"] == 33890
+        assert body["avatar"].endswith(".webp")
+        assert body["audio"]["ok"] is True
+
+    def test_the_lookup_is_case_insensitive(self, client):
+        self._snapshot()
+        assert client.get("/api/live/streams/DeenTheGreat", headers=_auth()).status_code == 200
+
+    def test_a_stream_not_being_watched_is_a_404(self, client):
+        self._snapshot()
+        response = client.get("/api/live/streams/nobody", headers=_auth())
+        assert response.status_code == 404
+        assert "not being watched" in response.json()["detail"]
+
+    def test_the_spectrogram_travels_from_the_worker(self, client):
+        """It is drawn on the worker's disk and served by the web process."""
+        livestate.put_image("spectrogram:n3on", b"\x89PNG\r\n\x1a\nfake")
+        response = client.get("/api/live/streams/n3on/spectrogram", headers=_auth())
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content.startswith(b"\x89PNG")
+
+    def test_a_stale_picture_of_a_live_stream_is_not_cached(self, client):
+        livestate.put_image("spectrogram:n3on", b"\x89PNGx")
+        response = client.get("/api/live/streams/n3on/spectrogram", headers=_auth())
+        assert response.headers.get("cache-control") == "no-store"
+
+    def test_no_spectrogram_yet_says_so(self, client):
+        response = client.get("/api/live/streams/nothing/spectrogram", headers=_auth())
+        assert response.status_code == 404
+        assert "twenty seconds" in response.json()["detail"]

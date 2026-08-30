@@ -25,6 +25,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 STATUS_KEY = "clipengine:live:status"
+IMAGE_KEY = "clipengine:live:image:{name}"
 STOP_KEY = "clipengine:live:stop"
 #: A snapshot older than this means the worker died mid-run: better to report
 #: nothing than to show three streams that stopped existing ten minutes ago.
@@ -117,3 +118,38 @@ def clear() -> None:
         client.delete(STATUS_KEY, STOP_KEY)
     except Exception:  # noqa: BLE001
         pass
+
+
+# --- images the worker draws and the web serves ------------------------------
+#
+# The spectrogram is rendered on the worker, from a buffer on the worker's own
+# disk, and has to reach a browser talking to the web service. Those are
+# different containers with different filesystems, so the picture travels the
+# same way the numbers do. It is kept out of the status snapshot deliberately:
+# that is rewritten every few seconds and a couple of hundred kilobytes of PNG
+# riding along with it would be rewritten every few seconds too.
+
+
+def put_image(name: str, data: bytes, *, ttl_s: int = 120) -> None:
+    client = _redis()
+    if client is None:
+        _fallback.setdefault("images", {})[name] = (time.time(), data)
+        return
+    try:
+        client.set(IMAGE_KEY.format(name=name), data, ex=ttl_s)
+    except Exception as exc:  # noqa: BLE001 - a missing graph is not an outage
+        log.debug("livestate: could not store image %s (%s)", name, exc)
+
+
+def get_image(name: str, *, max_age_s: int = 120) -> bytes | None:
+    client = _redis()
+    if client is None:
+        found = (_fallback.get("images") or {}).get(name)
+        if not found:
+            return None
+        when, data = found
+        return data if time.time() - when <= max_age_s else None
+    try:
+        return client.get(IMAGE_KEY.format(name=name))
+    except Exception:  # noqa: BLE001
+        return None

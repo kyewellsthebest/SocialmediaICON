@@ -306,3 +306,33 @@ main { padding: 14px; display: grid; gap: 12px; max-width: 720px; margin: 0 auto
 pre.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; color: var(--ink-3); max-height: 280px; overflow: auto; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- a stream at a glance ---------- */
+
+/* The Live page is three of these and nothing else. A name and a number does
+   not tell three streams apart at arm's length; a face and a picture of what
+   is on screen does. */
+.stream-row { display: flex; gap: 12px; align-items: center; text-decoration: none; color: inherit; }
+.stream-row .pfp {
+  width: 46px; height: 46px; flex: none; border-radius: 50%;
+  background: var(--surface-2); object-fit: cover; border: 1px solid var(--rule);
+}
+.stream-row .who { flex: 1 1 auto; min-width: 0; }
+.stream-row .who b { display: block; font-size: 16px; }
+.stream-row .who small { display: block; color: var(--ink-3); font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stream-row .go { color: var(--ink-3); font-size: 20px; flex: none; }
+
+.shot {
+  width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
+  background: var(--sunken); border-radius: var(--r); display: block;
+}
+
+/* ---------- live audio ---------- */
+
+/* One bar per sample of the loudness curve. Loud is amber, quiet fades toward
+   the rule colour, so the shape reads before any number does. */
+.wave { display: flex; align-items: flex-end; gap: 1px; height: 74px;
+  background: var(--ground); border: 1px solid var(--rule); border-radius: var(--r); padding: 5px; }
+.wave i { flex: 1 1 auto; min-width: 1px; background: var(--accent); border-radius: 1px; display: block; }
+.spectro { width: 100%; border: 1px solid var(--rule); border-radius: var(--r); background: #000; display: block; }

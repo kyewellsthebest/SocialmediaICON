@@ -127,45 +127,138 @@ async function renderLive() {
 function streamCard(s) {
   const chat = s.chat || {};
   const mood = chat.mood || {};
-  const buffer = s.buffer || {};
   const requests = (chat.clip_requests || []).length;
 
-  const lines = (chat.recent || []).map((m) =>
-    `<div class="line"><span class="who">${esc(m.user || "—")}</span>
-      <span class="said">${esc(m.text)}</span></div>`).join("")
-    || `<div class="empty">No chat yet.</div>`;
-
-  const why = Object.entries(s.why || {});
-
   return `<div class="card">
-    <div class="spread">
-      <div>
-        <h3>${esc(s.channel)}</h3>
-        <p class="muted">${Number(s.viewers || 0).toLocaleString()} watching · up ${ago(s.uptime_s)}</p>
-      </div>
-      ${pill(chat.connected ? "chat live" : "chat down", chat.connected ? "good" : "warning")}
-    </div>
+    <a class="stream-row" href="#/stream/${encodeURIComponent(s.channel)}">
+      ${s.avatar
+        ? `<img class="pfp" src="${esc(s.avatar)}" alt="" loading="lazy">`
+        : `<span class="pfp"></span>`}
+      <span class="who">
+        <b>${esc(s.name || s.channel)}</b>
+        <small>${Number(s.viewers || 0).toLocaleString()} watching${
+          s.category ? " · " + esc(s.category) : ""}</small>
+      </span>
+      <span class="go">›</span>
+    </a>
+
+    ${s.thumbnail ? `<img class="shot" src="${esc(s.thumbnail)}" alt="" loading="lazy">` : ""}
 
     <div class="stats">
       ${stat(chat.per_minute ?? 0, "msgs/min", (chat.per_minute || 0) > 120)}
       ${stat(mood.dominant || "—", "mood")}
       ${stat(requests, "clip asks", requests > 0)}
       ${stat((s.score ?? 0).toFixed(1), "score", (s.score || 0) > 0)}
-      ${stat(`${Math.round(buffer.held_s || 0)}s`, "buffered")}
-      ${stat(`${(buffer.megabytes || 0).toFixed(0)}MB`, "on disk")}
-      ${stat(chat.messages_seen ?? 0, "msgs seen")}
-      ${stat(ago(s.last_catch_s_ago), "last clip")}
-    </div>
-
-    ${why.length ? bars(why) : ""}
-    ${mood.dominant ? `<p class="muted">Chat reads <b>${esc(mood.dominant)}</b> —
-        ${Math.round((mood.confidence || 0) * 100)}% agreement over ${mood.emotive_lines || 0} lines.</p>` : ""}
-
-    <div>
-      <p class="label" style="margin-bottom:6px">Live chat · forgotten after 5 min</p>
-      <div class="chat">${lines}</div>
     </div>
   </div>`;
+}
+
+/* ---------- one stream, everything ---------- */
+
+async function renderStream() {
+  const channel = decodeURIComponent((location.hash.split("/")[2] || ""));
+  const box = $("#stream-detail");
+  if (!channel) { box.innerHTML = `<div class="card"><p class="empty-note">No stream.</p></div>`; return; }
+
+  let s;
+  try {
+    s = await api(`/live/streams/${encodeURIComponent(channel)}`);
+  } catch (err) {
+    box.innerHTML = `<div class="card"><p class="empty-note">${esc(err.message)}</p></div>`;
+    return;
+  }
+  $("#title").textContent = s.name || s.channel;
+
+  const chat = s.chat || {};
+  const mood = chat.mood || {};
+  const buffer = s.buffer || {};
+  const audio = s.audio || {};
+  const why = Object.entries(s.why || {});
+  const counts = Object.entries(mood.counts || {});
+
+  const lines = (chat.recent || []).map((m) =>
+    `<div class="line"><span class="who">${esc(m.user || "—")}</span>
+      <span class="said">${esc(m.text)}</span></div>`).join("")
+    || `<div class="empty">No chat yet.</div>`;
+
+  box.innerHTML = `
+    <div class="card">
+      <div class="stream-row">
+        ${s.avatar ? `<img class="pfp" src="${esc(s.avatar)}" alt="">` : `<span class="pfp"></span>`}
+        <span class="who"><b>${esc(s.name || s.channel)}</b>
+          <small>${esc(s.title || "")}</small></span>
+        ${pill(chat.connected ? "chat live" : "chat down", chat.connected ? "good" : "warning")}
+      </div>
+      ${s.thumbnail ? `<img class="shot" src="${esc(s.thumbnail)}?t=${Date.now()}" alt="">` : ""}
+      <div class="row">
+        <a class="btn btn-quiet" href="${esc(s.page)}" target="_blank" rel="noopener">Open on Kick</a>
+        <span class="muted">${Number(s.viewers || 0).toLocaleString()} watching ·
+          up ${ago(s.uptime_s)}${s.category ? " · " + esc(s.category) : ""}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <header><h3>Sound</h3><span class="label">last ${Math.round(audio.held_s || 0)}s</span></header>
+      ${audio.ok
+        ? `<div class="wave">${wave(audio.loudness_db || [])}</div>
+           <div class="stats">
+             ${stat(`${audio.mean_db ?? "—"}`, "mean dB")}
+             ${stat(`${audio.peak_db ?? "—"}`, "peak dB")}
+             ${stat((audio.jumps || []).length, "spikes", (audio.jumps || []).length > 0)}
+             ${stat((audio.quiet_runs || []).length, "pauses")}
+           </div>
+           ${audio.has_spectrogram
+             ? `<img class="spectro" alt="spectrogram"
+                  src="/api/live/streams/${encodeURIComponent(s.channel)}/spectrogram?token=${
+                    encodeURIComponent(state.token)}&t=${Date.now()}">`
+             : ""}`
+        : `<p class="empty-note">${esc(audio.why || "Waiting for the buffer to fill.")}</p>`}
+    </div>
+
+    <div class="card">
+      <header><h3>Why it is scoring</h3><span class="label">${(s.score ?? 0).toFixed(1)} total</span></header>
+      ${why.length ? bars(why) : `<p class="empty-note">Nothing is standing out right now.</p>`}
+      ${mood.dominant
+        ? `<p class="muted">Chat reads <b>${esc(mood.dominant)}</b> —
+             ${Math.round((mood.confidence || 0) * 100)}% agreement over
+             ${mood.emotive_lines || 0} lines.</p>
+           ${counts.length ? bars(counts) : ""}`
+        : `<p class="muted">Chat is not reading as any particular feeling.</p>`}
+    </div>
+
+    <div class="card">
+      <header><h3>Buffer</h3></header>
+      <div class="stats">
+        ${stat(`${Math.round(buffer.held_s || 0)}s`, "held")}
+        ${stat(`${(buffer.megabytes || 0).toFixed(0)}MB`, "on disk")}
+        ${stat(buffer.segments ?? "—", "segments")}
+        ${stat(ago(s.last_catch_s_ago), "last clip")}
+      </div>
+    </div>
+
+    <div class="card">
+      <header><h3>Chat</h3><span class="label">forgotten after 5 min</span></header>
+      <div class="stats">
+        ${stat(chat.per_minute ?? 0, "msgs/min", (chat.per_minute || 0) > 120)}
+        ${stat(chat.messages_seen ?? 0, "seen")}
+        ${stat((chat.bursts || []).length, "bursts", (chat.bursts || []).length > 0)}
+        ${stat((chat.clip_requests || []).length, "clip asks",
+               (chat.clip_requests || []).length > 0)}
+      </div>
+      <div class="chat">${lines}</div>
+    </div>`;
+}
+
+/* A loudness curve as bars. Height is the dB range mapped onto the box, so a
+   quiet stream still shows shape rather than a flat line at the bottom. */
+function wave(curve) {
+  if (!curve.length) return "";
+  const lo = Math.min(...curve), hi = Math.max(...curve);
+  const span = Math.max(hi - lo, 1);
+  return curve.map((v) => {
+    const h = Math.max(3, Math.round(((v - lo) / span) * 100));
+    return `<i style="height:${h}%;opacity:${(0.35 + 0.65 * (v - lo) / span).toFixed(2)}"></i>`;
+  }).join("");
 }
 
 /* ---------- clips ---------- */
@@ -293,8 +386,8 @@ function renderProbe(data, buffering) {
 
 /* ---------- views ---------- */
 
-const VIEWS = { live: renderLive, clips: renderClips, settings: renderSettings };
-const TITLES = { live: "Live", clips: "Clips", settings: "Settings" };
+const VIEWS = { live: renderLive, stream: renderStream, clips: renderClips, settings: renderSettings };
+const TITLES = { live: "Live", stream: "Stream", clips: "Clips", settings: "Settings" };
 
 function drawer(open) {
   $("#drawer").dataset.open = String(open);
@@ -319,7 +412,9 @@ async function show(view) {
   // Only the Live view polls. A dashboard left open on Clips should not keep
   // asking the server what chat is doing.
   clearInterval(state.timer);
-  state.timer = view === "live" ? setInterval(renderLive, POLL_MS) : null;
+  state.timer = view === "live" ? setInterval(renderLive, POLL_MS)
+    : view === "stream" ? setInterval(renderStream, POLL_MS)
+    : null;
   await VIEWS[view]();
 }
 

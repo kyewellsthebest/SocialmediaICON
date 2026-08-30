@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -113,6 +113,40 @@ def stop() -> dict[str, Any]:
     from worker.tasks.live_watch import stop as stop_watching
 
     return stop_watching()
+
+
+@router.get("/streams/{channel}")
+def stream(channel: str) -> dict[str, Any]:
+    """Everything known about one stream, for its own page.
+
+    Read out of the same snapshot the Live view uses rather than asking the
+    supervisor again: there is one writer and it is in another process, so a
+    second source here could only ever disagree with the first.
+    """
+    from core import livestate
+
+    found = livestate.read() or {}
+    for entry in found.get("streams", []):
+        if entry.get("channel", "").lower() == channel.lower():
+            return entry
+    raise HTTPException(404, f"{channel} is not being watched right now")
+
+
+@router.get("/streams/{channel}/spectrogram")
+def spectrogram(channel: str) -> Response:
+    """The sound of the last half minute, drawn."""
+    from core import livestate
+
+    data = livestate.get_image(f"spectrogram:{channel}")
+    if not data:
+        raise HTTPException(404, "no spectrogram yet - it is drawn every twenty seconds")
+    # No caching: the page asks for this on a timer and a stale picture of a
+    # live stream is worse than none.
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/catches")

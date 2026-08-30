@@ -56,9 +56,18 @@ class Live:
     category: str = ""
     language: str = "en"
     url: str = ""
+    #: The streamer's avatar and the stream's current thumbnail. Both are
+    #: plain CDN images the dashboard can show directly - a name and a number
+    #: is not enough to tell three streams apart at a glance.
+    avatar: str = ""
+    thumbnail: str = ""
+    display_name: str = ""
 
     def page(self) -> str:
         return self.url or f"https://kick.com/{self.channel}"
+
+    def name(self) -> str:
+        return self.display_name or self.channel
 
 
 @dataclass
@@ -259,6 +268,38 @@ def _parse_live(payload: Any, language: str) -> list[Live]:
                 title=str(stream.get("session_title") or ""),
                 category=str(categories[0].get("name", "")) if categories else "",
                 language=spoken or language,
+                avatar=_avatar_of(row),
+                thumbnail=_thumbnail_of(stream),
+                display_name=_display_name_of(row) or str(channel),
             )
         )
     return out
+
+
+def _user_of(row: dict[str, Any]) -> dict[str, Any]:
+    """The user object, whichever level of the row it is hiding at."""
+    channel = row.get("channel")
+    if isinstance(channel, dict) and isinstance(channel.get("user"), dict):
+        return channel["user"]
+    return row.get("user") if isinstance(row.get("user"), dict) else {}
+
+
+def _avatar_of(row: dict[str, Any]) -> str:
+    user = _user_of(row)
+    for key in ("profile_pic", "profilepic", "avatar"):
+        found = user.get(key) or row.get(key)
+        if found:
+            return str(found)
+    return ""
+
+
+def _display_name_of(row: dict[str, Any]) -> str:
+    return str(_user_of(row).get("username") or "")
+
+
+def _thumbnail_of(stream: dict[str, Any]) -> str:
+    """Kick gives the thumbnail as a bare string on some rows, a dict on others."""
+    found = stream.get("thumbnail")
+    if isinstance(found, dict):
+        return str(found.get("url") or found.get("src") or "")
+    return str(found or "")
