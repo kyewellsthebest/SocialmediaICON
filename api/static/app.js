@@ -318,7 +318,8 @@ function clipCard(c) {
     ${c.has_video
       ? `<video class="portrait" controls preload="metadata" playsinline
            src="/api/live/catches/${c.id}/video?token=${encodeURIComponent(state.token)}"></video>`
-      : `<div class="portrait missing"><span>No video held for this one.</span></div>`}
+      : `<div class="portrait missing"><span>${
+          esc(c.video_note || "No video held for this one.")}</span></div>`}
 
     <div class="row">
       <span class="pill" data-state="${c.approved ? "good" : ""}">${

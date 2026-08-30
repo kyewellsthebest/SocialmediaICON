@@ -440,3 +440,56 @@ class TestItKeepsWatchingByItself:
         livestate.want(True)
         body = client.get("/api/live", headers=_auth()).json()
         assert "wanted" in body
+
+
+class TestWhyThereIsNoVideo:
+    """Three different problems shared one message, and only one is actionable."""
+
+    def _row(self, key):
+        return type("Row", (), {"storage_key": key})()
+
+    def test_a_pre_fix_clip_says_the_file_only_lived_on_the_worker(self, monkeypatch):
+        from api.routes.live import _video_state
+
+        monkeypatch.setattr(settings, "r2_bucket", None, raising=False)
+        ok, note = _video_state(self._row("/app/.work/catches/deen.mp4"))
+        assert ok is False
+        assert "only ever existed on the worker" in note
+        assert "Newer clips are fine" in note
+
+    def test_an_expired_review_clip_says_so_and_points_at_r2(self, monkeypatch):
+        from api.routes.live import _video_state
+
+        monkeypatch.setattr("core.livestate.get_image", lambda *a, **k: None)
+        ok, note = _video_state(self._row("redis:deen.mp4"))
+        assert ok is False
+        assert "expired" in note and "R2" in note
+
+    def test_a_clip_still_held_for_review_plays(self, monkeypatch):
+        from api.routes.live import _video_state
+
+        monkeypatch.setattr("core.livestate.get_image", lambda *a, **k: b"mp4")
+        assert _video_state(self._row("redis:deen.mp4")) == (True, "")
+
+    def test_an_r2_key_plays_when_r2_is_configured(self, monkeypatch):
+        from api.routes.live import _video_state
+
+        for key, value in dict(
+            r2_account_id="a", r2_access_key_id="b",
+            r2_secret_access_key="c", r2_bucket="d",
+        ).items():
+            monkeypatch.setattr(settings, key, value, raising=False)
+        assert _video_state(self._row("catches/deen.mp4")) == (True, "")
+
+    def test_an_r2_key_without_r2_configured_says_which_way_round(self, monkeypatch):
+        from api.routes.live import _video_state
+
+        monkeypatch.setattr(settings, "r2_bucket", None, raising=False)
+        ok, note = _video_state(self._row("catches/deen.mp4"))
+        assert ok is False
+        assert "not configured on this service" in note
+
+    def test_nothing_stored_is_its_own_case(self):
+        from api.routes.live import _video_state
+
+        assert _video_state(self._row(""))[0] is False

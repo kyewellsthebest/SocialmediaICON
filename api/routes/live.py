@@ -245,7 +245,8 @@ def _row(c: Catch) -> dict[str, Any]:
         "status": c.status,
         "approved": c.approved,
         "created_at": c.created_at.isoformat() if c.created_at else None,
-        "has_video": _playable(c),
+        "has_video": _video_state(c)[0],
+        "video_note": _video_state(c)[1],
     }
 
 
@@ -360,15 +361,41 @@ def debug() -> dict[str, Any]:
     return out
 
 
-def _playable(c: Catch) -> bool:
-    """Whether the browser will get something back if it asks for the video."""
+def _video_state(c: Catch) -> tuple[bool, str]:
+    """Whether the video will play, and if not, which of the reasons it is.
+
+    "No video" is three different things and only one of them is worth acting
+    on: a clip cut before clips were stored anywhere the web service could
+    read them, one that has aged out of the review queue, and one whose file
+    is simply gone. Saying which is the difference between a row you delete
+    and a row that tells you to configure R2.
+    """
     key = c.storage_key or ""
     if not key:
-        return False
+        return False, "Nothing was stored for this one."
+
     if key.startswith("redis:"):
         from core import livestate
 
-        return livestate.get_image(f"clip:{key.split(':', 1)[1]}", max_age_s=48 * 3600) is not None
-    if not key.startswith("/") and settings.has_r2:
-        return True
-    return Path(key).exists()
+        held = livestate.get_image(f"clip:{key.split(':', 1)[1]}", max_age_s=48 * 3600)
+        if held:
+            return True, ""
+        return False, "Held for review for two days, then expired. Configure R2 to keep clips."
+
+    if key.startswith("/") or key.startswith("."):
+        # A bare path only ever worked when the worker and the web service
+        # happened to be the same machine, which on Railway they are not.
+        if Path(key).exists():
+            return True, ""
+        return False, (
+            "Cut before clips were stored where this page can reach them, "
+            "so the file only ever existed on the worker. Newer clips are fine."
+        )
+
+    if settings.has_r2:
+        return True, ""
+    return False, "Stored in R2, but R2 is not configured on this service."
+
+
+def _playable(c: Catch) -> bool:
+    return _video_state(c)[0]
