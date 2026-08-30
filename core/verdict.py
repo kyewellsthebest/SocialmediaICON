@@ -228,7 +228,15 @@ SCHEMA = {
             "type": "boolean",
             "description": "Would a stranger with no context watch this to the end?",
         },
-        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        # No minimum/maximum here. The structured-output endpoint rejects
+        # both on a number outright - "For 'number' type, properties
+        # maximum, minimum are not supported" - with a 400, which fails the
+        # whole call rather than the one field. The range goes in the
+        # description, and the read below clamps it.
+        "confidence": {
+            "type": "number",
+            "description": "How sure you are, from 0.0 to 1.0.",
+        },
         "setting": {
             "type": "string",
             "description": "Where this is and what they are doing - gambling at a "
@@ -360,7 +368,8 @@ def look(
     return Verdict(
         watched=True,
         worth_it=bool(payload.get("worth_it")),
-        confidence=float(payload.get("confidence") or 0.0),
+        # Clamped here rather than in the schema, which cannot express a range.
+        confidence=min(1.0, max(0.0, float(payload.get("confidence") or 0.0))),
         happening=str(payload.get("happening") or ""),
         kind=str(payload.get("kind") or ""),
         setting=str(payload.get("setting") or ""),

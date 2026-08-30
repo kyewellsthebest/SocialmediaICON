@@ -1177,3 +1177,92 @@ class TestItChoosesRatherThanTakingTheFirst:
         rows = sup.status()["shortlist"]
         assert rows[0]["channel"] == "a"
         assert rows[0]["score"] == 50.0
+
+
+class TestTheRosterPollSurvivesARealListing:
+    """`Live` is frozen. Every test above stubbed `measure_chat` and `wanted`
+    out, so the two places that assigned to a field of one were never once
+    executed - and in production both raised FrozenInstanceError, took down
+    the roster poll every five seconds, and left the bot watching nothing all
+    night. These run the real functions on real records."""
+
+    class _Log:
+        def __init__(self, count):
+            self._held = [object()] * count
+
+        def recent(self):
+            return self._held
+
+    class _Probe:
+        def __init__(self, count, origin):
+            self.log = TestTheRosterPollSurvivesARealListing._Log(count)
+            self.origin = origin
+
+        def stop(self):
+            pass
+
+    def test_chat_rate_is_measured_without_mutating_a_frozen_record(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr("core.livechat.LiveChat", lambda **k: self._Probe(0, 0.0))
+        now = 1_000.0
+        # A probe that has been listening two minutes and heard 240 messages.
+        sup.probes["one"] = self._Probe(240, now - 120.0)
+        listing = [roster.Live(channel="one", viewers=9000)]
+
+        ranked = sup.measure_chat(listing, now=now)
+
+        assert ranked[0].messages_per_min == 120.0
+        assert listing[0].messages_per_min == 0.0, "the original must be untouched"
+
+    def test_a_probe_that_has_not_settled_yet_is_left_in_the_listing(self, monkeypatch):
+        """Dropping it would hide the stream from the roster entirely."""
+        sup = Supervisor()
+        monkeypatch.setattr("core.livechat.LiveChat", lambda **k: self._Probe(0, 0.0))
+        now = 1_000.0
+        sup.probes["one"] = self._Probe(99, now - 5.0)
+        ranked = sup.measure_chat([roster.Live(channel="one", viewers=9000)], now=now)
+        assert [live.channel for live in ranked] == ["one"]
+        assert ranked[0].messages_per_min == 0.0
+
+    def test_a_stream_with_no_probe_at_all_still_comes_back(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr("core.livechat.LiveChat", lambda **k: (_ for _ in ()).throw(
+            RuntimeError("no socket")))
+        ranked = sup.measure_chat([roster.Live(channel="one", viewers=9000)], now=1_000.0)
+        assert [live.channel for live in ranked] == ["one"]
+
+    def test_an_eligible_stream_carries_its_research_without_mutating_it(self, monkeypatch):
+        sup = Supervisor()
+        from core import profile as profiles
+
+        monkeypatch.setattr(profiles, "decide", lambda channel, **k: profiles.Profile(
+            channel=channel, eligible=True, about="A man who talks to a camera.",
+            confidence=0.9,
+        ))
+        listing = [roster.Live(channel="one", viewers=9000)]
+        kept = sup.wanted(listing, now=1_000.0)
+
+        assert [live.channel for live in kept] == ["one"]
+        assert kept[0].about, "the research has to reach the verdict prompt"
+        assert listing[0].about == "", "the original must be untouched"
+
+    def test_a_full_poll_runs_end_to_end_with_nothing_stubbed_out(self, monkeypatch):
+        """The one test that would have caught it: no measure_chat stub, no
+        wanted stub, real frozen Live records all the way through."""
+        from core import profile as profiles
+
+        listing = [roster.Live(channel=f"c{i}", viewers=9000 - i * 100) for i in range(6)]
+        sup = Supervisor()
+        monkeypatch.setattr("core.roster.fetch_kick_live", lambda **k: listing)
+        monkeypatch.setattr("core.livechat.LiveChat", lambda **k: self._Probe(0, 0.0))
+        monkeypatch.setattr(profiles, "decide", lambda channel, **k: profiles.Profile(
+            channel=channel, eligible=True, about="talks to a camera", confidence=0.9,
+        ))
+        monkeypatch.setattr(sup, "attach", lambda channel, **k: sup.watching.setdefault(
+            channel, _watched(channel)))
+        monkeypatch.setattr(sup, "release", lambda ch: sup.watching.pop(ch, None))
+
+        sup.poll_roster()
+
+        assert sup.watching, "a poll that watches nothing is the bug"
+        assert not [n for n in sup.errors if "failed" in n], sup.errors

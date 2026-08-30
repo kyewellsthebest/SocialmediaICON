@@ -182,3 +182,68 @@ class TestWhatItTellsTheRestOfThePipeline:
     def test_the_schema_demands_both_decisions_and_a_reason(self):
         for key in ("is_english", "is_gaming", "confidence", "reason"):
             assert key in profile.SCHEMA["required"]
+
+
+class TestAnOutageIsNotAVerdict:
+    """One 400 from the research call turned every channel on Kick into
+    "could not find out who this is", and the bot watched nothing for eight
+    hours. Refusing everyone is not safety, it is an outage with a polite
+    message - but neither is waving everyone through."""
+
+    def _fails(self, monkeypatch, message="the model would not answer: 400"):
+        def boom(channel, **k):
+            raise profile.ProfileError(message)
+
+        monkeypatch.setattr(profile, "research", boom)
+        monkeypatch.setattr(profile, "recall", lambda channel: None)
+        monkeypatch.setattr(profile, "remember", lambda found: None)
+
+    def test_an_english_stream_with_a_clean_category_keeps_being_watched(
+        self, monkeypatch
+    ):
+        self._fails(monkeypatch)
+        monkeypatch.setattr(profile, "from_kick", lambda channel: {
+            "categories": ["Just Chatting", "IRL"], "bio": "a man with a camera",
+        })
+        found = profile.decide("someone", language="en", title="LOCKED IN")
+        assert found.eligible
+        assert found.confidence < 0.5, "a guess must not read as a decision"
+        assert "provisionally" in found.reason
+
+    def test_a_stream_that_will_not_say_its_language_is_still_refused(
+        self, monkeypatch
+    ):
+        """Silence is exactly what the two Hindi gaming channels looked like."""
+        self._fails(monkeypatch)
+        monkeypatch.setattr(profile, "from_kick", lambda channel: {
+            "categories": ["Just Chatting"],
+        })
+        assert not profile.decide("someone", language="").eligible
+
+    def test_a_stream_kick_knows_nothing_about_is_still_refused(self, monkeypatch):
+        self._fails(monkeypatch)
+        monkeypatch.setattr(profile, "from_kick", lambda channel: {})
+        assert not profile.decide("someone", language="en").eligible
+
+    def test_the_cheap_rejections_still_win_over_the_fallback(self, monkeypatch):
+        """The fallback runs after them, so a game is still a game."""
+        self._fails(monkeypatch)
+        monkeypatch.setattr(profile, "from_kick", lambda channel: {
+            "categories": ["Just Chatting"],
+        })
+        found = profile.decide(
+            "someone", language="en", category="Battlegrounds Mobile India"
+        )
+        assert not found.eligible
+        assert found.is_gaming
+
+    def test_a_provisional_yes_is_never_cached(self, monkeypatch):
+        """It has to be re-asked, or a five-minute outage decides a whole week."""
+        self._fails(monkeypatch)
+        monkeypatch.setattr(profile, "from_kick", lambda channel: {
+            "categories": ["Just Chatting"], "bio": "hello",
+        })
+        remembered = []
+        monkeypatch.setattr(profile, "remember", lambda found: remembered.append(found))
+        assert profile.decide("someone", language="en").eligible
+        assert remembered == []

@@ -284,7 +284,15 @@ SCHEMA = {
             "type": "boolean",
             "description": "Is the content of the stream a video game?",
         },
-        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        # No minimum/maximum here. The structured-output endpoint rejects
+        # both on a number outright - "For 'number' type, properties
+        # maximum, minimum are not supported" - with a 400, which fails the
+        # whole call rather than the one field. The range goes in the
+        # description, and _clamp below enforces it on the way in.
+        "confidence": {
+            "type": "number",
+            "description": "How sure you are, from 0.0 to 1.0.",
+        },
         "about": {
             "type": "string",
             "description": "Two or three factual sentences: who they are and what they do.",
@@ -342,7 +350,8 @@ def research(channel: str, *, facts: dict[str, Any] | None = None) -> Profile:
 
     english = bool(payload.get("is_english"))
     gaming = bool(payload.get("is_gaming"))
-    confidence = float(payload.get("confidence") or 0.0)
+    # Clamped here rather than in the schema, which cannot express a range.
+    confidence = min(1.0, max(0.0, float(payload.get("confidence") or 0.0)))
     reason = str(payload.get("reason") or "")
 
     if gaming:
@@ -427,6 +436,58 @@ def forget(channel: str) -> None:
 _local: dict[str, str] = {}
 
 
+def _unreachable(
+    channel: str, exc: Exception, *, facts: dict[str, Any], language: str
+) -> Profile:
+    """What to do when the research call itself never happened.
+
+    Unknown is not approval, and a bad key must not send the bot back to
+    watching whatever is biggest. But refusing everyone is how a night of
+    clipping becomes a night of nothing: one 400 on a schema, and every
+    channel on Kick reads "could not find out who this is". That is not
+    safety, it is an outage with a polite message.
+
+    So the question is not "did the model answer" but "is anything still
+    saying no". Every cheap rejection has already run and passed by the time
+    we get here - the listing category, the title script, the chat script,
+    and Kick's own category history. When the directory *positively* says
+    English and Kick's record shows what they stream and none of it is a
+    game, that is enough to keep watching provisionally. It is never cached
+    and never confident, so the next poll asks again and the real answer
+    replaces it the moment the model is reachable.
+
+    A stream that merely fails to say what language it is does not qualify.
+    Silence is what the two Hindi gaming channels looked like.
+    """
+    spoken = (language or "").lower()
+    says_english = spoken.startswith("en") or spoken == "english"
+    known_categories = [c for c in (facts.get("categories") or []) if c]
+
+    if says_english and known_categories:
+        return Profile(
+            channel=channel,
+            eligible=True,
+            confidence=0.3,
+            language=language,
+            about=str(facts.get("bio") or "")[:300],
+            reason=(
+                f"could not reach the research ({exc}); the directory says English "
+                f"and none of {', '.join(known_categories[:3])} is a game, so "
+                "watching provisionally until it answers"
+            ),
+            decided_by="unreachable fallback",
+        )
+
+    return Profile(
+        channel=channel,
+        eligible=not settings.profile_required,
+        confidence=0.0,
+        language=language,
+        reason=f"could not find out who this is ({exc})",
+        decided_by="unreachable",
+    )
+
+
 def decide(
     channel: str,
     *,
@@ -480,14 +541,7 @@ def decide(
     try:
         found = research(channel, facts=facts)
     except ProfileError as exc:
-        # Unknown is not approval. A broken key should stop the bot picking
-        # anybody new, not send it back to watching whatever is biggest.
-        found = Profile(
-            channel=channel,
-            eligible=not settings.profile_required,
-            reason=f"could not find out who this is ({exc})",
-            decided_by="unreachable",
-        )
+        found = _unreachable(channel, exc, facts=facts, language=language)
         if not found.eligible:
             log.warning("profile: refusing %s - %s", channel, found.reason)
         return found  # deliberately not cached: ask again next time

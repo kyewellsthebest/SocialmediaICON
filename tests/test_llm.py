@@ -64,3 +64,59 @@ def test_hashtag_count_is_a_handful_not_a_wall():
     from core.config import settings
 
     assert 3 <= settings.hashtag_count <= 8
+
+
+class TestEverySchemaTheApiWillAccept:
+    """Structured outputs reject several JSON Schema keywords outright, with a
+    400 that fails the whole call rather than the one field.
+
+    This cost a night of clipping. `confidence` carried `minimum`/`maximum`,
+    so every research call and every verdict returned "For 'number' type,
+    properties maximum, minimum are not supported" - which meant no streamer
+    could be shown to be English and non-gaming, which meant nothing was
+    eligible, which meant nothing was watched. Ranges go in descriptions and
+    are clamped on the way in.
+    """
+
+    #: From the structured-outputs documentation, not from guessing.
+    REJECTED = {
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+        "multipleOf", "minLength", "maxLength", "minItems", "maxItems",
+        "uniqueItems", "pattern",
+    }
+
+    def schemas(self):
+        from core import profile, verdict
+
+        return {"profile.SCHEMA": profile.SCHEMA, "verdict.SCHEMA": verdict.SCHEMA}
+
+    def walk(self, node, path=""):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield path, key
+                yield from self.walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                yield from self.walk(value, f"{path}[{i}]")
+
+    def test_no_schema_uses_a_keyword_the_endpoint_rejects(self):
+        for name, schema in self.schemas().items():
+            for path, key in self.walk(schema, name):
+                assert key not in self.REJECTED, f"{path}.{key} is rejected by the API"
+
+    def test_every_object_closes_itself(self):
+        """additionalProperties must be present and false on every object -
+        anything else is rejected too."""
+        for name, schema in self.schemas().items():
+            for path, node in self.objects(schema, name):
+                assert node.get("additionalProperties") is False, f"{path} is open"
+
+    def objects(self, node, path=""):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                yield path, node
+            for key, value in node.items():
+                yield from self.objects(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                yield from self.objects(value, f"{path}[{i}]")

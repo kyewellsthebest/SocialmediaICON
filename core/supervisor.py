@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -663,8 +663,10 @@ class Supervisor:
                 log.debug("supervisor: no profile for %s (%s)", entry.channel, exc)
                 continue
             if found.eligible:
-                entry.about = found.summary()
-                kept.append(entry)
+                # replace, not assign: Live is frozen, and assigning to a field
+                # of it raises FrozenInstanceError, which took the whole poll
+                # down every five seconds and left the bot watching nothing.
+                kept.append(replace(entry, about=found.summary()))
             else:
                 self.skipped[entry.channel] = found.reason
         # Only the channels in this listing: a skip list that grows forever is
@@ -709,23 +711,27 @@ class Supervisor:
             except Exception as exc:  # noqa: BLE001 - one silent channel is not fatal
                 log.debug("supervisor: no chat probe for %s (%s)", channel, exc)
 
+        measured = []
         for entry in listing:
             watched = self.watching.get(entry.channel)
             source = watched.chat if watched else self.probes.get(entry.channel)
             if source is None:
+                measured.append(entry)
                 continue
             # Rate it against the time it has actually been listening, not the
             # window it would like to have: a probe up for forty seconds has
             # forty seconds of evidence, not two minutes of silence.
             listening = now - source.origin
             if listening < PROBE_SETTLE_S:
+                measured.append(entry)
                 continue
             held = source.log.recent()
-            entry.messages_per_min = round(
+            # replace, not assign - Live is frozen. See wanted().
+            measured.append(replace(entry, messages_per_min=round(
                 len(held) / max(min(listening, PROBE_WINDOW_S) / 60.0, 1e-6), 1
-            )
+            )))
 
-        return roster.rank_streams(listing)
+        return roster.rank_streams(measured)
 
     def poll_roster(self, *, now: float | None = None) -> dict[str, list[str]]:
         """Refresh which channels are worth holding, and act on the change."""
