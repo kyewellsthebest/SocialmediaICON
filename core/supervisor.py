@@ -29,6 +29,7 @@ dead socket must not stop the other two from working.
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -119,6 +120,8 @@ class Watched:
     thumbnail: str = ""
     title: str = ""
     category: str = ""
+    #: What a model said when it last watched a candidate from this channel.
+    last_verdict: dict[str, Any] = field(default_factory=dict)
     #: The most recent audio reading, refreshed on its own slower timer.
     audio: dict[str, Any] = field(default_factory=dict)
     audio_at: float = 0.0
@@ -380,6 +383,7 @@ class Watched:
             # showing a score with no sensed evidence behind it is the whole
             # reason two worthless clips got cut.
             "senses": self.senses,
+            "verdict": self.last_verdict,
             "senses_age_s": round(time.time() - self.senses_at, 1) if self.senses_at else None,
             "chat": {
                 **self.chat.status(),
@@ -453,6 +457,13 @@ class Supervisor:
     #: Chat-only readers on streams further down the listing, so the ranking
     #: knows how alive they are before deciding to spend a buffer on them.
     probes: dict[str, Any] = field(default_factory=dict)
+    #: When each candidate was watched, so the bill has a ceiling: a refused
+    #: candidate is not stored, so it does not count against the clip cap and
+    #: cannot throttle itself.
+    looked: list[float] = field(default_factory=list)
+    #: Candidates that were cut, watched and thrown away, so the page can show
+    #: what the bot decided against as well as what it kept.
+    declined: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     running: bool = False
 
@@ -822,14 +833,90 @@ class Supervisor:
                 continue
 
             try:
-                caught.append(self.catch(watched, found=found, now=now))
+                record = self.catch(watched, found=found, now=now)
+                # A candidate that was watched and refused still costs the
+                # cooldown: without it the same moment is cut, transcribed and
+                # judged again five seconds later, and again after that.
                 watched.last_catch_at = now
+                if record is not None:
+                    caught.append(record)
             except Exception as exc:  # noqa: BLE001 - a failed cut is not fatal
                 self._note(f"{channel}: cut failed ({exc})")
 
         return caught
 
-    def catch(self, watched: Watched, *, found: Found, now: float) -> dict[str, Any]:
+    # --- looking at it -------------------------------------------------------
+
+    def consider(  # noqa: ANN201
+        self, watched: Watched, raw: Path, found: Found, *, transcript: str = ""
+    ):
+        """Transcribe the candidate and have a model watch it.
+
+        Deliberately the last thing that happens and the only thing here that
+        costs money per use, which is why every cheap signal runs first: a
+        stream produces 86,400 seconds a day and this runs on a dozen of them.
+        """
+        from core import verdict as verdictlib
+
+        if not settings.verdict_enabled:
+            return verdictlib.Verdict(problems=["looking is switched off"])
+        if len(self.looked) >= settings.verdict_per_day:
+            return verdictlib.Verdict(
+                problems=[f"the daily look budget of {settings.verdict_per_day} is spent"]
+            )
+
+        self.looked.append(time.time())
+        del self.looked[: max(0, len(self.looked) - 500)]
+
+        return verdictlib.look(
+            raw,
+            evidence=watched.senses,
+            transcript=transcript,
+            quotes=chatlib.quotes_around(watched.chat.log.recent(), found.chat_s, window_s=10.0),
+            count=settings.verdict_frames,
+        )
+
+    @staticmethod
+    def transcribe(raw: Path) -> str:
+        """What was actually said, if there is anything configured to hear it.
+
+        Optional on purpose: the frames carry most of the judgement and a
+        missing transcript should cost a little accuracy, not the clip.
+        """
+        if not settings.has_whisper:
+            return ""
+        try:
+            from core import transcription
+
+            found = transcription.transcribe(raw)
+            return str(found.get("text") or "")[:4000]
+        except Exception as exc:  # noqa: BLE001 - a silent clip is still a clip
+            log.info("supervisor: no transcript for %s (%s)", raw.name, exc)
+            return ""
+
+    @staticmethod
+    def _acceptable(judged) -> bool:  # noqa: ANN001 - verdict.Verdict
+        return bool(judged.worth_it) and judged.confidence >= settings.verdict_min_confidence
+
+    @staticmethod
+    def _tighten(raw: Path, judged, out_dir: Path) -> Path:  # noqa: ANN001
+        """Trim to the part the model said was the moment, if it named one."""
+        start, end = judged.best_start_s, judged.best_end_s
+        if start is None or end is None or end - start < 6.0:
+            return raw
+        trimmed = out_dir / f"{raw.stem}-tight.mp4"
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-ss", f"{max(0.0, start):.2f}",
+             "-t", f"{end - start:.2f}", "-i", str(raw),
+             "-c", "copy", "-avoid_negative_ts", "make_zero", str(trimmed)],
+            capture_output=True,
+        )
+        if proc.returncode != 0 or not trimmed.exists() or trimmed.stat().st_size == 0:
+            return raw
+        raw.unlink(missing_ok=True)
+        return trimmed
+
+    def catch(self, watched: Watched, *, found: Found, now: float) -> dict[str, Any] | None:
         """Cut the moment out of the buffer, reframe it, and record it."""
         held = watched.chat.log.recent()
         ago_s = found.ago_s
@@ -857,6 +944,44 @@ class Supervisor:
         watched.buffer.extract(
             raw, ago_s=ago_s, lead_s=settings.live_lead_s, trail_s=trail_s
         )
+        # Look at it before it becomes a clip. Everything up to here is
+        # arithmetic, and arithmetic cannot tell a man laughing at his own
+        # joke about nothing from a man falling off a chair - they produce the
+        # same envelope. This is the only step that can.
+        spoken = self.transcribe(raw)
+        judged = self.consider(watched, raw, found, transcript=spoken)
+        if judged.watched and not self._acceptable(judged):
+            raw.unlink(missing_ok=True)
+            self.declined.append({
+                "channel": watched.channel,
+                "at": datetime.fromtimestamp(now, UTC).isoformat(),
+                "score": round(found.score, 1),
+                "why": judged.why or "nothing worth showing",
+                "happening": judged.happening,
+                "confidence": round(judged.confidence, 2),
+            })
+            del self.declined[:-8]
+            watched.last_verdict = judged.as_dict()
+            log.info(
+                "supervisor: declined %s after watching it (%s)",
+                watched.channel, judged.happening or judged.why,
+            )
+            return None
+        if settings.verdict_required and settings.verdict_enabled and not judged.watched:
+            raw.unlink(missing_ok=True)
+            self._note(
+                f"{watched.channel}: not cutting something nothing has watched "
+                f"({'; '.join(judged.problems) or 'no verdict'})"
+            )
+            watched.last_verdict = judged.as_dict()
+            return None
+        watched.last_verdict = judged.as_dict()
+
+        # The model may have found the good part inside the window it was
+        # given. Trusting it about where the moment is, is the same act as
+        # trusting it about whether there is one.
+        raw = self._tighten(raw, judged, out_dir)
+
         reframe.to_portrait(raw, final, work_dir=out_dir / "tmp")
         raw.unlink(missing_ok=True)
 
@@ -882,6 +1007,8 @@ class Supervisor:
             "why": {k: round(v, 3) for k, v in sorted(why.items(), key=lambda kv: -kv[1])},
             "heard": watched.senses.get("heard"),
             "seen": watched.senses.get("seen"),
+            "verdict": judged.as_dict(),
+            "transcript": spoken,
             "mood": mood,
             "quotes": _top_quotes(quotes),
             "peak_viewers": watched.viewers,
@@ -1034,6 +1161,8 @@ class Supervisor:
                     mood=record["mood"],
                     quotes=record["quotes"],
                     peak_viewers=record["peak_viewers"],
+                    verdict=record.get("verdict") or {},
+                    transcript=record.get("transcript") or None,
                     status="caught",
                     source_deleted=True,
                 )
@@ -1054,6 +1183,9 @@ class Supervisor:
                 **self._caps_quietly(),
             },
             "streams": [w.signals() for w in self.watching.values()],
+            "declined": self.declined[-6:],
+            "looked_today": len(self.looked),
+            "look_budget": settings.verdict_per_day,
             "errors": self.errors[-6:],
         }
 

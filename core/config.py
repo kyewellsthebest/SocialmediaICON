@@ -272,6 +272,31 @@ class Settings(BaseSettings):
     #: ...and this much of it has to come from something actually happening
     #: rather than from how busy or loud the channel generally is.
     live_min_event_score: float = 15.0
+    #: The last check before a clip exists: a model looks at the frames, the
+    #: transcript and the evidence and says whether anything is happening.
+    #: Opus because this is the judgement the whole pipeline is built to
+    #: reach, and because it is the only thing standing between a bad clip and
+    #: an audience once posting is automatic. At about five cents a candidate
+    #: and a dozen or so candidates a day it is the cheapest part of the bill;
+    #: claude-sonnet-5 is a third of that if it ever stops being.
+    verdict_model: str = "claude-opus-5"
+    verdict_effort: str = "high"
+    #: How many frames it gets to look at. One every three or four seconds.
+    verdict_frames: int = 12
+    #: Whether it may look at all, and what to do when it cannot. Refusing to
+    #: cut something nobody has watched is the right default the moment
+    #: posting stops going past a person.
+    verdict_enabled: bool = True
+    verdict_required: bool = True
+    #: How sure it has to be. Refusing a mediocre clip costs one clip; posting
+    #: one costs the account.
+    verdict_min_confidence: float = 0.55
+    #: A ceiling on how many candidates a day may be watched, because a
+    #: refused candidate does not count against the clip cap and so cannot
+    #: throttle itself. At roughly five cents a look this is the difference
+    #: between a predictable bill and an open one. Held in memory, so a deploy
+    #: resets it - the bound is a guard against a bad day, not an accountant.
+    verdict_per_day: int = 30
     #: How hard chat has to spike, as a multiple of its own recent baseline.
     live_trigger_ratio: float = 3.0
     #: Nothing is posted anywhere yet - clips are cut and held for review.

@@ -377,6 +377,13 @@ class Catch(TimestampMixin, Base):
     quotes: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     peak_viewers: Mapped[int | None] = mapped_column(Integer)
 
+    #: what a model said when it watched this, before it became a clip. Once
+    #: posting stops going past a person this is the only account of who
+    #: approved it, so an empty one has to read as "nobody watched this".
+    verdict: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: what was said in it - half of what the verdict was reading
+    transcript: Mapped[str | None] = mapped_column(Text)
+
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="caught")
     #: set once the buffer it came from has been deleted, so an orphaned
     #: working directory is visible rather than silently occupying disk

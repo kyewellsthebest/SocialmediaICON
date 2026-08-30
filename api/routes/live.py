@@ -271,6 +271,18 @@ def discard(catch_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"ok": True}
 
 
+def _verdict_of(c: Catch) -> dict[str, Any]:
+    """The stored verdict, wherever the row happens to keep it.
+
+    Catches cut before there was a verdict have none, and a row from before
+    the column existed has to read as "nobody watched this" rather than as an
+    approval - which is the difference between a clip you can trust and one
+    you cannot.
+    """
+    found = getattr(c, "verdict", None)
+    return found if isinstance(found, dict) else {}
+
+
 def _row(c: Catch) -> dict[str, Any]:
     return {
         "id": c.id,
@@ -281,6 +293,9 @@ def _row(c: Catch) -> dict[str, Any]:
         "score": c.score,
         "why": c.why or {},
         "mood": c.mood or {},
+        # What a model said when it watched this before it became a clip.
+        "verdict": _verdict_of(c),
+        "transcript": c.transcript or "",
         "quotes": c.quotes or [],
         "peak_viewers": c.peak_viewers,
         "status": c.status,

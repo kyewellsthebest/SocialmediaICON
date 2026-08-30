@@ -123,9 +123,14 @@ async function renderLive() {
   paintStreams(streams, { running, queued, resuming, stuck, hint: data.hint,
                           diagnosis: data.diagnosis });
 
-  const errors = data.errors || [];
+  const declined = (data.declined || []).map(
+    (d) => `${d.channel}: ${d.happening || d.why}`
+  );
+  const errors = [...declined.map((line) => "declined - " + line), ...(data.errors || [])];
   $("#live-errors").hidden = errors.length === 0;
   $("#live-errors-body").textContent = errors.join("\n");
+  $("#live-errors").querySelector("h3").textContent =
+    declined.length && !(data.errors || []).length ? "What it decided against" : "Recent problems";
 }
 
 /* Update the cards in place rather than rebuilding them.
@@ -469,8 +474,10 @@ function clipCard(c) {
           esc(c.video_note || "No video held for this one.")}</span></div>`}
 
     <div class="row">
-      <span class="pill" data-state="${c.approved ? "good" : ""}">${
-        c.approved ? "kept" : mood.dominant || "caught"}</span>
+      <span class="pill" data-state="${c.approved ? "good"
+        : c.verdict?.watched ? "good" : "warning"}">${
+        c.approved ? "kept" : c.verdict?.kind || (c.verdict?.watched ? "caught" : "unwatched")
+      }</span>
       <span class="muted">${(c.score ?? 0).toFixed(1)} · ${Math.round(c.duration_s || 0)}s</span>
       <span style="flex:1 1 auto"></span>
       <button class="btn" data-keep="${c.id}" ${c.approved ? "disabled" : ""}>Keep</button>
@@ -490,11 +497,27 @@ function showInspect(id) {
   const quotes = (c.quotes || []).map((q) =>
     `<span class="q">${esc(q.text)}${q.count > 1 ? `<b>${q.count}</b>` : ""}</span>`).join("");
 
+  const seenBy = c.verdict || {};
+
   $("#sheet-body").innerHTML = `
     <div class="spread">
       <div><h3>${esc(c.channel)}</h3>
         <p class="muted">${new Date(c.created_at).toLocaleString()}</p></div>
       <button class="btn btn-quiet" id="sheet-close" aria-label="Close">✕</button>
+    </div>
+
+    <div class="card">
+      <header><h3>What it saw when it watched this</h3>
+        <span class="label">${seenBy.watched ? `${Math.round((seenBy.confidence || 0) * 100)}% sure`
+          : "not watched"}</span></header>
+      ${seenBy.watched
+        ? `<p><b>${esc(seenBy.happening || "\u2014")}</b></p>
+           <p class="muted">${esc(seenBy.why || "")}</p>
+           ${seenBy.kind ? `<div class="row">${pill(seenBy.kind,
+              seenBy.worth_it ? "good" : "warning")}</div>` : ""}`
+        : `<p class="empty-note">Nothing watched this before it was cut${
+            (seenBy.problems || []).length ? ` \u2014 ${esc(seenBy.problems.join("; "))}` : ""
+          }. Clips cut before the check existed all read this way.</p>`}
     </div>
     <div class="stats">
       ${stat((c.score ?? 0).toFixed(1), "score")}
@@ -522,6 +545,8 @@ function showInspect(id) {
                 usual rate.`}</p></div>` : ""}
     ${quotes ? `<div><p class="label" style="margin-bottom:6px">What chat said</p>
         <div class="quotes">${quotes}</div></div>` : ""}
+    ${c.transcript ? `<div><p class="label" style="margin-bottom:6px">What was said</p>
+        <p class="muted">${esc(c.transcript)}</p></div>` : ""}
     <a class="btn btn-quiet" href="${esc(c.source_url)}" target="_blank" rel="noopener">Open channel</a>`;
   sheet(true);
 }

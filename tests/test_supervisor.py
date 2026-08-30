@@ -110,6 +110,25 @@ def _watched(channel="x", messages=None, *, heard=None, seen=None) -> Watched:
     return found
 
 
+def _approves(sup, monkeypatch, **kwargs):
+    """Stand in for the model watching the clip. The gate has its own tests."""
+    from core.verdict import Verdict
+
+    found = Verdict(watched=True, worth_it=True, confidence=0.9,
+                    happening="something happens", kind="funny", **kwargs)
+    monkeypatch.setattr(sup, "consider", lambda *a, **k: found)
+    return found
+
+
+def _refuses(sup, monkeypatch, **kwargs):
+    from core.verdict import Verdict
+
+    found = Verdict(watched=True, worth_it=False, confidence=0.9,
+                    happening="a man reads a menu", why="nothing happens", **kwargs)
+    monkeypatch.setattr(sup, "consider", lambda *a, **k: found)
+    return found
+
+
 def _laughing_at(chat_s: float, *, length: float = 3.0):
     """Something the bot heard, at a chat offset, so the two line up."""
     at = chat_s - (LIVE_EDGE - WINDOW_S)
@@ -132,6 +151,7 @@ class TestNothingIsPosted:
         """A clip has to be looked at by a person before it goes anywhere."""
         stored = {}
         sup = Supervisor()
+        _approves(sup, monkeypatch)
         monkeypatch.setattr(sup, "store", lambda record: stored.update(record))
         monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
 
@@ -525,6 +545,7 @@ class TestTheClipRunsAsLongAsTheMomentDoes:
         footage that exists after the peak - the clip is clamped to it, which
         is a rule worth testing on its own rather than tripping over here.
         """
+        _approves(sup, monkeypatch)
         monkeypatch.setattr(sup, "store", lambda record: record)
         monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
         return sup.catch(
@@ -845,6 +866,7 @@ class TestTheThreeClocks:
         msgs = [chatlib.Message(float(t), f"m{t}", f"u{t}") for t in range(300)]
         watched = _watched(messages=msgs, heard=_laughing_at(285.0))
         found = sup.score(watched, now=LIVE_EDGE)
+        _approves(sup, monkeypatch)
         monkeypatch.setattr(sup, "store", lambda record: record)
         monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
         record = sup.catch(watched, found=found, now=LIVE_EDGE)
@@ -852,3 +874,68 @@ class TestTheThreeClocks:
         assert said & {f"m{t}" for t in range(280, 295)}, (
             f"quoted the wrong minute: {said}"
         )
+
+
+class TestNothingIsCutThatNothingHasWatched:
+    """Once posting stops going past a person, this is the whole safety net."""
+
+    def _ready(self, monkeypatch):
+        sup = Supervisor()
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
+        monkeypatch.setattr(sup, "store", lambda record: record)
+        monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
+        found = Found(score=40.0, why={"laughter": 40.0}, at_s=15.0, ago_s=90.0, chat_s=285.0)
+        return sup, watched, found
+
+    def test_a_refusal_throws_the_clip_away(self, monkeypatch):
+        sup, watched, found = self._ready(monkeypatch)
+        _refuses(sup, monkeypatch)
+        assert sup.catch(watched, found=found, now=time.time()) is None
+
+    def test_and_says_what_it_refused_and_why(self, monkeypatch):
+        sup, watched, found = self._ready(monkeypatch)
+        _refuses(sup, monkeypatch)
+        sup.catch(watched, found=found, now=time.time())
+        assert sup.declined
+        assert sup.declined[-1]["happening"] == "a man reads a menu"
+        assert sup.declined[-1]["why"] == "nothing happens"
+
+    def test_a_candidate_nothing_could_watch_is_refused(self, monkeypatch):
+        from core.verdict import Verdict
+
+        sup, watched, found = self._ready(monkeypatch)
+        monkeypatch.setattr(settings, "verdict_required", True)
+        monkeypatch.setattr(sup, "consider", lambda *a, **k: Verdict(problems=["no key"]))
+        assert sup.catch(watched, found=found, now=time.time()) is None
+
+    def test_unless_that_requirement_is_switched_off(self, monkeypatch):
+        from core.verdict import Verdict
+
+        sup, watched, found = self._ready(monkeypatch)
+        monkeypatch.setattr(settings, "verdict_required", False)
+        monkeypatch.setattr(sup, "consider", lambda *a, **k: Verdict(problems=["no key"]))
+        assert sup.catch(watched, found=found, now=time.time()) is not None
+
+    def test_an_approval_is_recorded_with_the_clip(self, monkeypatch):
+        sup, watched, found = self._ready(monkeypatch)
+        _approves(sup, monkeypatch)
+        record = sup.catch(watched, found=found, now=time.time())
+        assert record["verdict"]["worth_it"] is True
+        assert record["verdict"]["happening"] == "something happens"
+
+    def test_a_refused_candidate_still_costs_the_cooldown(self, monkeypatch):
+        """Otherwise the same moment is cut, transcribed and judged every tick."""
+        sup = Supervisor()
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
+        sup.watching["x"] = watched
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        monkeypatch.setattr(sup, "catch", lambda *a, **k: None)
+        sup.tick(now=LIVE_EDGE)
+        assert watched.last_catch_at == LIVE_EDGE
+
+    def test_the_page_is_told_how_much_of_the_budget_is_spent(self):
+        sup = Supervisor()
+        sup.looked = [1.0, 2.0]
+        found = sup.status()
+        assert found["looked_today"] == 2
+        assert found["look_budget"] == settings.verdict_per_day
