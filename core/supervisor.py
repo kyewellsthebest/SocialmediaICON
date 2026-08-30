@@ -656,6 +656,17 @@ class Supervisor:
         database; cutting without knowing the day's count is not, because the
         caps are the one thing here that must not be exceeded by accident.
         """
+        return self.cap_state(now=now)["allowed"]
+
+    def cap_state(self, *, now: float | None = None) -> dict[str, Any]:
+        """Whether a clip may be cut, and - the point of this - *why not*.
+
+        "No" has four meanings here and a bare False tells them apart for
+        nobody: the day's ten are gone, the hour is not up, the database is
+        unreachable, or nothing is wrong and it simply may. Only one of those
+        is something to go and fix, so the reason has to travel with the
+        answer rather than being inferred from a red word on a page.
+        """
         now = time.time() if now is None else now
         try:
             recent = self.recent_catches(
@@ -663,20 +674,48 @@ class Supervisor:
             )
         except Exception as exc:  # noqa: BLE001 - a dead database is not a reason to stop
             self._note(f"cannot check the daily cap, so not cutting ({exc})")
-            return False
+            return {
+                "allowed": False,
+                "reason": "no database",
+                "detail": (
+                    "The worker cannot reach Postgres, so it cannot count the day's "
+                    f"clips - and it will not cut without knowing. {type(exc).__name__}: {exc}"
+                ),
+                "cut_today": None,
+                "wait_minutes": None,
+            }
 
-        if len(recent) >= settings.live_clips_per_day:
-            return False
-        if recent:
-            newest = max(
-                (r.created_at for r in recent if r.created_at),
-                default=None,
-            )
-            if newest is not None:
-                gap = (datetime.fromtimestamp(now, UTC) - newest).total_seconds() / 60.0
-                if gap < settings.live_min_gap_minutes:
-                    return False
-        return True
+        cut_today = len(recent)
+        if cut_today >= settings.live_clips_per_day:
+            return {
+                "allowed": False,
+                "reason": "daily cap",
+                "detail": f"{cut_today} cut in the last 24 hours, which is the cap.",
+                "cut_today": cut_today,
+                "wait_minutes": None,
+            }
+
+        newest = max((r.created_at for r in recent if r.created_at), default=None)
+        if newest is not None:
+            gap = (datetime.fromtimestamp(now, UTC) - newest).total_seconds() / 60.0
+            if gap < settings.live_min_gap_minutes:
+                wait = settings.live_min_gap_minutes - gap
+                return {
+                    "allowed": False,
+                    "reason": "hourly gap",
+                    "detail": f"Last clip was {gap:.0f} minutes ago; "
+                              f"{wait:.0f} to go.",
+                    "cut_today": cut_today,
+                    "wait_minutes": round(wait),
+                }
+
+        return {
+            "allowed": True,
+            "reason": "clear",
+            "detail": f"{cut_today} cut today, waiting for a moment worth cutting.",
+            "cut_today": cut_today,
+            "wait_minutes": 0,
+        }
 
     def recent_catches(self, *, since: datetime) -> list:
         from core.db import session_scope
@@ -756,19 +795,27 @@ class Supervisor:
             "caps": {
                 "per_day": settings.live_clips_per_day,
                 "min_gap_minutes": settings.live_min_gap_minutes,
-                # allowed() already swallows its own failures; this is only
+                # cap_state() already swallows its own failures; this is only
                 # here so a status read can never be the thing that throws.
-                "allowed_now": self._allowed_quietly(),
+                **self._caps_quietly(),
             },
             "streams": [w.signals() for w in self.watching.values()],
             "errors": self.errors[-6:],
         }
 
-    def _allowed_quietly(self) -> bool | None:
+    def _caps_quietly(self) -> dict[str, Any]:
         try:
-            return self.allowed()
-        except Exception:  # noqa: BLE001 - None reads as "unknown" on the page
-            return None
+            found = self.cap_state()
+        except Exception as exc:  # noqa: BLE001 - a status read must not throw
+            return {"allowed_now": None, "cap_reason": "unknown",
+                    "cap_detail": f"{type(exc).__name__}: {exc}"}
+        return {
+            "allowed_now": found["allowed"],
+            "cap_reason": found["reason"],
+            "cap_detail": found["detail"],
+            "cut_today": found["cut_today"],
+            "wait_minutes": found["wait_minutes"],
+        }
 
     def stop(self) -> None:
         self.running = False

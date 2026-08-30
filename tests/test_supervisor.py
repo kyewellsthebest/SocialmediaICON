@@ -496,3 +496,71 @@ class TestTheClipRunsAsLongAsTheMomentDoes:
         asked = watched.buffer.extracted[-1]
         assert asked["lead_s"] == settings.live_lead_s
         assert record["duration_s"] == pytest.approx(asked["lead_s"] + asked["trail_s"], abs=0.05)
+
+
+class TestWhyItIsNotCutting:
+    """"No" has four meanings and a bare False tells them apart for nobody.
+
+    Waiting out the hour looks exactly like a worker that cannot reach the
+    database, and only one of those is something to go and fix.
+    """
+
+    def _rows(self, count, newest_minutes_ago=999):
+        now = datetime.now(UTC)
+        return [
+            type("Row", (), {"created_at": now - timedelta(minutes=newest_minutes_ago + i)})()
+            for i in range(count)
+        ]
+
+    def test_a_dead_database_says_so(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(
+            sup, "recent_catches",
+            lambda **k: (_ for _ in ()).throw(RuntimeError('relation "catches" does not exist')),
+        )
+        found = sup.cap_state()
+        assert found["allowed"] is False
+        assert found["reason"] == "no database"
+        assert "catches" in found["detail"]
+
+    def test_the_hourly_gap_says_how_long_is_left(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(sup, "recent_catches", lambda **k: self._rows(1, 10))
+        found = sup.cap_state()
+        assert found["reason"] == "hourly gap"
+        assert found["wait_minutes"] == settings.live_min_gap_minutes - 10
+
+    def test_the_daily_cap_says_so_separately(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(
+            sup, "recent_catches", lambda **k: self._rows(settings.live_clips_per_day)
+        )
+        found = sup.cap_state()
+        assert found["reason"] == "daily cap"
+        assert found["cut_today"] == settings.live_clips_per_day
+
+    def test_clear_reports_how_many_are_gone(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(sup, "recent_catches", lambda **k: self._rows(3))
+        found = sup.cap_state()
+        assert found["allowed"] is True
+        assert found["reason"] == "clear"
+        assert found["cut_today"] == 3
+
+    def test_allowed_still_answers_the_same_way(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(sup, "recent_catches", lambda **k: self._rows(3))
+        assert sup.allowed() is True
+        monkeypatch.setattr(sup, "recent_catches", lambda **k: self._rows(1, 10))
+        assert sup.allowed() is False
+
+    def test_the_reason_reaches_the_dashboard(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(
+            sup, "recent_catches",
+            lambda **k: (_ for _ in ()).throw(RuntimeError("could not connect")),
+        )
+        caps = sup.status()["caps"]
+        assert caps["allowed_now"] is False
+        assert caps["cap_reason"] == "no database"
+        assert "could not connect" in caps["cap_detail"]

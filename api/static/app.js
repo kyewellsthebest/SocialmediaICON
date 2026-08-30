@@ -499,9 +499,13 @@ async function renderSettings() {
   $("#live-caps").innerHTML =
     stat(live.running ? "watching" : live.queued ? "starting" : live.wanted ? "restarting" : "off",
          "state", !live.running) +
-    stat((live.streams || []).length, "streams up") +
-    stat(caps.allowed_now === false ? "no" : "yes", "can cut now", caps.allowed_now === false) +
-    stat(live.posting_enabled ? "ON" : "off", "posting", !!live.posting_enabled);
+    stat(caps.cut_today ?? "—", "cut today") +
+    stat(live.posting_enabled ? "ON" : "off", "posting", !!live.posting_enabled) +
+    // "no" on its own could be the cap, the hour, or a dead database, and only
+    // one of those is worth getting out of your chair for.
+    stat(caps.cap_reason || (caps.allowed_now === false ? "no" : "yes"), "can cut now",
+         caps.allowed_now === false && caps.cap_reason !== "hourly gap");
+  $("#cap-detail").textContent = caps.cap_detail || "";
   $("#live-sub").textContent = live.hint || (live.running
     ? "Watching. It restarts itself after a deploy or a crash."
     : "Not watching right now — it restarts itself, or start it by hand below.");
