@@ -76,11 +76,19 @@ SCORE_WIDTH_S = 12.0
 DORMANT_DB = -45.0
 DORMANT_PEAK_DB = -25.0
 #: Mean per-pixel frame difference. A locked-off shot of a sleeping room is
-#: near zero; anyone moving in frame is an order of magnitude above it.
+#: near zero; anyone moving in frame is an order of magnitude above it. A man
+#: sitting at a desk talking measured 0.0093 and a nightclub 0.118.
 DORMANT_MOTION = 0.004
-#: How long it has to stay that way. One reading is a pause; three in a row,
-#: a minute apart in practice, is nobody home.
-DORMANT_READINGS = 3
+#: Nobody home is stillness plus nobody talking - not stillness plus silence.
+#: Requiring silence is why a streamer asleep with a game or music playing was
+#: watched all night: the silence never came, so the count never started. And
+#: stillness on its own is not enough either, or a podcast on a locked-off
+#: camera reads as an empty room. What separates the two is whether anyone is
+#: speaking, which core.hearing already measures.
+DORMANT_READINGS = 6
+DORMANT_SPEECH = 0.10
+DORMANT_STILL_WEIGHT = 1
+DORMANT_SILENT_WEIGHT = 2
 #: How far down the listing to keep a chat socket open. Chat is a websocket
 #: and costs no video bandwidth at all, so the streams *below* the three being
 #: buffered can still be measured - which is the only way the ranking can know
@@ -135,6 +143,10 @@ class Watched:
     senses: dict[str, Any] = field(default_factory=dict)
     #: Measured rate, carried on the row so the roster and the page agree.
     messages_per_min: float = 0.0
+    #: Why this stream is being let go, when it is.
+    skip_reason: str = ""
+    #: What the research said this channel is, for the verdict prompt to read.
+    about: str = ""
     #: Consecutive readings with nobody apparently there. Consecutive, not a
     #: running average: someone who goes quiet and then speaks is not asleep,
     #: and an average would take minutes to forgive them.
@@ -314,13 +326,28 @@ class Watched:
         never_loud = peak_db is not None and peak_db <= DORMANT_PEAK_DB
         still = motion is not None and motion <= DORMANT_MOTION
 
+        silent = bool(quiet and never_loud)
+        # Somebody talking is somebody there, whatever the picture is doing.
+        # Without this a podcast on a locked-off camera reads as an empty room.
+        share = getattr(self.heard, "speech_share", None) if self.heard else None
+        speaking = share is not None and share >= DORMANT_SPEECH
+        asleep = bool(still) and not speaking
+
         return {
             "mean_db": mean_db,
             "peak_db": peak_db,
             "motion": motion,
-            "quiet": bool(quiet and never_loud),
+            "speech_share": share,
+            "quiet": silent,
             "still": bool(still),
-            "asleep_now": bool(quiet and never_loud and still),
+            "speaking": bool(speaking),
+            "asleep_now": asleep,
+            # A silent still room is believed twice as fast as a still room
+            # with a game running in it, which is the difference between "gone
+            # to bed" and "gone to make a cup of tea".
+            "weight": (
+                (DORMANT_SILENT_WEIGHT if silent else DORMANT_STILL_WEIGHT) if asleep else 0
+            ),
         }
 
     def read_motion(self) -> float | None:
@@ -361,6 +388,7 @@ class Watched:
             "viewers": self.viewers,
             "uptime_s": round(time.time() - self.started_at),
             "messages_per_min": self.messages_per_min,
+            "about": self.about,
             "buffer": self.buffer.status(),
             "audio": self.audio,
             "activity": self.activity,
@@ -442,6 +470,10 @@ class Held:
     senses: dict[str, Any] = field(default_factory=dict)
     mood: dict[str, Any] = field(default_factory=dict)
     quotes: list[str] = field(default_factory=list)
+    #: What the research knows about the channel. Carried because the model
+    #: judging a clip of someone should know who they are - a man shouting at
+    #: a boxing weigh-in reads differently from a man shouting at nobody.
+    about: str = ""
 
     @property
     def megabytes(self) -> float:
@@ -492,6 +524,9 @@ class Supervisor:
     #: Chat-only readers on streams further down the listing, so the ranking
     #: knows how alive they are before deciding to spend a buffer on them.
     probes: dict[str, Any] = field(default_factory=dict)
+    #: Channels the bot has decided against, and why, so the page can say what
+    #: it is skipping rather than silently showing a shorter list.
+    skipped: dict[str, str] = field(default_factory=dict)
     #: When each candidate was watched, so the bill has a ceiling: a refused
     #: candidate is not stored, so it does not count against the clip cap and
     #: cannot throttle itself.
@@ -507,6 +542,84 @@ class Supervisor:
     running: bool = False
 
     # --- the roster ---------------------------------------------------------
+
+    # --- what it will and will not watch -------------------------------------
+
+    def still_wanted(self, watched: Watched) -> bool:
+        """Is this stream still one the bot watches?
+
+        Re-asked while watching, not only before attaching, because a stream
+        changes underneath you: a Just Chatting stream that loads a game is a
+        gaming stream, and a chat that has been running for a minute says more
+        about the language than the directory ever did.
+        """
+        from core import profile as profiles
+
+        if profiles.blocked_category(watched.category):
+            watched.skip_reason = f"{watched.category} is a game"
+            return False
+
+        # Chat is the most honest language signal a stream has: the directory
+        # tag is optional and the title is marketing, but an audience types in
+        # the language it thinks in.
+        lines = [m.text for m in watched.chat.log.recent()][-120:]
+        found = profiles.from_chat(watched.channel, lines)
+        if found is not None:
+            profiles.remember(found)
+            watched.skip_reason = found.reason
+            return False
+        return True
+
+    def release_unwanted(self, watched: Watched, *, now: float) -> None:
+        """Let a stream go, and remember not to pick it straight back up."""
+        channel = watched.channel
+        why = "asleep or away" if watched.dormant else (watched.skip_reason or "not wanted")
+        self.dormant_until[channel] = now + DORMANT_REST_S
+        self.roster.watching.pop(channel, None)
+        self.fillers.discard(channel)
+        watched.last_score = 0.0
+        watched.last_why = {}
+        watched.last_reason = "asleep" if watched.dormant else "not wanted"
+        self._note(f"{channel}: letting go - {why}")
+        self.release(channel)
+
+    def wanted(self, listing: list, *, now: float) -> list:
+        """The listing, with everything the bot does not watch taken out.
+
+        The gaming streams it spent an evening on were not a detector failing.
+        They were a list sorted by viewers with two filters that were fiction:
+        the directory's language tag is optional, so a row that does not say
+        gets kept, and there was no category filter at all.
+        """
+        from core import profile as profiles
+
+        kept = []
+        for entry in listing:
+            probe = self.probes.get(entry.channel)
+            chat = [m.text for m in probe.log.recent()][-120:] if probe else None
+            try:
+                found = profiles.decide(
+                    entry.channel,
+                    category=entry.category,
+                    title=entry.title,
+                    language=entry.language,
+                    chat=chat,
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad lookup is not a listing
+                log.debug("supervisor: no profile for %s (%s)", entry.channel, exc)
+                continue
+            if found.eligible:
+                entry.about = found.summary()
+                kept.append(entry)
+            else:
+                self.skipped[entry.channel] = found.reason
+        # Only the channels in this listing: a skip list that grows forever is
+        # a memory leak with a nice name on it.
+        self.skipped = {
+            c: why for c, why in self.skipped.items()
+            if c in {entry.channel for entry in listing}
+        }
+        return kept
 
     def measure_chat(self, listing: list, *, now: float) -> list:
         """Fill in how busy each candidate's chat is, and re-rank on it.
@@ -563,9 +676,12 @@ class Supervisor:
     def poll_roster(self, *, now: float | None = None) -> dict[str, list[str]]:
         """Refresh which channels are worth holding, and act on the change."""
         now = time.time() if now is None else now
+        # Measure first, then filter: the chat probes are what tell a Hindi
+        # stream from an English one, and they are opened by measure_chat.
         listing = self.measure_chat(
-            roster.fetch_kick_live(limit=25, language="en"), now=now
+            roster.fetch_kick_live(limit=40, language="en"), now=now
         )
+        listing = self.wanted(listing, now=now)
         self.dormant_until = {c: t for c, t in self.dormant_until.items() if t > now}
 
         # Hand the sleeping ones back before the roster decides anything, so
@@ -646,6 +762,7 @@ class Supervisor:
         """Refresh what the page shows about a stream, but not what it is."""
         watched.viewers = entry.viewers
         watched.messages_per_min = getattr(entry, "messages_per_min", 0.0)
+        watched.about = getattr(entry, "about", "") or watched.about
         watched.display_name = entry.name()
         watched.avatar = entry.avatar
         watched.thumbnail = entry.thumbnail
@@ -830,9 +947,11 @@ class Supervisor:
                     watched.audio = {"ok": False, "why": f"{type(exc).__name__}: {exc}"}
                 try:
                     watched.activity = watched.read_activity()
-                    if watched.activity.get("asleep_now"):
-                        watched.asleep_readings += 1
-                        if watched.asleep_readings == DORMANT_READINGS:
+                    weight = int(watched.activity.get("weight") or 0)
+                    if weight:
+                        was = watched.asleep_readings
+                        watched.asleep_readings += weight
+                        if was < DORMANT_READINGS <= watched.asleep_readings:
                             self._note(
                                 f"{channel} looks asleep or away - freeing the slot"
                             )
@@ -841,10 +960,12 @@ class Supervisor:
                 except Exception:  # noqa: BLE001 - never let this stop a tick
                     watched.asleep_readings = 0
 
-            if watched.dormant:
-                watched.last_score = 0.0
-                watched.last_why = {}
-                watched.last_reason = "asleep"
+            # A stream that has become something the bot does not watch - a
+            # streamer who has just loaded a game, or one whose chat has made
+            # the language obvious - is let go now, not at the next roster
+            # poll five minutes from now.
+            if watched.dormant or not self.still_wanted(watched):
+                self.release_unwanted(watched, now=now)
                 continue
 
             found = self.score(watched, now=now)
@@ -911,6 +1032,7 @@ class Supervisor:
         return verdictlib.look(
             candidate.raw,
             evidence=candidate.senses,
+            about=candidate.about,
             transcript=transcript,
             quotes=[q["text"] for q in _top_quotes(candidate.quotes)],
             count=settings.verdict_frames,
@@ -1007,6 +1129,7 @@ class Supervisor:
             senses=dict(watched.senses),
             mood=chatlib.mood_around(held, found.chat_s, window_s=8.0),
             quotes=chatlib.quotes_around(held, found.chat_s, window_s=8.0),
+            about=watched.about,
         )
 
     def shortlist_add(self, candidate: Held) -> None:
@@ -1302,6 +1425,9 @@ class Supervisor:
             },
             "streams": [w.signals() for w in self.watching.values()],
             "shortlist": [c.as_dict() for c in self.shortlist],
+            "skipped": [
+                {"channel": c, "why": why} for c, why in list(self.skipped.items())[:8]
+            ],
             "declined": self.declined[-6:],
             "looked_today": len(self.looked),
             "look_budget": settings.verdict_per_day,

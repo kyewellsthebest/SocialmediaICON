@@ -305,6 +305,19 @@ class Settings(BaseSettings):
     #: ...and how stale a held moment may be when it is finally used. A good
     #: moment is good whenever it is posted, but not indefinitely.
     live_hold_max_s: float = 2700.0
+    #: Who is this streamer, and should the bot watch them at all. One call per
+    #: channel with web search, cached for a week, so the bill is a handful of
+    #: cents a day however many channels come and go.
+    profile_model: str = "claude-opus-5"
+    profile_effort: str = "medium"
+    #: How sure the research has to be. An unknown streamer is an unknown, not
+    #: an approval: being wrong here wastes days of a watch slot.
+    profile_min_confidence: float = 0.6
+    profile_enabled: bool = True
+    #: Whether a channel the research could not reach may be watched anyway.
+    #: False means a broken key stops the bot picking anybody new, which is
+    #: safer than it quietly going back to watching whatever is biggest.
+    profile_required: bool = True
     #: How hard chat has to spike, as a multiple of its own recent baseline.
     live_trigger_ratio: float = 3.0
     #: Nothing is posted anywhere yet - clips are cut and held for review.

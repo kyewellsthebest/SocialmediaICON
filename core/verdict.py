@@ -222,6 +222,7 @@ def look(
     evidence: dict[str, Any] | None = None,
     transcript: str = "",
     quotes: list[str] | None = None,
+    about: str = "",
     count: int = FRAMES,
 ) -> Verdict:
     """Watch a candidate and say whether it is worth posting.
@@ -246,6 +247,7 @@ def look(
         "text": (
             f"A {_duration(clip):.0f} second moment from a live stream, "
             f"as {len(frames)} frames in order.\n\n"
+            f"Who this is:\n{about.strip() or '(nothing known about this channel)'}\n\n"
             f"What the machine heard and saw:\n{_describe(evidence)}\n\n"
             f"What was said:\n{transcript.strip() or '(no transcript available)'}\n\n"
             f"What chat was saying:\n{_describe_quotes(quotes)}"

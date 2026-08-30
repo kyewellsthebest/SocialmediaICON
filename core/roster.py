@@ -66,6 +66,9 @@ class Live:
     #: this is filled in for candidates the supervisor has a chat probe on and
     #: left at zero for the rest.
     messages_per_min: float = 0.0
+    #: What the research knows about this channel, carried through so the
+    #: verdict prompt can read it without asking again.
+    about: str = ""
 
     def page(self) -> str:
         return self.url or f"https://kick.com/{self.channel}"

@@ -137,6 +137,13 @@ async function renderLive() {
       `The best one goes out when the next slot opens.`
     : "";
 
+  // What it looked at and decided not to watch. Worth showing: the bot spent
+  // an evening on Hindi gaming streams and the page gave no sign it had
+  // considered anything else, let alone rejected it.
+  const skipped = (data.skipped || []).map((sk) => `${sk.channel} - ${sk.why}`);
+  $("#skipped").hidden = skipped.length === 0;
+  $("#skipped-body").textContent = skipped.join("\n");
+
   const declined = (data.declined || []).map(
     (d) => `${d.channel}: ${d.happening || d.why}`
   );
@@ -208,6 +215,7 @@ function buildStreamCard(s) {
       <span class="go">&rsaquo;</span>
     </a>
     <div class="player" data-f="player"></div>
+    <p class="muted" data-f="about" hidden></p>
     <div class="stats" data-f="stats"></div>`;
   paintPlayer(card.querySelector('[data-f="player"]'), s);
   return card;
@@ -253,6 +261,12 @@ function fillStreamCard(card, s) {
     (s.dormant ? " \u00b7 asleep" : s.category ? " \u00b7 " + s.category : "");
 
   paintPlayer(card.querySelector('[data-f="player"]'), s);
+
+  // Who this is, as the research found them. The bot decides what to watch on
+  // this; showing it is how a wrong decision gets argued with.
+  const about = card.querySelector('[data-f="about"]');
+  about.textContent = s.about || "";
+  about.hidden = !s.about;
 
   card.querySelector('[data-f="stats"]').innerHTML =
     stat(chat.per_minute ?? 0, "msgs/min", (chat.per_minute || 0) > 120) +

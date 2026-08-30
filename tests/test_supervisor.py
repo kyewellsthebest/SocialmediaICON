@@ -425,10 +425,15 @@ class TestASleepingStreamerLosesTheSlot:
     slot produces no clips for hours while fourth place goes unwatched.
     """
 
-    def _asleep(self, motion=0.0005, mean_db=-57.9, peak_db=-40.2):
+    def _asleep(self, motion=0.0005, mean_db=-57.9, peak_db=-40.2, speech=0.0):
         watched = _watched(messages=_chatter())
         watched.audio = {"ok": True, "mean_db": mean_db, "peak_db": peak_db}
         watched.read_motion = lambda: motion
+        watched.heard = Heard()
+        watched.heard.speech_share = speech
+        # These tests are about read_activity, not about sensing: a real sense
+        # pass would replace `heard` with a failed read of a fake buffer.
+        watched.read_senses = lambda *a, **k: watched.senses
         return watched
 
     def test_silence_and_stillness_together_read_as_asleep(self):
@@ -439,8 +444,24 @@ class TestASleepingStreamerLosesTheSlot:
         assert self._asleep(motion=0.02).read_activity()["asleep_now"] is False
 
     def test_a_still_shot_with_someone_talking_over_it_is_not_asleep(self):
-        watched = self._asleep(mean_db=-38.0, peak_db=-9.0)
+        """A podcast on a locked-off camera is a stream, not an empty room."""
+        watched = self._asleep(mean_db=-38.0, peak_db=-9.0, speech=0.55)
         assert watched.read_activity()["asleep_now"] is False
+
+    def test_a_still_shot_with_music_over_it_is_asleep(self):
+        """The case this exists for: asleep with a game or a playlist running.
+
+        Requiring silence meant the count never started, so the slot was never
+        freed, so the bot watched a sleeping man all night.
+        """
+        watched = self._asleep(mean_db=-22.0, peak_db=-4.0, speech=0.01)
+        assert watched.read_activity()["asleep_now"] is True
+
+    def test_a_silent_still_room_is_believed_faster_than_a_noisy_one(self):
+        assert (
+            self._asleep().read_activity()["weight"]
+            > self._asleep(mean_db=-22.0, peak_db=-4.0).read_activity()["weight"]
+        )
 
     def test_one_quiet_reading_is_a_pause_not_a_bedtime(self):
         watched = self._asleep()
@@ -452,9 +473,13 @@ class TestASleepingStreamerLosesTheSlot:
         watched.asleep_readings = DORMANT_READINGS
         assert watched.dormant is True
 
+    def test_speech_alone_keeps_a_motionless_stream_watched(self):
+        watched = self._asleep(speech=0.5)
+        assert watched.read_activity()["weight"] == 0
+
     def test_a_single_word_resets_the_count(self, monkeypatch):
         sup = Supervisor()
-        watched = self._asleep(mean_db=-20.0, peak_db=-5.0)
+        watched = self._asleep(mean_db=-20.0, peak_db=-5.0, speech=0.6)
         watched.asleep_readings = 2
         watched.audio_at = 0.0
         monkeypatch.setattr(watched, "read_audio", lambda *a, **k: watched.audio)
@@ -494,6 +519,8 @@ class TestTheSlotGoesToTheNextStreamDown:
         # No chat sockets in a unit test: the ranking falls back to viewers,
         # which is what an unmeasured stream gets anyway.
         monkeypatch.setattr(sup, "measure_chat", lambda listing, **k: listing)
+        # No research calls in a unit test: the gate has its own tests.
+        monkeypatch.setattr(sup, "wanted", lambda listing, **k: listing)
 
         def attach(channel, *, entry=None, viewers=0):
             sup.watching[channel] = _watched(channel)
