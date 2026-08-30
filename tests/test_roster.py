@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import random
 
+from core import roster
 from core.roster import Live, Roster
 
 
@@ -232,3 +233,61 @@ class TestTheChannelIsNotTheStream:
 
         assert _channel_of({"slug": "deadbeef"}) == "deadbeef"
         assert _channel_of({"slug": "abc123-somebody"}) == "abc123-somebody"
+
+
+class TestWhatAStreamIsWorthWatching:
+    """Viewers first, chat rate as a bounded correction.
+
+    Viewers alone ranked a stream with nine thousand people and a chat running
+    at 477 a minute below one with sixteen thousand and a chat doing 177. The
+    first of those is where the clips are. But an unbounded correction ranks a
+    two-hundred viewer channel with a manic chat above everything on Kick, so
+    the correction is capped - and the cap is the promise that a big audience
+    is never overturned by a small difference in typing.
+    """
+
+    def _live(self, channel, viewers, rate=0.0):
+        return roster.Live(channel=channel, viewers=viewers, messages_per_min=rate)
+
+    def test_more_viewers_wins_when_nothing_else_is_known(self):
+        found = roster.rank_streams([self._live("a", 3000), self._live("b", 10000)])
+        assert [live.channel for live in found] == ["b", "a"]
+
+    def test_a_small_chat_lead_does_not_overturn_a_large_audience(self):
+        """The case as it was put: 3k with fifty more must not beat 10k with fifty fewer."""
+        big = self._live("big", 10000, 190)
+        small = self._live("small", 3000, 290)
+        assert roster.worth(big) > roster.worth(small)
+        assert roster.rank_streams([small, big])[0].channel == "big"
+
+    def test_a_much_livelier_chat_can_overturn_a_comparable_audience(self):
+        """oblivionsw at 8,958 and 477/min against DeenTheGreat at 16,732 and 177/min."""
+        deen = self._live("DeenTheGreat", 16732, 177)
+        oblivion = self._live("oblivionsw", 8958, 477)
+        assert roster.rank_streams([deen, oblivion])[0].channel == "oblivionsw"
+
+    def test_no_chat_rate_can_overturn_a_wide_enough_gap(self):
+        """The cap is 1.6/0.6, so nothing under a 2.7x audience gap can flip."""
+        quiet_giant = self._live("giant", 100000, 1)
+        manic_minnow = self._live("minnow", 30000, 99999)
+        assert roster.worth(quiet_giant) > roster.worth(manic_minnow)
+
+    def test_a_rate_is_judged_against_what_a_stream_that_size_usually_does(self):
+        """477 a minute is extraordinary at nine thousand and ordinary at ninety."""
+        small = self._live("small", 9000, 477)
+        huge = self._live("huge", 90000, 477)
+        assert roster.worth(small) > small.viewers, "busier than its size predicts"
+        assert roster.worth(huge) < huge.viewers, "quieter than its size predicts"
+
+    def test_expected_rate_grows_with_size_but_not_in_step_with_it(self):
+        """Ten times the audience does not type ten times as much."""
+        ten_x = roster.expected_rate(100000) / roster.expected_rate(10000)
+        assert 2.0 < ten_x < 6.0
+
+    def test_an_unmeasured_stream_is_ranked_on_viewers_alone(self):
+        """Not penalised for being one the bot has not listened to yet."""
+        assert roster.worth(self._live("x", 5000)) == 5000.0
+
+    def test_ranking_is_stable_for_streams_of_equal_worth(self):
+        first = [self._live("b", 1000), self._live("a", 1000)]
+        assert [live.channel for live in roster.rank_streams(first)] == ["a", "b"]

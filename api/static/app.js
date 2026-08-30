@@ -61,10 +61,12 @@ async function withBusy(btn, fn) {
 
 /* ---------- small pieces ---------- */
 
-/* Signals that are zero when nothing is happening. The rest - how busy chat
-   is, how loud the room is - always have a value, so a score made only of
-   those is a score about nothing. Kept in step with moments.EVENTS. */
-const EVENTS = ["chat_request", "chat_burst", "audio_jump", "scene_cuts", "heatmap"];
+/* What the bot heard and saw. Everything else - what chat said about it, how
+   busy the channel is - can raise a moment but can never make one, so a score
+   with nothing here is a score about nothing. Kept in step with
+   moments.SENSED. */
+const EVENTS = ["laughter", "shout", "audio_drop", "audio_jump",
+                "motion_surge", "scene_cuts", "flash"];
 const eventScore = (why) =>
   Object.entries(why || {}).reduce((n, [k, v]) => n + (EVENTS.includes(k) ? v : 0), 0);
 
@@ -228,14 +230,19 @@ function fillStreamCard(card, s) {
   card.querySelector('[data-f="name"]').textContent = s.name || s.channel;
   card.querySelector('[data-f="sub"]').textContent =
     `${Number(s.viewers || 0).toLocaleString()} watching` +
+    (s.messages_per_min ? ` \u00b7 ${Math.round(s.messages_per_min)} msgs/min` : "") +
     (s.dormant ? " \u00b7 asleep" : s.category ? " \u00b7 " + s.category : "");
 
   paintPlayer(card.querySelector('[data-f="player"]'), s);
 
   card.querySelector('[data-f="stats"]').innerHTML =
     stat(chat.per_minute ?? 0, "msgs/min", (chat.per_minute || 0) > 120) +
-    stat(s.dormant ? "asleep" : s.reason === "nothing happened" ? "nothing"
-         : mood.dominant || "\u2014", "mood") +
+    stat(s.dormant ? "asleep"
+         : (s.senses?.heard?.laughs || []).length ? "laughing"
+         : (s.senses?.heard?.shouts || []).length ? "shouting"
+         : (s.senses?.seen?.surges || []).length ? "moving"
+         : s.reason === "nothing happened" ? "nothing"
+         : mood.dominant || "\u2014", "heard") +
     stat(requests, "clip asks", requests > 0) +
     stat((s.score ?? 0).toFixed(1), "score", (s.score || 0) > 0);
 }
@@ -272,6 +279,9 @@ async function renderStream() {
   const buffer = s.buffer || {};
   const audio = s.audio || {};
   const activity = s.activity || {};
+  const senses = s.senses || {};
+  const heard = senses.heard;
+  const seen = senses.seen;
   const why = Object.entries(s.why || {});
   const counts = Object.entries(mood.counts || {});
 
@@ -281,6 +291,23 @@ async function renderStream() {
     || `<div class="empty">No chat yet.</div>`;
 
   box.innerHTML = `
+    <div class="card">
+      <header><h3>What it just heard and saw</h3>
+        <span class="label">${senses.window_s ? `last ${Math.round(senses.window_s)}s` : "\u2014"}</span></header>
+      ${heard || seen ? `<div class="stats">
+        ${stat((heard?.laughs || []).length, "laughs", (heard?.laughs || []).length > 0)}
+        ${stat((heard?.shouts || []).length, "raised voices", (heard?.shouts || []).length > 0)}
+        ${stat((seen?.surges || []).length, "motion surges", (seen?.surges || []).length > 0)}
+        ${stat((seen?.cuts || []).length, "cuts")}
+        ${stat((heard?.drops || []).length, "quiet drops")}
+        ${stat(heard ? `${Math.round((heard.speech_share || 0) * 100)}%` : "\u2014", "sounds like speech")}
+      </div>
+      <p class="muted">This is what decides. Chat can agree with it and cannot
+        replace it.</p>`
+      : `<p class="empty-note">${esc((senses.problems || []).join(" \u00b7 ")
+          || "Nothing read yet - the first pass takes about twenty seconds.")}</p>`}
+    </div>
+
     <div class="card">
       <header><h3>Is anyone there</h3>
         <span class="label">${s.dormant ? "nobody home" : "someone is"}</span></header>

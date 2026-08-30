@@ -80,6 +80,15 @@ DORMANT_MOTION = 0.004
 #: How long it has to stay that way. One reading is a pause; three in a row,
 #: a minute apart in practice, is nobody home.
 DORMANT_READINGS = 3
+#: How far down the listing to keep a chat socket open. Chat is a websocket
+#: and costs no video bandwidth at all, so the streams *below* the three being
+#: buffered can still be measured - which is the only way the ranking can know
+#: that the ninth-biggest stream is the liveliest one on Kick.
+PROBE_DEPTH = 8
+PROBE_WINDOW_S = 120.0
+#: A probe that has only just connected has seen almost nothing, and reporting
+#: that as a rate would demote a stream for the crime of being new to us.
+PROBE_SETTLE_S = 45.0
 #: How long a sleeping stream is passed over before it is considered again.
 #: Long enough not to thrash, short enough that waking up is noticed.
 DORMANT_REST_S = 900.0
@@ -121,6 +130,8 @@ class Watched:
     senses_at: float = 0.0
     sense_window_s: float = 0.0
     senses: dict[str, Any] = field(default_factory=dict)
+    #: Measured rate, carried on the row so the roster and the page agree.
+    messages_per_min: float = 0.0
     #: Consecutive readings with nobody apparently there. Consecutive, not a
     #: running average: someone who goes quiet and then speaks is not asleep,
     #: and an average would take minutes to forgive them.
@@ -360,10 +371,16 @@ class Watched:
             "page": f"https://kick.com/{self.channel}",
             "viewers": self.viewers,
             "uptime_s": round(time.time() - self.started_at),
+            "messages_per_min": self.messages_per_min,
             "buffer": self.buffer.status(),
             "audio": self.audio,
             "activity": self.activity,
             "dormant": self.dormant,
+            # What it actually heard and saw, which is what decides. The page
+            # showing a score with no sensed evidence behind it is the whole
+            # reason two worthless clips got cut.
+            "senses": self.senses,
+            "senses_age_s": round(time.time() - self.senses_at, 1) if self.senses_at else None,
             "chat": {
                 **self.chat.status(),
                 "per_minute": round(sum(curve.counts) / max(curve.duration_s / 60.0, 1e-6), 1),
@@ -433,15 +450,72 @@ class Supervisor:
     #: roster on its own would keep a stand-in for hours, because by then it
     #: has tenure and its rank is perfectly respectable.
     fillers: set[str] = field(default_factory=set)
+    #: Chat-only readers on streams further down the listing, so the ranking
+    #: knows how alive they are before deciding to spend a buffer on them.
+    probes: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     running: bool = False
 
     # --- the roster ---------------------------------------------------------
 
+    def measure_chat(self, listing: list, *, now: float) -> list:
+        """Fill in how busy each candidate's chat is, and re-rank on it.
+
+        Viewers alone put a stream with nine thousand people and a chat running
+        at four hundred and seventy a minute below one with sixteen thousand
+        and a chat doing a hundred and seventy. The first of those is where the
+        clips are. Chat rate is the cheapest available proxy for how much is
+        happening, and it costs a websocket, so it can be measured on streams
+        the bot is not spending a buffer on.
+        """
+        wanted = [live.channel for live in listing[:PROBE_DEPTH]]
+
+        for channel in list(self.probes):
+            if channel not in wanted or channel in self.watching:
+                probe = self.probes.pop(channel)
+                try:
+                    probe.stop()
+                except Exception:  # noqa: BLE001 - a probe closing is not news
+                    pass
+
+        for channel in wanted:
+            if channel in self.watching or channel in self.probes:
+                continue
+            try:
+                probe = livechat.LiveChat(
+                    channel=channel,
+                    log=chatlib.LiveLog(window_s=PROBE_WINDOW_S),
+                    origin=now,
+                )
+                probe.start()
+                self.probes[channel] = probe
+            except Exception as exc:  # noqa: BLE001 - one silent channel is not fatal
+                log.debug("supervisor: no chat probe for %s (%s)", channel, exc)
+
+        for entry in listing:
+            watched = self.watching.get(entry.channel)
+            source = watched.chat if watched else self.probes.get(entry.channel)
+            if source is None:
+                continue
+            # Rate it against the time it has actually been listening, not the
+            # window it would like to have: a probe up for forty seconds has
+            # forty seconds of evidence, not two minutes of silence.
+            listening = now - source.origin
+            if listening < PROBE_SETTLE_S:
+                continue
+            held = source.log.recent()
+            entry.messages_per_min = round(
+                len(held) / max(min(listening, PROBE_WINDOW_S) / 60.0, 1e-6), 1
+            )
+
+        return roster.rank_streams(listing)
+
     def poll_roster(self, *, now: float | None = None) -> dict[str, list[str]]:
         """Refresh which channels are worth holding, and act on the change."""
         now = time.time() if now is None else now
-        listing = roster.fetch_kick_live(limit=25, language="en")
+        listing = self.measure_chat(
+            roster.fetch_kick_live(limit=25, language="en"), now=now
+        )
         self.dormant_until = {c: t for c, t in self.dormant_until.items() if t > now}
 
         # Hand the sleeping ones back before the roster decides anything, so
@@ -521,6 +595,7 @@ class Supervisor:
     def _describe(watched: Watched, entry) -> None:  # noqa: ANN001 - roster.Live
         """Refresh what the page shows about a stream, but not what it is."""
         watched.viewers = entry.viewers
+        watched.messages_per_min = getattr(entry, "messages_per_min", 0.0)
         watched.display_name = entry.name()
         watched.avatar = entry.avatar
         watched.thumbnail = entry.thumbnail
@@ -1000,6 +1075,11 @@ class Supervisor:
         self.running = False
         for channel in list(self.watching):
             self.release(channel)
+        for channel in list(self.probes):
+            try:
+                self.probes.pop(channel).stop()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _note(self, message: str) -> None:
         log.warning("supervisor: %s", message)

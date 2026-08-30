@@ -62,12 +62,65 @@ class Live:
     avatar: str = ""
     thumbnail: str = ""
     display_name: str = ""
+    #: Measured, not reported: the directory does not carry a chat rate, so
+    #: this is filled in for candidates the supervisor has a chat probe on and
+    #: left at zero for the rest.
+    messages_per_min: float = 0.0
 
     def page(self) -> str:
         return self.url or f"https://kick.com/{self.channel}"
 
     def name(self) -> str:
         return self.display_name or self.channel
+
+
+#: How chat rate is expected to grow with audience. Sub-linear, and markedly
+#: so: a channel with ten times the viewers does not get ten times the
+#: messages, because the share of an audience that types falls as the audience
+#: grows. The exponent is what turns a raw rate into "busy for a stream this
+#: size", which is the only version of the number worth comparing across
+#: channels.
+CHAT_SCALING = 0.6
+#: Messages a minute a stream of one viewer would notionally produce. Only the
+#: shape matters - it cancels out of every comparison - but it sets where the
+#: ratio sits, so it is calibrated against real numbers: DeenTheGreat at 16.7k
+#: viewers ran 177/min and oblivionsw at 9.0k ran 477/min.
+CHAT_BASE = 1.35
+#: How far chat rate may move a stream. A busy small channel should be able to
+#: beat a comparable big one and should never beat a far bigger one: the whole
+#: point of the cap is that three thousand viewers with fifty more messages a
+#: minute must not displace ten thousand with fifty fewer.
+CHAT_PULL_LOW, CHAT_PULL_HIGH = 0.6, 1.6
+
+
+def expected_rate(viewers: int) -> float:
+    """Messages a minute a stream this size would usually be doing."""
+    return CHAT_BASE * max(viewers, 1) ** CHAT_SCALING
+
+
+def worth(live: Live) -> float:
+    """How much a stream is worth watching: its size, adjusted for its life.
+
+    Audience first, because clips are worth what they reach and a moment in
+    front of sixteen thousand people is worth more than the same moment in
+    front of three. Chat rate then pulls that up or down, bounded, because how
+    hard an audience is reacting is real information about how much is
+    happening - and because an unbounded version of this ranks a two-hundred
+    viewer channel with a manic chat above everything else on Kick.
+
+    Measured against what a stream *this size* usually does, not against a flat
+    number: 477 messages a minute is extraordinary at nine thousand viewers and
+    ordinary at ninety thousand.
+    """
+    if live.messages_per_min <= 0:
+        return float(live.viewers)
+    ratio = live.messages_per_min / expected_rate(live.viewers)
+    return live.viewers * max(CHAT_PULL_LOW, min(CHAT_PULL_HIGH, ratio))
+
+
+def rank_streams(listing: list[Live]) -> list[Live]:
+    """The listing, best first."""
+    return sorted(listing, key=lambda live: (-worth(live), live.channel))
 
 
 @dataclass

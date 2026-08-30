@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from core import chat as chatlib
+from core import roster
 from core.config import settings
 from core.supervisor import (
     DORMANT_READINGS,
@@ -442,6 +443,9 @@ class TestTheSlotGoesToTheNextStreamDown:
     def _sup(self, monkeypatch, listing):
         sup = Supervisor()
         monkeypatch.setattr("core.roster.fetch_kick_live", lambda **k: listing)
+        # No chat sockets in a unit test: the ranking falls back to viewers,
+        # which is what an unmeasured stream gets anyway.
+        monkeypatch.setattr(sup, "measure_chat", lambda listing, **k: listing)
 
         def attach(channel, *, entry=None, viewers=0):
             sup.watching[channel] = _watched(channel)
@@ -453,13 +457,7 @@ class TestTheSlotGoesToTheNextStreamDown:
 
     def _listing(self, *channels):
         return [
-            type(
-                "Live", (), {
-                    "channel": c, "viewers": 10000 - i, "avatar": "", "thumbnail": "",
-                    "title": "", "category": "", "name": lambda self=None, c=c: c,
-                },
-            )()
-            for i, c in enumerate(channels)
+            roster.Live(channel=c, viewers=10000 - i * 100) for i, c in enumerate(channels)
         ]
 
     def test_a_sleeping_stream_is_swapped_for_the_next_one(self, monkeypatch):
