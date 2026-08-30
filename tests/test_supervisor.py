@@ -274,3 +274,31 @@ class TestADeadDatabaseDoesNotStopTheWatch:
             sup, "recent_catches", lambda **k: [type("Row", (), {"created_at": None})()]
         )
         assert sup.allowed() is True
+
+
+class TestTheScoreCarriesItsReasons:
+    """A total with no breakdown is the one thing this project promised not to do."""
+
+    def test_signals_include_the_per_signal_breakdown(self):
+        watched = _watched(messages=_chatter(burst_at=150.0))
+        watched.last_score = 22.3
+        watched.last_why = {"chat_voices": 20.0, "chat_burst": 2.3}
+        found = watched.signals()
+        assert found["score"] == 22.3
+        assert found["why"]["chat_voices"] == 20.0, (
+            "the page showed 22.3 total and 'nothing is standing out'"
+        )
+
+    def test_the_breakdown_is_ordered_strongest_first(self):
+        watched = _watched()
+        watched.last_why = {"a": 1.0, "b": 9.0, "c": 5.0}
+        assert list(watched.signals()["why"]) == ["b", "c", "a"]
+
+    def test_a_tick_records_the_breakdown_it_scored_with(self, monkeypatch):
+        sup = Supervisor()
+        watched = _watched(messages=_chatter(burst_at=150.0))
+        sup.watching["x"] = watched
+        monkeypatch.setattr(sup, "allowed", lambda **k: False)
+        sup.tick()
+        assert watched.last_why, "tick scored but threw the reasons away"
+        assert watched.last_reason in watched.last_why

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from core.config import settings
@@ -159,14 +159,39 @@ def catches(
 
 
 @router.get("/catches/{catch_id}/video")
-def video(catch_id: int, db: Session = Depends(get_db)) -> FileResponse:
-    """The clip itself, so it can be watched in the dashboard."""
+def video(catch_id: int, db: Session = Depends(get_db)):  # noqa: ANN201 - several shapes
+    """The clip itself, wherever the worker managed to put it.
+
+    Three places, in the order they are worth having: object storage, which
+    the browser can fetch directly; Redis, which holds it when there is no R2
+    configured; and this service's own disk, which only works when the worker
+    and the web happen to be the same machine.
+    """
+    from core import livestate
+
     row = db.get(Catch, catch_id)
     if row is None or not row.storage_key:
         raise HTTPException(404, "no such clip")
-    path = Path(row.storage_key)
+    key = row.storage_key
+
+    if key.startswith("redis:"):
+        data = livestate.get_image(f"clip:{key.split(':', 1)[1]}", max_age_s=48 * 3600)
+        if not data:
+            raise HTTPException(410, "the clip has expired from the review queue")
+        return Response(content=data, media_type="video/mp4")
+
+    if not key.startswith("/") and settings.has_r2:
+        from core.storage import get_storage
+
+        return RedirectResponse(get_storage().url_for(key), status_code=307)
+
+    path = Path(key)
     if not path.exists():
-        raise HTTPException(410, "the clip file is gone from this service's disk")
+        raise HTTPException(
+            410,
+            "the clip is not on this service's disk. Clips are cut on the worker; "
+            "configure R2 so both services can reach them.",
+        )
     return FileResponse(path, media_type="video/mp4", filename=path.name)
 
 
@@ -209,7 +234,7 @@ def _row(c: Catch) -> dict[str, Any]:
         "status": c.status,
         "approved": c.approved,
         "created_at": c.created_at.isoformat() if c.created_at else None,
-        "has_video": bool(c.storage_key and Path(c.storage_key).exists()),
+        "has_video": _playable(c),
     }
 
 
@@ -322,3 +347,17 @@ def debug() -> dict[str, Any]:
         out["verdict"] = f"Could not read the queue: {type(exc).__name__}: {exc}"
 
     return out
+
+
+def _playable(c: Catch) -> bool:
+    """Whether the browser will get something back if it asks for the video."""
+    key = c.storage_key or ""
+    if not key:
+        return False
+    if key.startswith("redis:"):
+        from core import livestate
+
+        return livestate.get_image(f"clip:{key.split(':', 1)[1]}", max_age_s=48 * 3600) is not None
+    if not key.startswith("/") and settings.has_r2:
+        return True
+    return Path(key).exists()

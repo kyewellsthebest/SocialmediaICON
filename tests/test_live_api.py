@@ -291,3 +291,71 @@ class TestOneStreamAtATime:
         response = client.get("/api/live/streams/nothing/spectrogram", headers=_auth())
         assert response.status_code == 404
         assert "twenty seconds" in response.json()["detail"]
+
+
+class TestTheClipHasToBeReachable:
+    """The first real catch was recorded perfectly and could not be played.
+
+    Clips are cut on the worker and watched in a browser talking to the web
+    service - different containers, different disks. A path is a note about a
+    file, not a way to hand one over.
+    """
+
+    def test_a_clip_held_in_redis_round_trips(self):
+        livestate.put_image("clip:deen.mp4", b"\x00\x00\x00\x18ftypmp42", ttl_s=60)
+        assert livestate.get_image("clip:deen.mp4", max_age_s=60) is not None
+
+    def test_an_expired_clip_says_so_rather_than_pretending_it_never_existed(
+        self, monkeypatch
+    ):
+        from fastapi import HTTPException
+
+        from api.routes import live as route
+
+        monkeypatch.setattr("core.livestate.get_image", lambda *a, **k: None)
+
+        class Row:
+            storage_key = "redis:gone.mp4"
+
+        class DB:
+            def get(self, *_a):
+                return Row()
+
+        with pytest.raises(HTTPException) as caught:
+            route.video(1, db=DB())
+        assert caught.value.status_code == 410
+        assert "expired" in caught.value.detail
+
+    def test_a_local_path_explains_the_two_container_problem(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from api.routes import live as route
+
+        monkeypatch.setattr(settings, "r2_bucket", None, raising=False)
+
+        class Row:
+            storage_key = "/nowhere/on/this/disk.mp4"
+
+        class DB:
+            def get(self, *_a):
+                return Row()
+
+        with pytest.raises(HTTPException) as caught:
+            route.video(1, db=DB())
+        assert "worker" in caught.value.detail
+        assert "R2" in caught.value.detail
+
+    def test_playability_covers_all_three_homes(self, monkeypatch):
+        from api.routes.live import _playable
+
+        class Row:
+            storage_key = ""
+
+        assert _playable(Row()) is False
+
+        Row.storage_key = "redis:missing.mp4"
+        monkeypatch.setattr("core.livestate.get_image", lambda *a, **k: None)
+        assert _playable(Row()) is False
+
+        monkeypatch.setattr("core.livestate.get_image", lambda *a, **k: b"x")
+        assert _playable(Row()) is True

@@ -132,7 +132,8 @@ function streamCard(s) {
   return `<div class="card">
     <a class="stream-row" href="#/stream/${encodeURIComponent(s.channel)}">
       ${s.avatar
-        ? `<img class="pfp" src="${esc(s.avatar)}" alt="" loading="lazy">`
+        ? `<img class="pfp" src="${esc(s.avatar)}" alt="" loading="lazy"
+             onerror="this.remove()" referrerpolicy="no-referrer">`
         : `<span class="pfp"></span>`}
       <span class="who">
         <b>${esc(s.name || s.channel)}</b>
@@ -142,7 +143,10 @@ function streamCard(s) {
       <span class="go">›</span>
     </a>
 
-    ${s.thumbnail ? `<img class="shot" src="${esc(s.thumbnail)}" alt="" loading="lazy">` : ""}
+    ${s.thumbnail
+      ? `<img class="shot" src="${esc(s.thumbnail)}" alt="" loading="lazy"
+           onerror="this.remove()" referrerpolicy="no-referrer">`
+      : ""}
 
     <div class="stats">
       ${stat(chat.per_minute ?? 0, "msgs/min", (chat.per_minute || 0) > 120)}
@@ -189,7 +193,10 @@ async function renderStream() {
           <small>${esc(s.title || "")}</small></span>
         ${pill(chat.connected ? "chat live" : "chat down", chat.connected ? "good" : "warning")}
       </div>
-      ${s.thumbnail ? `<img class="shot" src="${esc(s.thumbnail)}?t=${Date.now()}" alt="">` : ""}
+      ${s.thumbnail
+        ? `<img class="shot" src="${esc(s.thumbnail)}" alt=""
+             onerror="this.remove()" referrerpolicy="no-referrer">`
+        : ""}
       <div class="row">
         <a class="btn btn-quiet" href="${esc(s.page)}" target="_blank" rel="noopener">Open on Kick</a>
         <span class="muted">${Number(s.viewers || 0).toLocaleString()} watching ·
@@ -207,11 +214,7 @@ async function renderStream() {
              ${stat((audio.jumps || []).length, "spikes", (audio.jumps || []).length > 0)}
              ${stat((audio.quiet_runs || []).length, "pauses")}
            </div>
-           ${audio.has_spectrogram
-             ? `<img class="spectro" alt="spectrogram"
-                  src="/api/live/streams/${encodeURIComponent(s.channel)}/spectrogram?token=${
-                    encodeURIComponent(state.token)}&t=${Date.now()}">`
-             : ""}`
+           ${audio.has_spectrogram ? `<img class="spectro" id="spectro" alt="spectrogram">` : ""}`
         : `<p class="empty-note">${esc(audio.why || "Waiting for the buffer to fill.")}</p>`}
     </div>
 
@@ -247,6 +250,21 @@ async function renderStream() {
       </div>
       <div class="chat">${lines}</div>
     </div>`;
+
+  if (audio.has_spectrogram) refreshSpectrogram(s.channel);
+}
+
+/* Load the new spectrogram off-screen and only swap it in once it has
+   decoded. Setting src on the visible <img> blanks it to black for as long as
+   the fetch takes, and on a five second poll that reads as a flicker rather
+   than an update. */
+function refreshSpectrogram(channel) {
+  const el = $("#spectro");
+  if (!el) return;
+  const next = new Image();
+  next.onload = () => { el.src = next.src; };
+  next.src = `/api/live/streams/${encodeURIComponent(channel)}/spectrogram` +
+    `?token=${encodeURIComponent(state.token)}&t=${Date.now()}`;
 }
 
 /* A loudness curve as bars. Height is the dB range mapped onto the box, so a
@@ -279,10 +297,6 @@ async function renderClips() {
 
 function clipCard(c) {
   const mood = c.mood || {};
-  const why = Object.entries(c.why || {});
-  const quotes = (c.quotes || []).map((q) =>
-    `<span class="q">${esc(q.text)}${q.count > 1 ? `<b>${q.count}</b>` : ""}</span>`).join("");
-
   return `<div class="card clip">
     <div class="spread">
       <div>
@@ -290,30 +304,64 @@ function clipCard(c) {
         <p class="muted">${new Date(c.created_at).toLocaleString()} ·
           ${Number(c.peak_viewers || 0).toLocaleString()} watching</p>
       </div>
-      ${pill(c.approved ? "kept" : mood.dominant || "caught", c.approved ? "good" : "")}
+      <button class="btn btn-quiet" data-inspect="${c.id}">Inspect</button>
     </div>
 
     ${c.has_video
-      ? `<video controls preload="metadata" playsinline src="/api/live/catches/${c.id}/video?token=${encodeURIComponent(state.token)}"></video>`
-      : `<p class="empty-note">The clip file is no longer on this service's disk.</p>`}
-
-    <div class="stats">
-      ${stat((c.score ?? 0).toFixed(1), "score")}
-      ${stat(mood.dominant || "—", "mood")}
-      ${stat(`${Math.round((mood.confidence || 0) * 100)}%`, "agreement")}
-      ${stat(`${Math.round(c.duration_s || 0)}s`, "length")}
-    </div>
-
-    ${why.length ? bars(why) : ""}
-    ${quotes ? `<div><p class="label" style="margin-bottom:6px">What chat said</p>
-        <div class="quotes">${quotes}</div></div>` : ""}
+      ? `<video class="portrait" controls preload="metadata" playsinline
+           src="/api/live/catches/${c.id}/video?token=${encodeURIComponent(state.token)}"></video>`
+      : `<div class="portrait missing"><span>No video held for this one.</span></div>`}
 
     <div class="row">
-      <a class="btn btn-quiet" href="${esc(c.source_url)}" target="_blank" rel="noopener">Open channel</a>
+      <span class="pill" data-state="${c.approved ? "good" : ""}">${
+        c.approved ? "kept" : mood.dominant || "caught"}</span>
+      <span class="muted">${(c.score ?? 0).toFixed(1)} · ${Math.round(c.duration_s || 0)}s</span>
+      <span style="flex:1 1 auto"></span>
       <button class="btn" data-keep="${c.id}" ${c.approved ? "disabled" : ""}>Keep</button>
       <button class="btn btn-danger" data-drop="${c.id}">Discard</button>
     </div>
   </div>`;
+}
+
+/* The inspect sheet: everything behind the decision, on top of the clip
+   rather than beside it. The card is for judging the video; this is for
+   arguing with the reason it was chosen. */
+function showInspect(id) {
+  const c = (state.clips || []).find((row) => String(row.id) === String(id));
+  if (!c) return;
+  const mood = c.mood || {};
+  const why = Object.entries(c.why || {});
+  const quotes = (c.quotes || []).map((q) =>
+    `<span class="q">${esc(q.text)}${q.count > 1 ? `<b>${q.count}</b>` : ""}</span>`).join("");
+
+  $("#sheet-body").innerHTML = `
+    <div class="spread">
+      <div><h3>${esc(c.channel)}</h3>
+        <p class="muted">${new Date(c.created_at).toLocaleString()}</p></div>
+      <button class="btn btn-quiet" id="sheet-close" aria-label="Close">✕</button>
+    </div>
+    <div class="stats">
+      ${stat((c.score ?? 0).toFixed(1), "score")}
+      ${stat(mood.dominant || "—", "mood")}
+      ${stat(`${Math.round((mood.confidence || 0) * 100)}%`, "agreement")}
+      ${stat(Number(c.peak_viewers || 0).toLocaleString(), "watching")}
+      ${stat(`${Math.round(c.duration_s || 0)}s`, "length")}
+      ${stat(`${Math.round(c.at_s || 0)}s`, "into stream")}
+    </div>
+    <div><p class="label" style="margin-bottom:6px">Why it was cut</p>
+      ${why.length ? bars(why) : `<p class="empty-note">No breakdown recorded.</p>`}</div>
+    ${Object.keys(mood.counts || {}).length
+      ? `<div><p class="label" style="margin-bottom:6px">What chat felt</p>
+           ${bars(Object.entries(mood.counts))}</div>` : ""}
+    ${quotes ? `<div><p class="label" style="margin-bottom:6px">What chat said</p>
+        <div class="quotes">${quotes}</div></div>` : ""}
+    <a class="btn btn-quiet" href="${esc(c.source_url)}" target="_blank" rel="noopener">Open channel</a>`;
+  sheet(true);
+}
+
+function sheet(open) {
+  $("#sheet").hidden = !open;
+  $("#sheet-scrim").hidden = !open;
 }
 
 /* ---------- settings ---------- */
@@ -489,6 +537,8 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
+    if (t.dataset.inspect) return showInspect(t.dataset.inspect);
+    if (t.id === "sheet-close") return sheet(false);
     if (t.dataset.keep) {
       await withBusy(t, () => api(`/live/catches/${t.dataset.keep}/keep`, { method: "POST" }));
       toast("Kept.");

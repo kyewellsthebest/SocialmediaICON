@@ -60,6 +60,9 @@ AUDIO_EVERY_S = 20.0
 #: How much of the recent past to measure. Long enough to show a shape, short
 #: enough that the decode stays well under a second.
 AUDIO_WINDOW_S = 24.0
+#: A thirty second 1080p clip is about 30MB. Anything much past that is
+#: not a clip and does not belong in Redis.
+MAX_INLINE_CLIP_BYTES = 60 * 1024 * 1024
 
 
 @dataclass
@@ -74,6 +77,10 @@ class Watched:
     last_catch_at: float = 0.0
     last_score: float = 0.0
     last_reason: str = ""
+    #: The per-signal breakdown behind last_score. Without it the page can
+    #: show a total and no explanation, which is the one thing this project
+    #: promised never to do.
+    last_why: dict[str, float] = field(default_factory=dict)
     #: What the directory said about them, for the page to render.
     display_name: str = ""
     avatar: str = ""
@@ -191,6 +198,8 @@ class Watched:
             },
             "score": round(self.last_score, 2),
             "reason": self.last_reason,
+            "why": {k: round(v, 3) for k, v in
+                    sorted(self.last_why.items(), key=lambda kv: -kv[1])},
             "last_catch_s_ago": (
                 round(time.time() - self.last_catch_at) if self.last_catch_at else None
             ),
@@ -374,6 +383,7 @@ class Supervisor:
 
             value, why, peak_s = self.score(watched)
             watched.last_score = value
+            watched.last_why = why
             watched.last_reason = max(why, key=why.get) if why else ""
 
             if value <= 0 or not why:
@@ -415,6 +425,13 @@ class Supervisor:
         reframe.to_portrait(raw, final, work_dir=out_dir / "tmp")
         raw.unlink(missing_ok=True)
 
+        # The clip is written here, on the worker, and watched in a browser
+        # talking to the web service. Those are different containers with
+        # different disks, so a path is not a way to hand it over - the first
+        # catch was recorded perfectly and then could not be played, because
+        # the file it named existed only on the machine that made it.
+        stored = self.publish_clip(final)
+
         peak_at = origin + peak_s
         mood = chatlib.mood_around(held, peak_at, window_s=8.0)
         quotes = chatlib.quotes_around(held, peak_at, window_s=8.0)
@@ -423,6 +440,7 @@ class Supervisor:
             "channel": watched.channel,
             "source_url": f"https://kick.com/{watched.channel}",
             "path": str(final),
+            "storage_key": stored,
             "at_s": round(peak_at, 2),
             "duration_s": settings.live_lead_s + settings.live_trail_s,
             "score": round(sum(why.values()), 3),
@@ -486,6 +504,42 @@ class Supervisor:
             db.expunge_all()
             return rows
 
+    def publish_clip(self, path: Path) -> str | None:
+        """Put the clip somewhere the web service can actually read it.
+
+        With R2 configured that is object storage and the browser fetches it
+        directly. Without it the bytes go through Redis, which is not what
+        Redis is for and is capped accordingly - but a review queue nobody can
+        watch is worse than a large value with a time limit on it.
+        """
+        from core import livestate
+        from core.storage import get_storage
+
+        try:
+            storage = get_storage()
+            if storage.kind != "local":
+                key = f"catches/{path.name}"
+                storage.put_file(path, key)
+                return key
+        except Exception as exc:  # noqa: BLE001 - fall through to Redis
+            self._note(f"could not upload {path.name} ({exc})")
+
+        try:
+            data = path.read_bytes()
+            if len(data) > MAX_INLINE_CLIP_BYTES:
+                self._note(
+                    f"{path.name} is {len(data) / 1e6:.0f}MB, too large to hold for "
+                    "review without R2 - configure R2 to keep clips"
+                )
+                return None
+            # Long enough to review a day's worth, short enough that Redis is
+            # not quietly turned into the archive.
+            livestate.put_image(f"clip:{path.name}", data, ttl_s=48 * 3600)
+            return f"redis:{path.name}"
+        except Exception as exc:  # noqa: BLE001
+            self._note(f"could not hold {path.name} for review ({exc})")
+            return None
+
     def store(self, record: dict[str, Any]) -> None:
         from core.db import session_scope
         from core.models import Catch
@@ -498,7 +552,7 @@ class Supervisor:
                     source_url=record["source_url"],
                     at_s=record["at_s"],
                     duration_s=record["duration_s"],
-                    storage_key=record["path"],
+                    storage_key=record.get("storage_key") or record["path"],
                     why=record["why"],
                     score=record["score"],
                     mood=record["mood"],
