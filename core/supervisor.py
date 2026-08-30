@@ -324,30 +324,16 @@ class Watched:
         }
 
     def read_motion(self) -> float | None:
-        """How much the picture is moving, 0..1, from tiny greyscale frames.
+        """How much the picture is moving, 0..1.
 
-        The same measurement core.reframe uses to decide where to point the
-        crop, at the same cost: 64x36 frames, four a second. Deciding whether
-        anybody is there does not need detail either.
+        Read off the eye rather than measured again. This used to run its own
+        ffmpeg decode over the same seconds core.watching had just decoded -
+        five decodes of overlapping windows per stream per pass, for a number
+        one of them already had.
         """
-        from core import reframe
-
-        segments = self.buffer.segments()
-        if len(segments) < 2:
-            return None
-        joined = f"concat:{'|'.join(str(seg.path) for seg in segments[-2:])}"
-        try:
-            rows = reframe.motion_columns(joined)
-        except Exception:  # noqa: BLE001 - a missing reading is not a fault
-            return None
-        if len(rows) < 2:
-            return None
-
-        # Mean absolute difference per pixel, normalised. A still camera on a
-        # sleeping room sits near zero; a person talking is far above it.
-        total = sum(sum(row) for row in rows[1:])
-        pixels = max(1, (len(rows) - 1) * len(rows[0]) * 36)
-        return round(total / pixels / 255.0, 5)
+        if self.seen is not None:
+            return round(self.seen.average_motion, 5)
+        return None
 
     def signals(self) -> dict[str, Any]:
         """Everything the bot can currently see for this channel.
@@ -435,6 +421,55 @@ class Found:
 
 
 @dataclass
+class Held:
+    """A moment cut out of the buffer and kept while it waits for a slot.
+
+    The buffer remembers five minutes and the gap between clips is an hour, so
+    a moment that is not cut the instant it is found is simply gone. Cutting is
+    cheap; deciding is not. So everything cuts immediately and only the winner
+    is watched, cropped and stored.
+
+    The context travels with it because the context expires: by the time this
+    is used, chat has forgotten the whole thing.
+    """
+
+    channel: str
+    found: Found
+    raw: Path
+    cut_at: float
+    duration_s: float
+    viewers: int = 0
+    senses: dict[str, Any] = field(default_factory=dict)
+    mood: dict[str, Any] = field(default_factory=dict)
+    quotes: list[str] = field(default_factory=list)
+
+    @property
+    def megabytes(self) -> float:
+        try:
+            return round(self.raw.stat().st_size / 1e6, 1)
+        except OSError:
+            return 0.0
+
+    def overlaps(self, other: Held) -> bool:
+        """Two nominations of the same moment, seconds apart."""
+        return self.channel == other.channel and abs(self.cut_at - other.cut_at) < COOLDOWN_S
+
+    def discard(self) -> None:
+        self.raw.unlink(missing_ok=True)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "channel": self.channel,
+            "score": round(self.found.score, 1),
+            "event_score": round(self.found.event_score, 1),
+            "reason": self.found.top_reason,
+            "held_s": round(time.time() - self.cut_at),
+            "duration_s": self.duration_s,
+            "megabytes": self.megabytes,
+        }
+
+
+@dataclass
 class Supervisor:
     """The loop. One instance per worker process."""
 
@@ -464,6 +499,10 @@ class Supervisor:
     #: Candidates that were cut, watched and thrown away, so the page can show
     #: what the bot decided against as well as what it kept.
     declined: list[dict[str, Any]] = field(default_factory=list)
+    #: Moments cut and kept, waiting for an output slot. Strongest first, and
+    #: across every stream at once - the best moment of the hour is the point,
+    #: not the best moment of each channel.
+    shortlist: list[Held] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     running: bool = False
 
@@ -829,27 +868,28 @@ class Supervisor:
                 continue
             if now - watched.last_catch_at < COOLDOWN_S:
                 continue
-            if not self.allowed(now=now):
-                continue
 
+            # Cut it now and decide later. The output slot may be fifty
+            # minutes away and the buffer only remembers five, so waiting for
+            # permission means the moment is gone before it is granted - which
+            # is why the watcher used to clip whatever happened to be
+            # happening when the hour turned over.
             try:
-                record = self.catch(watched, found=found, now=now)
-                # A candidate that was watched and refused still costs the
-                # cooldown: without it the same moment is cut, transcribed and
-                # judged again five seconds later, and again after that.
+                candidate = self.cut(watched, found=found, now=now)
                 watched.last_catch_at = now
-                if record is not None:
-                    caught.append(record)
+                if candidate is not None:
+                    self.shortlist_add(candidate)
             except Exception as exc:  # noqa: BLE001 - a failed cut is not fatal
                 self._note(f"{channel}: cut failed ({exc})")
 
+        # ...and if there is somewhere for one to go, spend it on the best
+        # thing being held rather than on whatever was cut most recently.
+        caught.extend(self.harvest(now=now))
         return caught
 
     # --- looking at it -------------------------------------------------------
 
-    def consider(  # noqa: ANN201
-        self, watched: Watched, raw: Path, found: Found, *, transcript: str = ""
-    ):
+    def consider(self, candidate: Held, *, transcript: str = ""):  # noqa: ANN201
         """Transcribe the candidate and have a model watch it.
 
         Deliberately the last thing that happens and the only thing here that
@@ -869,10 +909,10 @@ class Supervisor:
         del self.looked[: max(0, len(self.looked) - 500)]
 
         return verdictlib.look(
-            raw,
-            evidence=watched.senses,
+            candidate.raw,
+            evidence=candidate.senses,
             transcript=transcript,
-            quotes=chatlib.quotes_around(watched.chat.log.recent(), found.chat_s, window_s=10.0),
+            quotes=[q["text"] for q in _top_quotes(candidate.quotes)],
             count=settings.verdict_frames,
         )
 
@@ -916,16 +956,23 @@ class Supervisor:
         raw.unlink(missing_ok=True)
         return trimmed
 
-    def catch(self, watched: Watched, *, found: Found, now: float) -> dict[str, Any] | None:
-        """Cut the moment out of the buffer, reframe it, and record it."""
-        held = watched.chat.log.recent()
-        ago_s = found.ago_s
+    def cut(self, watched: Watched, *, found: Found, now: float) -> Held | None:
+        """Take the moment out of the buffer and keep it, undecided.
 
+        Cheap on purpose - an extract and a copy, no reframe and no model. The
+        expensive half waits until there is somewhere for the clip to go, so
+        that money is spent on the best moment of the hour rather than on the
+        first one.
+
+        Everything the finished record needs is snapshotted here rather than
+        read later, because "later" can be forty minutes and by then chat has
+        forgotten the whole thing: the log only remembers five minutes.
+        """
+        held = watched.chat.log.recent()
         out_dir = Path(settings.work_dir) / "catches"
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         raw = out_dir / f"{watched.channel}-{stamp}-raw.mp4"
-        final = out_dir / f"{watched.channel}-{stamp}.mp4"
 
         # How long the moment actually ran, rather than a fixed length. The
         # lead is fixed because a clip that opens on the punchline is a clip
@@ -940,47 +987,120 @@ class Supervisor:
         # seconds ago cannot have thirty seconds of tail, and asking the buffer
         # for footage past the live edge gets whatever it has plus a shorter
         # clip than the record claims. Clamp to what exists and record that.
-        trail_s = min(trail_s, ago_s)
-        watched.buffer.extract(
-            raw, ago_s=ago_s, lead_s=settings.live_lead_s, trail_s=trail_s
+        trail_s = min(trail_s, found.ago_s)
+        try:
+            watched.buffer.extract(
+                raw, ago_s=found.ago_s, lead_s=settings.live_lead_s, trail_s=trail_s
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad extract is not fatal
+            self._note(f"{watched.channel}: could not cut ({exc})")
+            raw.unlink(missing_ok=True)
+            return None
+
+        return Held(
+            channel=watched.channel,
+            found=found,
+            raw=raw,
+            cut_at=now,
+            duration_s=round(settings.live_lead_s + trail_s, 1),
+            viewers=watched.viewers,
+            senses=dict(watched.senses),
+            mood=chatlib.mood_around(held, found.chat_s, window_s=8.0),
+            quotes=chatlib.quotes_around(held, found.chat_s, window_s=8.0),
         )
+
+    def shortlist_add(self, candidate: Held) -> None:
+        """Keep it if it is worth keeping, and drop the weakest if it is not.
+
+        The shortlist is what turns this from a watcher into a chooser. With
+        one clip an hour, cutting the first moment that clears the bar is
+        picking at random from everything that hour held; keeping several and
+        taking the best is the entire difference between the two.
+        """
+        self.shortlist.append(candidate)
+        self.shortlist.sort(key=lambda c: -c.found.score)
+        for spare in self.shortlist[settings.live_shortlist_max :]:
+            spare.discard()
+        del self.shortlist[settings.live_shortlist_max :]
+
+    def prune_shortlist(self, *, now: float) -> None:
+        """Forget held moments that have gone stale."""
+        keeping: list[Held] = []
+        for candidate in self.shortlist:
+            if now - candidate.cut_at > settings.live_hold_max_s:
+                log.info("supervisor: letting go of %s, held too long", candidate.raw.name)
+                candidate.discard()
+            elif not candidate.raw.exists():
+                pass  # the file went; so does the candidate
+            else:
+                keeping.append(candidate)
+        self.shortlist = keeping
+
+    def harvest(self, *, now: float) -> list[dict[str, Any]]:
+        """Spend an open output slot on the best moment being held.
+
+        Tried strongest first: a candidate the model refuses is dropped and
+        the next one is offered, because a refusal says this moment is not
+        worth posting, not that the hour had nothing in it.
+        """
+        made: list[dict[str, Any]] = []
+        self.prune_shortlist(now=now)
+        while self.shortlist and self.allowed(now=now):
+            candidate = self.shortlist.pop(0)
+            try:
+                record = self.finish(candidate, now=now)
+            except Exception as exc:  # noqa: BLE001 - a failed cut is not fatal
+                self._note(f"{candidate.channel}: could not finish ({exc})")
+                candidate.discard()
+                continue
+            if record is not None:
+                made.append(record)
+                break
+        return made
+
+    def finish(self, candidate: Held, *, now: float) -> dict[str, Any] | None:
+        """Watch it, crop it, store it. The expensive half."""
+        watched = self.watching.get(candidate.channel)
+        out_dir = candidate.raw.parent
+        final = out_dir / f"{candidate.raw.stem.removesuffix('-raw')}.mp4"
+
         # Look at it before it becomes a clip. Everything up to here is
         # arithmetic, and arithmetic cannot tell a man laughing at his own
         # joke about nothing from a man falling off a chair - they produce the
         # same envelope. This is the only step that can.
-        spoken = self.transcribe(raw)
-        judged = self.consider(watched, raw, found, transcript=spoken)
+        spoken = self.transcribe(candidate.raw)
+        judged = self.consider(candidate, transcript=spoken)
+        if watched is not None:
+            watched.last_verdict = judged.as_dict()
+
         if judged.watched and not self._acceptable(judged):
-            raw.unlink(missing_ok=True)
+            candidate.discard()
             self.declined.append({
-                "channel": watched.channel,
-                "at": datetime.fromtimestamp(now, UTC).isoformat(),
-                "score": round(found.score, 1),
+                "channel": candidate.channel,
+                "at": datetime.fromtimestamp(candidate.cut_at, UTC).isoformat(),
+                "score": round(candidate.found.score, 1),
                 "why": judged.why or "nothing worth showing",
                 "happening": judged.happening,
                 "confidence": round(judged.confidence, 2),
             })
             del self.declined[:-8]
-            watched.last_verdict = judged.as_dict()
             log.info(
                 "supervisor: declined %s after watching it (%s)",
-                watched.channel, judged.happening or judged.why,
+                candidate.channel, judged.happening or judged.why,
             )
             return None
         if settings.verdict_required and settings.verdict_enabled and not judged.watched:
-            raw.unlink(missing_ok=True)
+            candidate.discard()
             self._note(
-                f"{watched.channel}: not cutting something nothing has watched "
+                f"{candidate.channel}: not cutting something nothing has watched "
                 f"({'; '.join(judged.problems) or 'no verdict'})"
             )
-            watched.last_verdict = judged.as_dict()
             return None
-        watched.last_verdict = judged.as_dict()
 
         # The model may have found the good part inside the window it was
         # given. Trusting it about where the moment is, is the same act as
         # trusting it about whether there is one.
-        raw = self._tighten(raw, judged, out_dir)
+        raw = self._tighten(candidate.raw, judged, out_dir)
 
         reframe.to_portrait(raw, final, work_dir=out_dir / "tmp")
         raw.unlink(missing_ok=True)
@@ -991,37 +1111,35 @@ class Supervisor:
         # catch was recorded perfectly and then could not be played, because
         # the file it named existed only on the machine that made it.
         stored = self.publish_clip(final)
-
-        mood = chatlib.mood_around(held, found.chat_s, window_s=8.0)
-        quotes = chatlib.quotes_around(held, found.chat_s, window_s=8.0)
-        why = found.why
+        why = candidate.found.why
 
         record = {
-            "channel": watched.channel,
-            "source_url": f"https://kick.com/{watched.channel}",
+            "channel": candidate.channel,
+            "source_url": f"https://kick.com/{candidate.channel}",
             "path": str(final),
             "storage_key": stored,
-            "at_s": round(found.chat_s, 2),
-            "duration_s": round(settings.live_lead_s + trail_s, 1),
+            "at_s": round(candidate.found.chat_s, 2),
+            "duration_s": candidate.duration_s,
             "score": round(sum(why.values()), 3),
             "why": {k: round(v, 3) for k, v in sorted(why.items(), key=lambda kv: -kv[1])},
-            "heard": watched.senses.get("heard"),
-            "seen": watched.senses.get("seen"),
+            "heard": (candidate.senses or {}).get("heard"),
+            "seen": (candidate.senses or {}).get("seen"),
             "verdict": judged.as_dict(),
             "transcript": spoken,
-            "mood": mood,
-            "quotes": _top_quotes(quotes),
-            "peak_viewers": watched.viewers,
-            "caught_at": datetime.fromtimestamp(now, UTC).isoformat(),
+            "mood": candidate.mood,
+            "quotes": _top_quotes(candidate.quotes),
+            "peak_viewers": candidate.viewers,
+            # When the moment happened, not when the slot opened for it.
+            "caught_at": datetime.fromtimestamp(candidate.cut_at, UTC).isoformat(),
+            "held_s": round(now - candidate.cut_at, 1),
         }
         self.store(record)
         log.info(
-            "supervisor: caught %s (%s, score %.1f) -> %s",
-            watched.channel, mood.get("dominant") or "unread", record["score"], final.name,
+            "supervisor: kept %s (%s, score %.1f, held %.0fs) -> %s",
+            candidate.channel, judged.kind or "unread",
+            record["score"], now - candidate.cut_at, final.name,
         )
         return record
-
-    # --- the caps -----------------------------------------------------------
 
     def allowed(self, *, now: float | None = None) -> bool:
         """Whether another clip may be cut right now.
@@ -1183,6 +1301,7 @@ class Supervisor:
                 **self._caps_quietly(),
             },
             "streams": [w.signals() for w in self.watching.values()],
+            "shortlist": [c.as_dict() for c in self.shortlist],
             "declined": self.declined[-6:],
             "looked_today": len(self.looked),
             "look_budget": settings.verdict_per_day,
@@ -1212,6 +1331,11 @@ class Supervisor:
                 self.probes.pop(channel).stop()
             except Exception:  # noqa: BLE001
                 pass
+        # Held clips are only meaningful while this run is: nothing else knows
+        # where they are, so leaving them behind is just a disk bill.
+        for candidate in self.shortlist:
+            candidate.discard()
+        self.shortlist.clear()
 
     def _note(self, message: str) -> None:
         log.warning("supervisor: %s", message)

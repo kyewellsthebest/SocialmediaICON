@@ -123,6 +123,20 @@ async function renderLive() {
   paintStreams(streams, { running, queued, resuming, stuck, hint: data.hint,
                           diagnosis: data.diagnosis });
 
+  // What it is holding, waiting for a slot. Worth showing: it is the whole
+  // difference between a watcher and a chooser, and it is otherwise invisible.
+  const holding = data.shortlist || [];
+  $("#holding").hidden = holding.length === 0;
+  $("#holding-body").innerHTML = holding.map((h) =>
+    `<div class="bar"><span class="label">${esc(h.channel)}</span>
+      <span class="track"><span class="fill" style="width:${
+        Math.round((h.score / Math.max(...holding.map((x) => x.score), 1)) * 100)}%"></span></span>
+      <span class="n">${h.score.toFixed(0)}</span></div>`).join("");
+  $("#holding-note").textContent = holding.length
+    ? `${holding.length} moment${holding.length > 1 ? "s" : ""} cut and waiting. ` +
+      `The best one goes out when the next slot opens.`
+    : "";
+
   const declined = (data.declined || []).map(
     (d) => `${d.channel}: ${d.happening || d.why}`
   );

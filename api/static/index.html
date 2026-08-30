@@ -52,6 +52,11 @@
     <!-- No controls. It watches on its own; the top bar says how many. -->
     <section class="view" id="view-live">
       <div id="streams"></div>
+      <div class="card" id="holding" hidden>
+        <header><h3>Waiting for a slot</h3><span class="label">best one wins</span></header>
+        <div class="bars" id="holding-body"></div>
+        <p class="muted" id="holding-note"></p>
+      </div>
       <div class="card" id="live-errors" hidden>
         <header><h3>Recent problems</h3></header>
         <pre class="raw" id="live-errors-body"></pre>

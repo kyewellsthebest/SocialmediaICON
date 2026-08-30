@@ -11,6 +11,7 @@ import random
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -47,6 +48,11 @@ class FakeBuffer:
 
     def extract(self, dest, **kwargs):
         self.extracted.append(kwargs)
+        # A real extract leaves a file behind, and the shortlist drops any
+        # candidate whose file has gone - so a fake that writes nothing would
+        # quietly test the wrong thing.
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"not really a clip")
         return dest
 
 
@@ -110,6 +116,13 @@ def _watched(channel="x", messages=None, *, heard=None, seen=None) -> Watched:
     return found
 
 
+def _catch(sup, watched, found, now):
+    """The two halves as one call. Most tests care about the outcome, not the
+    fact that cutting and deciding are now separated by up to an hour."""
+    candidate = sup.cut(watched, found=found, now=now)
+    return None if candidate is None else sup.finish(candidate, now=now)
+
+
 def _approves(sup, monkeypatch, **kwargs):
     """Stand in for the model watching the clip. The gate has its own tests."""
     from core.verdict import Verdict
@@ -156,11 +169,10 @@ class TestNothingIsPosted:
         monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
 
         watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
-        record = sup.catch(
-            watched,
-            found=Found(score=9.0, why={"chat_burst": 9.0}, at_s=15.0,
-                        ago_s=15.0, chat_s=285.0),
-            now=time.time(),
+        record = _catch(
+            sup, watched,
+            Found(score=9.0, why={"chat_burst": 9.0}, at_s=15.0, ago_s=15.0, chat_s=285.0),
+            time.time(),
         )
         assert record["channel"] == "x"
         # The row the API renders carries approved=False until someone acts.
@@ -208,16 +220,32 @@ class TestTheCaps:
         sup.allowed()
         assert calls, "allowed() must ask the database, not an in-memory counter"
 
-    def test_a_full_day_blocks_the_tick_from_cutting(self, monkeypatch):
+    def test_a_full_day_keeps_nothing_but_still_holds_the_moment(self, monkeypatch):
+        """The cap stops the *keep*, not the cut.
+
+        The buffer remembers five minutes and the gap is an hour, so refusing
+        to cut until permission arrives means the moment is gone before it is
+        granted. It is cut and held; only the keep waits.
+        """
         sup = Supervisor()
         monkeypatch.setattr(
             sup, "recent_catches", lambda since: self._rows(settings.live_clips_per_day)
         )
-        cut = []
-        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
         sup.watching["x"] = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
-        sup.tick()
-        assert not cut
+        caught = sup.tick(now=LIVE_EDGE)
+        assert caught == [], "the day's allowance is spent"
+        assert len(sup.shortlist) == 1, "...but the moment is not thrown away"
+
+    def test_nothing_is_kept_while_the_cap_is_full(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(
+            sup, "recent_catches", lambda since: self._rows(settings.live_clips_per_day)
+        )
+        finished = []
+        monkeypatch.setattr(sup, "finish", lambda *a, **k: finished.append(1))
+        sup.watching["x"] = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
+        sup.tick(now=LIVE_EDGE)
+        assert not finished
 
 
 class TestOneBadChannelDoesNotStopTheOthers:
@@ -245,7 +273,7 @@ class TestOneBadChannelDoesNotStopTheOthers:
         def explode(*_a, **_k):
             raise RuntimeError("ffmpeg said no")
 
-        monkeypatch.setattr(sup, "catch", explode)
+        monkeypatch.setattr(sup, "cut", explode)
         sup.tick(now=LIVE_EDGE)  # must not raise
         assert any("ffmpeg said no" in e for e in sup.errors)
         assert set(sup.watching) == {"x", "y"}
@@ -285,12 +313,12 @@ class TestScoring:
     def test_the_cooldown_stops_one_moment_being_cut_repeatedly(self, monkeypatch):
         sup = Supervisor()
         watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
-        watched.last_catch_at = time.time()
+        watched.last_catch_at = LIVE_EDGE
         sup.watching["x"] = watched
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         cut = []
-        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
-        sup.tick()
+        monkeypatch.setattr(sup, "cut", lambda *a, **k: cut.append(1) or None)
+        sup.tick(now=LIVE_EDGE)
         assert not cut, "chat keeps talking about a moment long after it happened"
 
 
@@ -343,7 +371,7 @@ class TestADeadDatabaseDoesNotStopTheWatch:
         sup = Supervisor()
         self._broken(sup, monkeypatch)
         sup.watching["x"] = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
-        sup.tick()  # must not raise
+        sup.tick(now=LIVE_EDGE)  # must not raise
         assert "x" in sup.watching, "a database fault must not drop the buffers"
 
     def test_status_never_throws_over_it(self, monkeypatch):
@@ -443,8 +471,8 @@ class TestASleepingStreamerLosesTheSlot:
         sup.watching["x"] = watched
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         cut = []
-        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
-        sup.tick()
+        monkeypatch.setattr(sup, "cut", lambda *a, **k: cut.append(1) or None)
+        sup.tick(now=LIVE_EDGE)
         assert not cut
         assert watched.last_reason == "asleep"
 
@@ -548,11 +576,10 @@ class TestTheClipRunsAsLongAsTheMomentDoes:
         _approves(sup, monkeypatch)
         monkeypatch.setattr(sup, "store", lambda record: record)
         monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
-        return sup.catch(
-            watched,
-            found=Found(score=9.0, why={"laughter": 9.0}, at_s=15.0,
-                        ago_s=ago, chat_s=at),
-            now=time.time(), **kwargs,
+        return _catch(
+            sup, watched,
+            Found(score=9.0, why={"laughter": 9.0}, at_s=15.0, ago_s=ago, chat_s=at),
+            time.time(), **kwargs,
         )
 
     def test_a_burst_that_dies_quickly_gives_a_short_clip(self, monkeypatch):
@@ -697,7 +724,7 @@ class TestItRefusesToClipNothing:
         sup.watching["x"] = watched
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         cut = []
-        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
+        monkeypatch.setattr(sup, "cut", lambda *a, **k: cut.append(1) or None)
         sup.tick(now=LIVE_EDGE)
         return watched, cut
 
@@ -734,7 +761,7 @@ class TestItRefusesToClipNothing:
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         sup.watching["x"] = watched
         cut = []
-        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
+        monkeypatch.setattr(sup, "cut", lambda *a, **k: cut.append(1) or None)
         sup.tick(now=LIVE_EDGE)
         assert not cut
         assert watched.last_reason == "nothing happened"
@@ -753,7 +780,7 @@ class TestItRefusesToClipNothing:
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         sup.watching["x"] = watched
         cut = []
-        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
+        monkeypatch.setattr(sup, "cut", lambda *a, **k: cut.append(1) or None)
         sup.tick(now=LIVE_EDGE)
         assert cut
 
@@ -869,7 +896,7 @@ class TestTheThreeClocks:
         _approves(sup, monkeypatch)
         monkeypatch.setattr(sup, "store", lambda record: record)
         monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
-        record = sup.catch(watched, found=found, now=LIVE_EDGE)
+        record = _catch(sup, watched, found, LIVE_EDGE)
         said = {q["text"] for q in record["quotes"]}
         assert said & {f"m{t}" for t in range(280, 295)}, (
             f"quoted the wrong minute: {said}"
@@ -890,12 +917,12 @@ class TestNothingIsCutThatNothingHasWatched:
     def test_a_refusal_throws_the_clip_away(self, monkeypatch):
         sup, watched, found = self._ready(monkeypatch)
         _refuses(sup, monkeypatch)
-        assert sup.catch(watched, found=found, now=time.time()) is None
+        assert _catch(sup, watched, found, time.time()) is None
 
     def test_and_says_what_it_refused_and_why(self, monkeypatch):
         sup, watched, found = self._ready(monkeypatch)
         _refuses(sup, monkeypatch)
-        sup.catch(watched, found=found, now=time.time())
+        _catch(sup, watched, found, time.time())
         assert sup.declined
         assert sup.declined[-1]["happening"] == "a man reads a menu"
         assert sup.declined[-1]["why"] == "nothing happens"
@@ -906,7 +933,7 @@ class TestNothingIsCutThatNothingHasWatched:
         sup, watched, found = self._ready(monkeypatch)
         monkeypatch.setattr(settings, "verdict_required", True)
         monkeypatch.setattr(sup, "consider", lambda *a, **k: Verdict(problems=["no key"]))
-        assert sup.catch(watched, found=found, now=time.time()) is None
+        assert _catch(sup, watched, found, time.time()) is None
 
     def test_unless_that_requirement_is_switched_off(self, monkeypatch):
         from core.verdict import Verdict
@@ -914,12 +941,12 @@ class TestNothingIsCutThatNothingHasWatched:
         sup, watched, found = self._ready(monkeypatch)
         monkeypatch.setattr(settings, "verdict_required", False)
         monkeypatch.setattr(sup, "consider", lambda *a, **k: Verdict(problems=["no key"]))
-        assert sup.catch(watched, found=found, now=time.time()) is not None
+        assert _catch(sup, watched, found, time.time()) is not None
 
     def test_an_approval_is_recorded_with_the_clip(self, monkeypatch):
         sup, watched, found = self._ready(monkeypatch)
         _approves(sup, monkeypatch)
-        record = sup.catch(watched, found=found, now=time.time())
+        record = _catch(sup, watched, found, time.time())
         assert record["verdict"]["worth_it"] is True
         assert record["verdict"]["happening"] == "something happens"
 
@@ -929,7 +956,7 @@ class TestNothingIsCutThatNothingHasWatched:
         watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
         sup.watching["x"] = watched
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
-        monkeypatch.setattr(sup, "catch", lambda *a, **k: None)
+        monkeypatch.setattr(sup, "cut", lambda *a, **k: None)
         sup.tick(now=LIVE_EDGE)
         assert watched.last_catch_at == LIVE_EDGE
 
@@ -939,3 +966,158 @@ class TestNothingIsCutThatNothingHasWatched:
         found = sup.status()
         assert found["looked_today"] == 2
         assert found["look_budget"] == settings.verdict_per_day
+
+
+class TestItChoosesRatherThanTakingTheFirst:
+    """The gap this class exists for.
+
+    With one clip an hour, cutting the first moment that clears the bar is
+    picking at random from everything that hour held. The buffer remembers five
+    minutes and the gap is sixty, so waiting for permission is not an option
+    either - by the time the slot opens the moment is long gone. So everything
+    that qualifies is cut immediately and held, and the slot is spent on the
+    best of them.
+    """
+
+    def _sup(self, monkeypatch, *, allowed=True):
+        sup = Supervisor()
+        monkeypatch.setattr(sup, "allowed", lambda **k: allowed)
+        monkeypatch.setattr(sup, "store", lambda record: record)
+        monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
+        _approves(sup, monkeypatch)
+        return sup
+
+    def _hold(self, sup, channel, score, *, at=None):
+        watched = _watched(channel, messages=_chatter())
+        found = Found(score=score, why={"laughter": score}, at_s=15.0,
+                      ago_s=90.0, chat_s=285.0)
+        candidate = sup.cut(watched, found=found, now=at if at is not None else time.time())
+        sup.shortlist_add(candidate)
+        return candidate
+
+    def test_the_best_held_moment_is_the_one_that_is_used(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        self._hold(sup, "first", 22.0)
+        self._hold(sup, "best", 71.0)
+        self._hold(sup, "last", 30.0)
+        made = sup.harvest(now=time.time())
+        assert [r["channel"] for r in made] == ["best"]
+
+    def test_it_chooses_across_streams_not_within_one(self, monkeypatch):
+        """Three streams, one slot: the best moment of the hour, wherever it was."""
+        sup = self._sup(monkeypatch)
+        self._hold(sup, "n3on", 25.0)
+        self._hold(sup, "oblivionsw", 64.0)
+        self._hold(sup, "deenthegreat", 41.0)
+        assert sup.harvest(now=time.time())[0]["channel"] == "oblivionsw"
+
+    def test_only_one_slot_is_spent_at_a_time(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        self._hold(sup, "a", 50.0)
+        self._hold(sup, "b", 40.0)
+        assert len(sup.harvest(now=time.time())) == 1
+        assert len(sup.shortlist) == 1, "the runner-up is still held for next time"
+
+    def test_a_refused_favourite_hands_the_slot_to_the_next(self, monkeypatch):
+        """A refusal says this moment is not worth posting, not that the hour was empty."""
+        sup = self._sup(monkeypatch)
+        self._hold(sup, "loud-but-empty", 80.0)
+        self._hold(sup, "actually-good", 40.0)
+
+        from core.verdict import Verdict
+
+        seen = []
+
+        def judge(candidate, **kwargs):
+            seen.append(candidate.channel)
+            worth = candidate.channel == "actually-good"
+            return Verdict(watched=True, worth_it=worth, confidence=0.9,
+                           happening="x", why="y", kind="funny")
+
+        monkeypatch.setattr(sup, "consider", judge)
+        made = sup.harvest(now=time.time())
+        assert seen == ["loud-but-empty", "actually-good"]
+        assert [r["channel"] for r in made] == ["actually-good"]
+
+    def test_nothing_is_used_while_the_slot_is_shut(self, monkeypatch):
+        sup = self._sup(monkeypatch, allowed=False)
+        self._hold(sup, "a", 50.0)
+        assert sup.harvest(now=time.time()) == []
+        assert len(sup.shortlist) == 1
+
+    def test_the_shortlist_has_a_ceiling(self, monkeypatch):
+        """Held clips are files on a disk that is also holding three buffers."""
+        sup = self._sup(monkeypatch, allowed=False)
+        for i in range(settings.live_shortlist_max + 4):
+            self._hold(sup, f"c{i}", float(i))
+        assert len(sup.shortlist) == settings.live_shortlist_max
+
+    def test_and_it_is_the_weakest_that_is_dropped(self, monkeypatch):
+        sup = self._sup(monkeypatch, allowed=False)
+        weakest = self._hold(sup, "weak", 1.0)
+        for i in range(settings.live_shortlist_max):
+            self._hold(sup, f"strong{i}", 90.0 + i)
+        assert weakest not in sup.shortlist
+        assert not weakest.raw.exists(), "the file goes with the candidate"
+
+    def test_a_moment_held_too_long_is_let_go(self, monkeypatch):
+        sup = self._sup(monkeypatch, allowed=False)
+        now = time.time()
+        stale = self._hold(sup, "stale", 90.0, at=now - settings.live_hold_max_s - 60)
+        fresh = self._hold(sup, "fresh", 10.0, at=now)
+        sup.prune_shortlist(now=now)
+        assert sup.shortlist == [fresh]
+        assert not stale.raw.exists()
+
+    def test_a_held_clip_whose_file_vanished_is_forgotten(self, monkeypatch):
+        sup = self._sup(monkeypatch, allowed=False)
+        gone = self._hold(sup, "gone", 50.0)
+        gone.raw.unlink()
+        sup.prune_shortlist(now=time.time())
+        assert sup.shortlist == []
+
+    def test_the_context_travels_with_the_clip(self, monkeypatch):
+        """By the time it is used, chat has forgotten the whole thing."""
+        sup = self._sup(monkeypatch)
+        msgs = [chatlib.Message(float(t), f"m{t}", f"u{t}") for t in range(300)]
+        watched = _watched(messages=msgs, heard=_laughing_at(285.0))
+        found = Found(score=50.0, why={"laughter": 50.0}, at_s=15.0, ago_s=90.0, chat_s=285.0)
+        candidate = sup.cut(watched, found=found, now=time.time())
+
+        # The stream is gone from the roster and its chat log with it.
+        assert candidate.quotes, "quotes have to be captured at the cut"
+        assert candidate.mood, "so does the mood"
+        record = sup.finish(candidate, now=time.time() + 2000)
+        assert record["quotes"]
+        assert record["peak_viewers"] == candidate.viewers
+
+    def test_the_record_is_dated_when_it_happened_not_when_it_was_used(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        cut_at = time.time() - 1800
+        candidate = self._hold(sup, "x", 50.0, at=cut_at)
+        record = sup.finish(candidate, now=time.time())
+        assert record["caught_at"].startswith(
+            datetime.fromtimestamp(cut_at, UTC).isoformat()[:16]
+        )
+        assert record["held_s"] == pytest.approx(1800, abs=5)
+
+    def test_finishing_a_stream_that_has_since_been_dropped_still_works(self, monkeypatch):
+        """Forty minutes is long enough for a channel to go offline."""
+        sup = self._sup(monkeypatch)
+        candidate = self._hold(sup, "gone-offline", 50.0)
+        sup.watching.clear()
+        assert sup.finish(candidate, now=time.time()) is not None
+
+    def test_stopping_lets_go_of_everything_held(self, monkeypatch):
+        sup = self._sup(monkeypatch, allowed=False)
+        held = [self._hold(sup, f"c{i}", float(i + 1)) for i in range(3)]
+        sup.stop()
+        assert sup.shortlist == []
+        assert not any(c.raw.exists() for c in held)
+
+    def test_the_page_can_see_what_is_being_held(self, monkeypatch):
+        sup = self._sup(monkeypatch, allowed=False)
+        self._hold(sup, "a", 50.0)
+        rows = sup.status()["shortlist"]
+        assert rows[0]["channel"] == "a"
+        assert rows[0]["score"] == 50.0

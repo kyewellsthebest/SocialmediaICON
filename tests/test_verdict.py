@@ -21,7 +21,11 @@ import pytest
 
 from core import verdict
 from core.config import settings
-from core.supervisor import Supervisor
+from core.supervisor import Found, Held, Supervisor
+
+
+def _held(raw):
+    return Held(channel="x", found=Found(), raw=raw, cut_at=0.0, duration_s=30.0)
 
 
 @pytest.fixture(scope="module")
@@ -119,13 +123,13 @@ class TestTheBudget:
         monkeypatch.setattr(settings, "verdict_per_day", 3)
         sup = Supervisor()
         sup.looked = [0.0, 0.0, 0.0]
-        found = sup.consider(None, tmp_path / "nope.mp4", None)
+        found = sup.consider(_held(tmp_path / "nope.mp4"))
         assert found.watched is False
         assert "budget" in " ".join(found.problems)
 
     def test_switching_looking_off_is_honoured(self, monkeypatch, tmp_path):
         monkeypatch.setattr(settings, "verdict_enabled", False)
-        found = Supervisor().consider(None, tmp_path / "nope.mp4", None)
+        found = Supervisor().consider(_held(tmp_path / "nope.mp4"))
         assert found.watched is False
         assert "switched off" in " ".join(found.problems)
 

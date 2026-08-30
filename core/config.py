@@ -297,6 +297,14 @@ class Settings(BaseSettings):
     #: between a predictable bill and an open one. Held in memory, so a deploy
     #: resets it - the bound is a guard against a bad day, not an accountant.
     verdict_per_day: int = 30
+    #: How many cut-but-undecided moments to hold while waiting for an output
+    #: slot. The buffer only remembers five minutes and the gap between clips
+    #: is an hour, so a moment that is not cut immediately is gone - holding
+    #: the file is the only way to still have it when the slot opens.
+    live_shortlist_max: int = 5
+    #: ...and how stale a held moment may be when it is finally used. A good
+    #: moment is good whenever it is posted, but not indefinitely.
+    live_hold_max_s: float = 2700.0
     #: How hard chat has to spike, as a multiple of its own recent baseline.
     live_trigger_ratio: float = 3.0
     #: Nothing is posted anywhere yet - clips are cut and held for review.
