@@ -16,7 +16,13 @@ import pytest
 
 from core import chat as chatlib
 from core.config import settings
-from core.supervisor import DORMANT_READINGS, DORMANT_REST_S, Supervisor, Watched
+from core.supervisor import (
+    DORMANT_READINGS,
+    DORMANT_REST_S,
+    Found,
+    Supervisor,
+    Watched,
+)
 
 
 @dataclass
@@ -57,13 +63,59 @@ class FakeChat:
                 "held": self.log.status(), "error": ""}
 
 
-def _watched(channel="x", messages=None) -> Watched:
+class Heard:
+    """A hearing.Hearing with only the fields the scorer reads."""
+
+    def __init__(self, laughs=(), shouts=(), drops=()):
+        self.laughs, self.shouts, self.drops = list(laughs), list(shouts), list(drops)
+
+    def as_dict(self):
+        return {"laughs": self.laughs, "shouts": self.shouts, "drops": self.drops}
+
+
+class Seen:
+    """Likewise for watching.Watching."""
+
+    def __init__(self, surges=(), cuts=(), flashes=(), stillness=()):
+        self.surges, self.cuts = list(surges), list(cuts)
+        self.flashes, self.stillness = list(flashes), list(stillness)
+
+    def as_dict(self):
+        return {"surges": self.surges, "cuts": self.cuts}
+
+
+#: Chat offsets are measured from when the buffer opened, so "the live edge is
+#: at offset 300" is the fiction every test here runs under: the stream has
+#: been up five minutes and the senses have just read the last thirty seconds
+#: of it. An event planted at chat offset 285 is fifteen seconds into that
+#: window and five seconds before now.
+LIVE_EDGE = 300.0
+WINDOW_S = 30.0
+
+
+def _watched(channel="x", messages=None, *, heard=None, seen=None) -> Watched:
     log = chatlib.LiveLog(window_s=300.0)
     log.extend(messages or [])
-    return Watched(channel=channel, buffer=FakeBuffer(channel), chat=FakeChat(log))
+    found = Watched(
+        channel=channel, buffer=FakeBuffer(channel), chat=FakeChat(log), started_at=0.0
+    )
+    found.heard, found.seen = heard, seen
+    found.sense_window_s = WINDOW_S
+    found.senses_at = LIVE_EDGE
+    found.senses = {
+        "heard": heard.as_dict() if heard else None,
+        "seen": seen.as_dict() if seen else None,
+    }
+    return found
 
 
-def _chatter(seconds: int = 200, burst_at: float | None = None):
+def _laughing_at(chat_s: float, *, length: float = 3.0):
+    """Something the bot heard, at a chat offset, so the two line up."""
+    at = chat_s - (LIVE_EDGE - WINDOW_S)
+    return Heard(laughs=[(at, at + length, 0.9)])
+
+
+def _chatter(seconds: int = 300, burst_at: float | None = None):
     msgs = [chatlib.Message(float(t), "hi", f"u{t % 30}") for t in range(seconds)]
     if burst_at is not None:
         msgs += [chatlib.Message(burst_at, "KEKW", f"r{i}") for i in range(60)]
@@ -82,8 +134,13 @@ class TestNothingIsPosted:
         monkeypatch.setattr(sup, "store", lambda record: stored.update(record))
         monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
 
-        watched = _watched(messages=_chatter(burst_at=120.0))
-        record = sup.catch(watched, why={"chat_burst": 9.0}, peak_s=120.0, now=time.time())
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
+        record = sup.catch(
+            watched,
+            found=Found(score=9.0, why={"chat_burst": 9.0}, at_s=15.0,
+                        ago_s=15.0, chat_s=285.0),
+            now=time.time(),
+        )
         assert record["channel"] == "x"
         # The row the API renders carries approved=False until someone acts.
         assert "approved" not in record or record.get("approved") is not True
@@ -137,7 +194,7 @@ class TestTheCaps:
         )
         cut = []
         monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
-        sup.watching["x"] = _watched(messages=_chatter(burst_at=120.0))
+        sup.watching["x"] = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
         sup.tick()
         assert not cut
 
@@ -158,15 +215,17 @@ class TestOneBadChannelDoesNotStopTheOthers:
 
     def test_a_cut_that_throws_is_noted_and_the_loop_continues(self, monkeypatch):
         sup = Supervisor()
-        sup.watching["x"] = _watched(messages=_chatter(burst_at=150.0))
-        sup.watching["y"] = _watched("y", messages=_chatter(burst_at=150.0))
+        sup.watching["x"] = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
+        sup.watching["y"] = _watched(
+            "y", messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0)
+        )
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
 
         def explode(*_a, **_k):
             raise RuntimeError("ffmpeg said no")
 
         monkeypatch.setattr(sup, "catch", explode)
-        sup.tick()  # must not raise
+        sup.tick(now=LIVE_EDGE)  # must not raise
         assert any("ffmpeg said no" in e for e in sup.errors)
         assert set(sup.watching) == {"x", "y"}
 
@@ -183,24 +242,28 @@ class TestOneBadChannelDoesNotStopTheOthers:
 class TestScoring:
     def test_a_quiet_channel_scores_nothing(self):
         sup = Supervisor()
-        value, why, _ = sup.score(_watched(messages=_chatter()))
-        assert why == {} or value == 0.0 or "chat_burst" not in why
+        found = sup.score(_watched(messages=_chatter()), now=LIVE_EDGE)
+        assert not found
 
     def test_a_burst_scores_and_names_its_reason(self):
         sup = Supervisor()
-        value, why, peak = sup.score(_watched(messages=_chatter(burst_at=150.0)))
-        assert value > 0 and why
-        assert peak == pytest.approx(150.0, abs=20.0)
+        found = sup.score(
+            _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0)),
+            now=LIVE_EDGE,
+        )
+        assert found.score > 0 and found.why
+        assert found.chat_s == pytest.approx(285.0, abs=8.0)
+        assert found.ago_s == pytest.approx(15.0, abs=8.0)
 
     def test_a_channel_too_new_to_have_a_window_scores_nothing(self):
         """Attaching and immediately cutting would produce a clip of nothing."""
         sup = Supervisor()
         short = _watched(messages=[chatlib.Message(float(t), "hi") for t in range(5)])
-        assert sup.score(short) == (0.0, {}, 0.0)
+        assert not sup.score(short, now=LIVE_EDGE)
 
     def test_the_cooldown_stops_one_moment_being_cut_repeatedly(self, monkeypatch):
         sup = Supervisor()
-        watched = _watched(messages=_chatter(burst_at=150.0))
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
         watched.last_catch_at = time.time()
         sup.watching["x"] = watched
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
@@ -212,7 +275,7 @@ class TestScoring:
 
 class TestWhatTheDashboardSees:
     def test_signals_carry_chat_mood_and_buffer_state(self):
-        watched = _watched(messages=_chatter(burst_at=150.0))
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
         found = watched.signals()
         assert found["channel"] == "x"
         assert found["buffer"]["running"] is True
@@ -258,7 +321,7 @@ class TestADeadDatabaseDoesNotStopTheWatch:
     def test_a_tick_survives_it_and_keeps_the_streams(self, monkeypatch):
         sup = Supervisor()
         self._broken(sup, monkeypatch)
-        sup.watching["x"] = _watched(messages=_chatter(burst_at=150.0))
+        sup.watching["x"] = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
         sup.tick()  # must not raise
         assert "x" in sup.watching, "a database fault must not drop the buffers"
 
@@ -281,7 +344,7 @@ class TestTheScoreCarriesItsReasons:
     """A total with no breakdown is the one thing this project promised not to do."""
 
     def test_signals_include_the_per_signal_breakdown(self):
-        watched = _watched(messages=_chatter(burst_at=150.0))
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
         watched.last_score = 22.3
         watched.last_why = {"chat_voices": 20.0, "chat_burst": 2.3}
         found = watched.signals()
@@ -297,10 +360,10 @@ class TestTheScoreCarriesItsReasons:
 
     def test_a_tick_records_the_breakdown_it_scored_with(self, monkeypatch):
         sup = Supervisor()
-        watched = _watched(messages=_chatter(burst_at=150.0))
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
         sup.watching["x"] = watched
         monkeypatch.setattr(sup, "allowed", lambda **k: False)
-        sup.tick()
+        sup.tick(now=LIVE_EDGE)
         assert watched.last_why, "tick scored but threw the reasons away"
         assert watched.last_reason in watched.last_why
 
@@ -353,7 +416,7 @@ class TestASleepingStreamerLosesTheSlot:
 
     def test_a_dormant_stream_is_not_scored(self, monkeypatch):
         sup = Supervisor()
-        watched = _watched(messages=_chatter(burst_at=150.0))
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
         watched.asleep_readings = DORMANT_READINGS
         watched.audio_at = time.time()
         sup.watching["x"] = watched
@@ -456,18 +519,29 @@ class TestTheSlotGoesToTheNextStreamDown:
 
 
 class TestTheClipRunsAsLongAsTheMomentDoes:
-    def _cut(self, sup, watched, monkeypatch, **kwargs):
+    def _cut(self, sup, watched, monkeypatch, *, at: float = 285.0,
+             ago: float = 90.0, **kwargs):
+        """`ago` is how long before the live edge the peak was.
+
+        Generous by default, because the tail cannot be longer than the
+        footage that exists after the peak - the clip is clamped to it, which
+        is a rule worth testing on its own rather than tripping over here.
+        """
         monkeypatch.setattr(sup, "store", lambda record: record)
         monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
-        return sup.catch(watched, why={"chat_burst": 9.0}, peak_s=120.0,
-                         now=time.time(), **kwargs)
+        return sup.catch(
+            watched,
+            found=Found(score=9.0, why={"laughter": 9.0}, at_s=15.0,
+                        ago_s=ago, chat_s=at),
+            now=time.time(), **kwargs,
+        )
 
     def test_a_burst_that_dies_quickly_gives_a_short_clip(self, monkeypatch):
         sup = Supervisor()
-        msgs = _chatter(200)
+        msgs = _chatter(300)
         msgs += [chatlib.Message(120.0 + (i % 20) * 0.1, "KEKW", f"r{i}") for i in range(60)]
         watched = _watched(messages=msgs)
-        record = self._cut(sup, watched, monkeypatch)
+        record = self._cut(sup, watched, monkeypatch, at=120.0, ago=180.0)
         assert record["duration_s"] < settings.live_max_clip_s
 
     def test_a_moment_that_keeps_going_is_capped_not_truncated_at_thirty(self, monkeypatch):
@@ -478,22 +552,34 @@ class TestTheClipRunsAsLongAsTheMomentDoes:
             for t in range(3000)
         ]
         watched = _watched(messages=msgs)
-        record = self._cut(sup, watched, monkeypatch)
+        record = self._cut(sup, watched, monkeypatch, at=120.0, ago=180.0)
         assert record["duration_s"] == pytest.approx(settings.live_max_clip_s, abs=0.51)
 
     def test_no_clip_ever_exceeds_the_cap(self, monkeypatch):
         sup = Supervisor()
-        msgs = _chatter(400) + [
+        msgs = _chatter(300) + [
             chatlib.Message(120.0 + t * 0.02, "OMG", f"r{t}") for t in range(9000)
         ]
         watched = _watched(messages=msgs)
-        record = self._cut(sup, watched, monkeypatch)
+        record = self._cut(sup, watched, monkeypatch, at=120.0, ago=180.0)
         assert record["duration_s"] <= settings.live_max_clip_s
+
+    def test_the_tail_never_runs_past_the_live_edge(self, monkeypatch):
+        """A moment ten seconds ago cannot have thirty seconds of tail."""
+        sup = Supervisor()
+        msgs = _chatter(300) + [
+            chatlib.Message(120.0 + t * 0.02, "OMG", f"r{t}") for t in range(9000)
+        ]
+        watched = _watched(messages=msgs)
+        record = self._cut(sup, watched, monkeypatch, at=120.0, ago=6.0)
+        asked = watched.buffer.extracted[-1]
+        assert asked["trail_s"] <= 6.0
+        assert record["duration_s"] == pytest.approx(settings.live_lead_s + 6.0, abs=0.05)
 
     def test_the_extract_asks_the_buffer_for_the_same_length(self, monkeypatch):
         sup = Supervisor()
-        watched = _watched(messages=_chatter(burst_at=120.0))
-        record = self._cut(sup, watched, monkeypatch)
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
+        record = self._cut(sup, watched, monkeypatch, at=285.0, ago=90.0)
         asked = watched.buffer.extracted[-1]
         assert asked["lead_s"] == settings.live_lead_s
         assert record["duration_s"] == pytest.approx(asked["lead_s"] + asked["trail_s"], abs=0.05)
@@ -586,14 +672,14 @@ class TestItRefusesToClipNothing:
             for _ in range(rng.randint(6, 10))
         ]
 
-    def _ticked(self, monkeypatch, messages):
+    def _ticked(self, monkeypatch, messages, *, heard=None):
         sup = Supervisor()
-        watched = _watched(messages=messages)
+        watched = _watched(messages=messages, heard=heard)
         sup.watching["x"] = watched
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         cut = []
         monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
-        sup.tick()
+        sup.tick(now=LIVE_EDGE)
         return watched, cut
 
     def test_a_busy_channel_reacting_to_nothing_is_not_cut(self, monkeypatch):
@@ -607,14 +693,14 @@ class TestItRefusesToClipNothing:
     def test_a_real_reaction_on_the_same_channel_is_still_cut(self, monkeypatch):
         """The bar must reject nothing without also rejecting everything."""
         messages = self._busy_but_dull()
-        messages += [chatlib.Message(200.0 + (i % 25) * 0.1, "KEKW", f"r{i}") for i in range(200)]
-        messages += [chatlib.Message(203.0, "CLIP THAT", f"q{i}") for i in range(6)]
-        _, cut = self._ticked(monkeypatch, messages)
+        messages += [chatlib.Message(283.0 + (i % 25) * 0.1, "KEKW", f"r{i}") for i in range(200)]
+        messages += [chatlib.Message(286.0, "CLIP THAT", f"q{i}") for i in range(6)]
+        _, cut = self._ticked(monkeypatch, messages, heard=_laughing_at(284.0, length=4.0))
         assert cut, "a crowd reacting on a busy channel is the thing we are here for"
 
     def test_a_score_under_the_floor_is_refused(self, monkeypatch):
         monkeypatch.setattr(settings, "live_min_score", 999.0)
-        _, cut = self._ticked(monkeypatch, _chatter(burst_at=150.0))
+        _, cut = self._ticked(monkeypatch, _chatter(burst_at=285.0))
         assert not cut
 
     def test_a_score_made_only_of_levels_is_refused(self, monkeypatch):
@@ -622,12 +708,15 @@ class TestItRefusesToClipNothing:
         sup = Supervisor()
         watched = _watched()
 
-        monkeypatch.setattr(sup, "score", lambda w: (500.0, {"chat_voices": 500.0}, 10.0))
+        monkeypatch.setattr(
+            sup, "score",
+            lambda w, **k: Found(score=500.0, why={"chat_voices": 500.0}, chat_s=285.0),
+        )
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         sup.watching["x"] = watched
         cut = []
         monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
-        sup.tick()
+        sup.tick(now=LIVE_EDGE)
         assert not cut
         assert watched.last_reason == "nothing happened"
 
@@ -638,11 +727,130 @@ class TestItRefusesToClipNothing:
     def test_a_level_can_lift_a_real_moment_but_not_carry_one(self, monkeypatch):
         sup = Supervisor()
         watched = _watched()
-        why = {"chat_burst": 16.0, "chat_voices": 30.0}
-        monkeypatch.setattr(sup, "score", lambda w: (46.0, why, 10.0))
+        why = {"laughter": 16.0, "chat_voices": 30.0}
+        monkeypatch.setattr(
+            sup, "score", lambda w, **k: Found(score=46.0, why=why, chat_s=285.0)
+        )
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         sup.watching["x"] = watched
         cut = []
         monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
-        sup.tick()
+        sup.tick(now=LIVE_EDGE)
         assert cut
+
+
+class TestTheSensesLeadAndChatAgrees:
+    """What the bot heard and saw decides. Chat only gets to agree.
+
+    Everything before this was scored on chat, and chat on a big Kick channel
+    is four hundred messages a minute of the channel's own emote whatever is
+    on screen. A clip cut because a lot of people typed is a clip of people
+    typing.
+    """
+
+    def _bed(self):
+        """Five minutes of ordinary chatter, reacting to nothing."""
+        rng = random.Random(5)
+        return [
+            chatlib.Message(
+                float(t), rng.choice(["W", "KEKW", "deenDigg"]), f"u{rng.randint(0, 300)}"
+            )
+            for t in range(300)
+            for _ in range(6)
+        ]
+
+    def _reacting(self, at: float = 285.0):
+        msgs = [chatlib.Message(at + (i % 20) * 0.1, "KEKW", f"r{i}") for i in range(150)]
+        msgs += [chatlib.Message(at + 3.0, "CLIP THAT", f"q{i}") for i in range(8)]
+        return msgs
+
+    def test_chat_erupting_over_nothing_scores_nothing(self):
+        """No laugh, no surge, no shout - nothing was heard or seen."""
+        sup = Supervisor()
+        watched = _watched(messages=self._bed() + self._reacting())
+        assert not sup.score(watched, now=LIVE_EDGE)
+
+    def test_a_laugh_the_bot_heard_scores_on_its_own(self):
+        """...and chat is not required for it."""
+        sup = Supervisor()
+        watched = _watched(messages=self._bed(), heard=_laughing_at(285.0, length=4.0))
+        found = sup.score(watched, now=LIVE_EDGE)
+        assert found and found.event_score > 0
+        assert found.top_reason == "laughter"
+
+    def test_chat_agreeing_raises_it_but_does_not_lead_it(self):
+        sup = Supervisor()
+        alone = sup.score(
+            _watched(messages=self._bed(), heard=_laughing_at(285.0, length=4.0)),
+            now=LIVE_EDGE,
+        )
+        agreed = sup.score(
+            _watched(messages=self._bed() + self._reacting(),
+                     heard=_laughing_at(285.0, length=4.0)),
+            now=LIVE_EDGE,
+        )
+        assert agreed.score > alone.score, "chat agreeing has to count for something"
+        assert agreed.top_reason == "laughter", "...but not for more than being there"
+
+    def test_a_surge_in_the_picture_scores_on_its_own(self):
+        sup = Supervisor()
+        watched = _watched(messages=self._bed(), seen=Seen(surges=[(15.0, 4.0)]))
+        found = sup.score(watched, now=LIVE_EDGE)
+        assert found and found.top_reason == "motion_surge"
+
+    def test_a_shout_scores(self):
+        sup = Supervisor()
+        watched = _watched(messages=self._bed(), heard=Heard(shouts=[(15.0, 16.0)]))
+        assert sup.score(watched, now=LIVE_EDGE).event_score > 0
+
+    def test_a_stream_with_no_senses_yet_scores_nothing(self):
+        """The first twenty seconds, before anything has been listened to."""
+        sup = Supervisor()
+        watched = _watched(messages=self._bed())
+        watched.sense_window_s = 0.0
+        assert not sup.score(watched, now=LIVE_EDGE)
+
+
+class TestTheThreeClocks:
+    """Senses run 0..30 and end at senses_at. Chat counts from the buffer
+    opening. The buffer only answers 'how long ago'. Confusing them puts the
+    clip somewhere else entirely."""
+
+    def test_the_end_of_the_sense_window_is_the_live_edge(self):
+        watched = _watched()
+        assert watched.chat_offset(WINDOW_S) == pytest.approx(LIVE_EDGE)
+        assert watched.seconds_ago(WINDOW_S, now=LIVE_EDGE) == pytest.approx(0.0)
+
+    def test_the_start_of_it_is_a_window_earlier(self):
+        watched = _watched()
+        assert watched.chat_offset(0.0) == pytest.approx(LIVE_EDGE - WINDOW_S)
+        assert watched.seconds_ago(0.0, now=LIVE_EDGE) == pytest.approx(WINDOW_S)
+
+    def test_the_mapping_round_trips(self):
+        watched = _watched()
+        for position in (0.0, 7.5, 15.0, 29.0):
+            assert watched.window_position(
+                watched.chat_offset(position)
+            ) == pytest.approx(position)
+
+    def test_reading_late_still_places_the_moment_correctly(self):
+        """The senses run on a twenty second timer, so 'now' is always after them."""
+        watched = _watched()
+        later = LIVE_EDGE + 18.0
+        assert watched.seconds_ago(WINDOW_S, now=later) == pytest.approx(18.0)
+        assert watched.chat_offset(WINDOW_S) == pytest.approx(LIVE_EDGE), (
+            "reading late must not move where the moment was"
+        )
+
+    def test_a_moment_is_quoted_from_where_it_happened(self, monkeypatch):
+        sup = Supervisor()
+        msgs = [chatlib.Message(float(t), f"m{t}", f"u{t}") for t in range(300)]
+        watched = _watched(messages=msgs, heard=_laughing_at(285.0))
+        found = sup.score(watched, now=LIVE_EDGE)
+        monkeypatch.setattr(sup, "store", lambda record: record)
+        monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
+        record = sup.catch(watched, found=found, now=LIVE_EDGE)
+        said = {q["text"] for q in record["quotes"]}
+        assert said & {f"m{t}" for t in range(280, 295)}, (
+            f"quoted the wrong minute: {said}"
+        )

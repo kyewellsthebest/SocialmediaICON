@@ -60,6 +60,16 @@ AUDIO_EVERY_S = 20.0
 #: How much of the recent past to measure. Long enough to show a shape, short
 #: enough that the decode stays well under a second.
 AUDIO_WINDOW_S = 24.0
+#: How much of the buffer the senses read, and how often. The windows overlap
+#: by ten seconds so nothing falls between two reads. Reading is the expensive
+#: thing the watcher does - about 0.9s of CPU per stream, per pass - and this
+#: pair is what keeps three streams under a fifth of one core.
+SENSE_WINDOW_S = 30.0
+SENSE_EVERY_S = 20.0
+#: The width a moment is scored over. Not the clip length: scoring wants a
+#: consistent narrow window so two moments can be compared, and the clip wants
+#: to run as long as the moment does.
+SCORE_WIDTH_S = 12.0
 #: Below this the room is silent rather than merely quiet. LosPollosTV asleep
 #: read -57.9 mean and -40.2 peak; a person talking sits above -30.
 DORMANT_DB = -45.0
@@ -103,6 +113,14 @@ class Watched:
     #: The most recent audio reading, refreshed on its own slower timer.
     audio: dict[str, Any] = field(default_factory=dict)
     audio_at: float = 0.0
+    #: What was heard and seen over the last SENSE_WINDOW_S, and when that
+    #: window ended. Held as objects because the scorer needs the events and
+    #: as dicts because the dashboard needs the summary.
+    heard: Any = None
+    seen: Any = None
+    senses_at: float = 0.0
+    sense_window_s: float = 0.0
+    senses: dict[str, Any] = field(default_factory=dict)
     #: Consecutive readings with nobody apparently there. Consecutive, not a
     #: running average: someone who goes quiet and then speaks is not asleep,
     #: and an average would take minutes to forgive them.
@@ -180,6 +198,83 @@ class Watched:
             "quiet_runs": envelope.quiet_runs()[-4:],
             "has_spectrogram": spectrogram is not None,
         }
+
+    def window(self, wanted_s: float) -> tuple[str, float]:
+        """(a path ffmpeg can read, how much of the tail it covers).
+
+        Whole segments from the end rather than a seek: they are independently
+        decodable, so this cannot land mid-GOP. The concat *protocol*, not the
+        demuxer's list file - transport streams join byte-wise and ffmpeg reads
+        that from one argument, where a list file handed to a plain -i produces
+        no error and no output.
+        """
+        segments = self.buffer.segments()
+        if not segments:
+            raise RuntimeError("the buffer is still filling")
+        wanted: list = []
+        held = 0.0
+        for segment in reversed(segments):
+            wanted.insert(0, segment)
+            held += segment.duration_s
+            if held >= wanted_s:
+                break
+        return f"concat:{'|'.join(str(seg.path) for seg in wanted)}", held
+
+    def read_senses(self, out_dir: Path, *, now: float | None = None) -> dict[str, Any]:
+        """Listen to and look at the last half minute, and remember what for.
+
+        This is the expensive thing the watcher does and the only one that
+        looks at the stream itself. Everything the scorer treats as evidence
+        comes from here; chat only ever gets to agree with it.
+        """
+        from core import hearing, watching
+
+        now = time.time() if now is None else now
+        joined, held = self.window(SENSE_WINDOW_S)
+
+        problems: list[str] = []
+        try:
+            self.heard = hearing.listen(joined)
+        except Exception as exc:  # noqa: BLE001 - a deaf tick is not a dead one
+            self.heard, _ = None, problems.append(f"hearing: {type(exc).__name__}: {exc}")
+        try:
+            self.seen = watching.watch(joined)
+        except Exception as exc:  # noqa: BLE001
+            self.seen, _ = None, problems.append(f"watching: {type(exc).__name__}: {exc}")
+
+        self.senses_at = now
+        self.sense_window_s = held
+        self.senses = {
+            "window_s": round(held, 1),
+            "heard": self.heard.as_dict() if self.heard else None,
+            "seen": self.seen.as_dict() if self.seen else None,
+            "problems": problems,
+        }
+        return self.senses
+
+    # --- one clock ---------------------------------------------------------
+    #
+    # Three timelines meet here and getting them confused puts the clip
+    # somewhere else entirely. The senses run 0..sense_window_s and end at the
+    # live edge as it stood at senses_at. Chat offsets are measured from when
+    # the buffer opened. The buffer itself only answers to "how long ago".
+
+    def wall_time(self, window_s: float) -> float:
+        """A position in the sense window, as a wall-clock instant."""
+        return self.senses_at - (self.sense_window_s - window_s)
+
+    def chat_offset(self, window_s: float) -> float:
+        """...as an offset into the chat log, for quoting and mood."""
+        return self.wall_time(window_s) - self.started_at
+
+    def seconds_ago(self, window_s: float, *, now: float) -> float:
+        """...and as seconds before the live edge right now, which is all the
+        buffer can be asked about."""
+        return max(0.0, now - self.wall_time(window_s))
+
+    def window_position(self, chat_s: float) -> float:
+        """The reverse: a chat offset, as a position in the sense window."""
+        return self.sense_window_s - (self.senses_at - (self.started_at + chat_s))
 
     def read_activity(self) -> dict[str, Any]:
         """Is anything actually happening, or is the streamer asleep?
@@ -287,6 +382,35 @@ class Watched:
                 round(time.time() - self.last_catch_at) if self.last_catch_at else None
             ),
         }
+
+
+@dataclass
+class Found:
+    """A moment, and the three clocks it has to be expressed in."""
+
+    score: float = 0.0
+    why: dict[str, float] = field(default_factory=dict)
+    #: Where in the sense window the evidence peaked.
+    at_s: float = 0.0
+    #: The same instant, as seconds before the live edge - what the buffer wants.
+    ago_s: float = 0.0
+    #: ...and as a chat-log offset - what the quotes and the mood want.
+    chat_s: float = 0.0
+
+    def __bool__(self) -> bool:
+        return self.score > 0 and bool(self.why)
+
+    @property
+    def event_score(self) -> float:
+        return sum(v for k, v in self.why.items() if k in moments.SENSED)
+
+    @property
+    def crowd_score(self) -> float:
+        return sum(v for k, v in self.why.items() if k in moments.CROWD)
+
+    @property
+    def top_reason(self) -> str:
+        return max(self.why, key=self.why.get) if self.why else ""
 
 
 @dataclass
@@ -496,26 +620,55 @@ class Supervisor:
 
     # --- catching -----------------------------------------------------------
 
-    def score(self, watched: Watched) -> tuple[float, dict[str, float], float]:
-        """(score, why, peak offset) for the strongest moment chat is showing."""
-        curve = watched.chat.log.curve()
-        if curve.duration_s < settings.live_lead_s:
-            return 0.0, {}, 0.0
+    def score(self, watched: Watched, *, now: float | None = None) -> Found:
+        """The strongest moment in what was just heard and seen.
 
-        signals = moments.signals_from_chat(curve, duration_s=curve.duration_s)
+        Everything is fused on one clock - the sense window, running from the
+        oldest half-minute the ear and the eye were given up to the live edge
+        as it stood when they read it. Chat is mapped onto that clock rather
+        than the other way round, because chat is the thing being asked to
+        agree.
+
+        Bursts and clip requests are found against the whole five minutes chat
+        remembers and only then mapped in: a spike is only a spike next to
+        enough history to know what normal is, and there is not enough of that
+        inside half a minute. Detect wide, score narrow.
+        """
+        now = time.time() if now is None else now
+        window_s = watched.sense_window_s
+        if window_s < SCORE_WIDTH_S or (watched.heard is None and watched.seen is None):
+            return Found()
+
+        signals: dict[str, Any] = {}
+        if watched.heard is not None:
+            signals |= moments.signals_from_hearing(watched.heard, duration_s=window_s)
+        if watched.seen is not None:
+            signals |= moments.signals_from_watching(watched.seen, duration_s=window_s)
+
+        full = watched.chat.log.curve()
+        place = watched.window_position
+        signals |= moments.signals_from_chat_events(
+            requests=[place(t) for t, _ in full.clip_requests()],
+            bursts=[(place(t), ratio) for t, ratio in full.bursts()],
+            voices=[float(v) for v in full.voices],
+            voices_grid_s=full.bucket_s or 1.0,
+            duration_s=window_s,
+        )
+
         found = moments.rank(
-            signals,
-            duration_s=curve.duration_s,
-            # The window the score is measured over, which is not the clip
-            # length: scoring wants a consistent width to compare moments
-            # fairly, and the clip wants to run as long as the moment does.
-            clip_s=settings.live_lead_s + settings.live_trail_s,
-            top=1,
+            signals, duration_s=window_s, clip_s=SCORE_WIDTH_S, top=1,
         )
         if not found:
-            return 0.0, {}, 0.0
+            return Found()
+
         best = found[0]
-        return best.score, best.why, best.peak_s
+        return Found(
+            score=best.score,
+            why=best.why,
+            at_s=best.peak_s,
+            ago_s=watched.seconds_ago(best.peak_s, now=now),
+            chat_s=watched.chat_offset(best.peak_s),
+        )
 
     @staticmethod
     def event_score(why: dict[str, float]) -> float:
@@ -533,8 +686,17 @@ class Supervisor:
                 self.release(channel)
                 continue
 
-            # Audio is the one expensive thing in this loop, so it runs on
-            # its own timer rather than every tick.
+            # Listening and looking are the expensive things in this loop, so
+            # they run on their own timer rather than every tick. The windows
+            # overlap, so a moment cannot fall between two reads.
+            if now - watched.senses_at >= SENSE_EVERY_S:
+                try:
+                    watched.read_senses(self.work_dir / "senses", now=now)
+                except Exception as exc:  # noqa: BLE001 - a deaf tick is not a dead one
+                    watched.senses_at = now
+                    watched.heard = watched.seen = None
+                    watched.senses = {"problems": [f"{type(exc).__name__}: {exc}"]}
+
             if now - watched.audio_at >= AUDIO_EVERY_S:
                 watched.audio_at = now
                 try:
@@ -560,12 +722,12 @@ class Supervisor:
                 watched.last_reason = "asleep"
                 continue
 
-            value, why, peak_s = self.score(watched)
-            watched.last_score = value
-            watched.last_why = why
-            watched.last_reason = max(why, key=why.get) if why else ""
+            found = self.score(watched, now=now)
+            watched.last_score = found.score
+            watched.last_why = found.why
+            watched.last_reason = found.top_reason
 
-            if value <= 0 or not why:
+            if not found:
                 continue
 
             # Two bars, and both are about whether this is worth anyone's
@@ -573,11 +735,10 @@ class Supervisor:
             # there is a clip at all. Without them the watcher cut its best
             # five minutes of nothing every hour - a betting screen with music
             # over it, scored 18.0, entirely on how many people were typing.
-            events = self.event_score(why)
-            if value < settings.live_min_score:
+            if found.score < settings.live_min_score:
                 watched.last_reason = "too weak"
                 continue
-            if events < settings.live_min_event_score:
+            if found.event_score < settings.live_min_event_score:
                 watched.last_reason = "nothing happened"
                 continue
             if now - watched.last_catch_at < COOLDOWN_S:
@@ -586,24 +747,17 @@ class Supervisor:
                 continue
 
             try:
-                caught.append(self.catch(watched, why=why, peak_s=peak_s, now=now))
+                caught.append(self.catch(watched, found=found, now=now))
                 watched.last_catch_at = now
             except Exception as exc:  # noqa: BLE001 - a failed cut is not fatal
                 self._note(f"{channel}: cut failed ({exc})")
 
         return caught
 
-    def catch(
-        self, watched: Watched, *, why: dict[str, float], peak_s: float, now: float
-    ) -> dict[str, Any]:
+    def catch(self, watched: Watched, *, found: Found, now: float) -> dict[str, Any]:
         """Cut the moment out of the buffer, reframe it, and record it."""
         held = watched.chat.log.recent()
-        # peak_s is an offset into the chat curve, which starts at the oldest
-        # message still held. Convert it back to seconds before the live edge,
-        # which is the only thing the buffer can be asked about.
-        origin = held[0].at_s if held else 0.0
-        newest = held[-1].at_s if held else 0.0
-        ago_s = max(0.0, newest - (origin + peak_s))
+        ago_s = found.ago_s
 
         out_dir = Path(settings.work_dir) / "catches"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -616,10 +770,15 @@ class Supervisor:
         # nobody understands; the tail is whatever chat says it is.
         trail_s = moments.moment_end(
             watched.chat.log.curve(),
-            peak_s,
+            found.chat_s,
             min_s=settings.live_trail_s,
             max_s=max(settings.live_trail_s, settings.live_max_clip_s - settings.live_lead_s),
         )
+        # ...but the future has not happened yet. A moment whose peak was ten
+        # seconds ago cannot have thirty seconds of tail, and asking the buffer
+        # for footage past the live edge gets whatever it has plus a shorter
+        # clip than the record claims. Clamp to what exists and record that.
+        trail_s = min(trail_s, ago_s)
         watched.buffer.extract(
             raw, ago_s=ago_s, lead_s=settings.live_lead_s, trail_s=trail_s
         )
@@ -633,19 +792,21 @@ class Supervisor:
         # the file it named existed only on the machine that made it.
         stored = self.publish_clip(final)
 
-        peak_at = origin + peak_s
-        mood = chatlib.mood_around(held, peak_at, window_s=8.0)
-        quotes = chatlib.quotes_around(held, peak_at, window_s=8.0)
+        mood = chatlib.mood_around(held, found.chat_s, window_s=8.0)
+        quotes = chatlib.quotes_around(held, found.chat_s, window_s=8.0)
+        why = found.why
 
         record = {
             "channel": watched.channel,
             "source_url": f"https://kick.com/{watched.channel}",
             "path": str(final),
             "storage_key": stored,
-            "at_s": round(peak_at, 2),
+            "at_s": round(found.chat_s, 2),
             "duration_s": round(settings.live_lead_s + trail_s, 1),
             "score": round(sum(why.values()), 3),
             "why": {k: round(v, 3) for k, v in sorted(why.items(), key=lambda kv: -kv[1])},
+            "heard": watched.senses.get("heard"),
+            "seen": watched.senses.get("seen"),
             "mood": mood,
             "quotes": _top_quotes(quotes),
             "peak_viewers": watched.viewers,

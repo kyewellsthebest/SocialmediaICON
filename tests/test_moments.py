@@ -19,6 +19,28 @@ def _messages(spec: list[tuple[float, str, str]]) -> list[chat.Message]:
     return [chat.Message(at_s=t, text=text, user=user) for t, text, user in spec]
 
 
+class _Heard:
+    """A hearing.Hearing with only the fields signals_from_hearing reads."""
+
+    def __init__(self, laughs=(), shouts=(), drops=()):
+        self.laughs, self.shouts, self.drops = list(laughs), list(shouts), list(drops)
+
+
+class _Seen:
+    """Likewise for watching.Watching."""
+
+    def __init__(self, surges=(), cuts=(), flashes=(), stillness=()):
+        self.surges, self.cuts = list(surges), list(cuts)
+        self.flashes, self.stillness = list(flashes), list(stillness)
+
+
+def _laughing_at(at: float, duration_s: float, *, length: float = 3.0) -> dict:
+    """Something the bot actually heard, so chat has something to corroborate."""
+    return moments.signals_from_hearing(
+        _Heard(laughs=[(at, at + length, 0.9)]), duration_s=duration_s
+    )
+
+
 class TestChatCurve:
     def test_a_quiet_stream_with_one_reaction_finds_the_reaction(self):
         # Two messages a second for five minutes, then forty in one second.
@@ -102,6 +124,9 @@ class TestFusion:
         curve = chat.build_curve(_messages(spec), duration_s=duration)
 
         signals = moments.signals_from_chat(curve, duration_s=duration)
+        # ...and the bot heard the room laugh, which is what chat is agreeing
+        # about. Chat on its own is no longer allowed to nominate anything.
+        signals |= _laughing_at(300.0, duration)
         found = moments.rank(signals, duration_s=duration, clip_s=30.0, top=3)
 
         assert found, "the fused signals should produce at least one moment"
@@ -117,11 +142,15 @@ class TestFusion:
             _messages([(60.0, "clip that", f"u{i}") for i in range(5)]), duration
         )
         signals = moments.signals_from_chat(curve, duration_s=duration)
+        signals |= _laughing_at(59.0, duration)
         best = moments.rank(signals, duration_s=duration, clip_s=20.0, top=1)[0]
 
         assert best.why, "a moment with no explanation is not usable"
         assert abs(sum(best.why.values()) - best.score) < 1e-6
-        assert best.top_reason() == "chat_request"
+        assert "chat_request" in best.why
+        assert best.top_reason() == "laughter", (
+            "what the bot heard outranks what chat said about it"
+        )
 
     def test_windows_do_not_overlap(self):
         duration = 600.0
@@ -195,6 +224,7 @@ class TestQuotesDoNotAssumeOrder:
         msgs = _messages(spec)
         curve = chat.build_curve(msgs, duration_s=duration)
         signals = moments.signals_from_chat(curve, msgs, duration_s=duration)
+        signals |= _laughing_at(100.0, duration)
         best = moments.rank(
             signals, duration_s=duration, clip_s=30.0, top=1, messages=msgs
         )[0]
@@ -280,9 +310,13 @@ class TestBackgroundIsNotAMoment:
     def _reaction(self, at: float = 200.0, size: int = 60) -> list[chat.Message]:
         return _messages([(at + (i % 25) * 0.12, "KEKW", f"r{i}") for i in range(size)])
 
-    def _rank(self, msgs, **kwargs):
+    def _rank(self, msgs, *, heard=None, seen=None, **kwargs):
         curve = chat.build_curve(msgs, duration_s=300.0, bucket_s=1.0)
         signals = moments.signals_from_chat(curve, messages=msgs, duration_s=300.0)
+        if heard is not None:
+            signals |= moments.signals_from_hearing(heard, duration_s=300.0)
+        if seen is not None:
+            signals |= moments.signals_from_watching(seen, duration_s=300.0)
         return moments.rank(signals, duration_s=300.0, clip_s=30.0, top=1,
                             messages=msgs, **kwargs)
 
@@ -294,9 +328,14 @@ class TestBackgroundIsNotAMoment:
 
     def test_the_same_channel_with_a_real_reaction_still_produces_one(self):
         """The bar has to reject nothing without also rejecting everything."""
-        found = self._rank(self._flat(per_second=1) + self._reaction())
+        found = self._rank(self._flat(per_second=1) + self._reaction(),
+                           heard=_Heard(laughs=[(200.0, 203.0, 0.9)]))
         assert found, "a burst on top of the same background must still be caught"
         assert found[0].peak_s == pytest.approx(200.0, abs=12.0)
+
+    def test_chat_reacting_to_something_unheard_and_unseen_produces_nothing(self):
+        """The rule, stated on its own. Half a Kick chat is the channel's emote."""
+        assert self._rank(self._flat(per_second=1) + self._reaction()) == []
 
     def _jittery(self, seconds: int = 300) -> list[chat.Message]:
         """A real chat wobbles. Nothing happens; the rate is not a straight line."""
@@ -315,8 +354,8 @@ class TestBackgroundIsNotAMoment:
         """With the bar off, the wobble does score - which is why the bar exists."""
         found = self._rank(self._jittery(), min_event_score=0.0)
         assert found, "the level does have an opinion; the bar is what ignores it"
-        assert set(found[0].why) <= moments.LEVELS
         assert found[0].event_score == 0.0
+        assert not (set(found[0].why) & moments.SENSED)
 
     def test_a_level_scores_zero_on_a_flat_curve(self):
         assert moments._excess([7.0] * 200) == [0.0] * 200
@@ -346,7 +385,7 @@ class TestBackgroundIsNotAMoment:
         msgs = self._flat(per_second=1) + self._reaction(at=150.0)
         # ...plus a crowd arriving well after, which moves the level only.
         msgs += _messages([(170.0 + i * 0.05, "hello", f"crowd{i}") for i in range(120)])
-        found = self._rank(msgs)
+        found = self._rank(msgs, heard=_Heard(laughs=[(150.0, 153.0, 0.9)]))
         assert found[0].peak_s == pytest.approx(150.0, abs=12.0)
 
 

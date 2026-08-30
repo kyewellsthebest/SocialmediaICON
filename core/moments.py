@@ -46,18 +46,48 @@ GRID_S = 1.0
 #: because a reaction is audible before it is visible, and because scene-cut
 #: density on a single-camera stream mostly measures the camera, not the event.
 WEIGHTS: dict[str, float] = {
-    "chat_request": 5.0,
-    "chat_burst": 3.0,
-    "chat_voices": 1.5,
-    "audio_jump": 2.0,
-    "audio_energy": 1.0,
+    # Heard and seen. A moment is a thing that happened in front of a camera.
+    "laughter": 5.0,
+    "motion_surge": 4.0,
+    "shout": 3.5,
+    "audio_drop": 2.0,
+    "flash": 1.0,
     "scene_cuts": 0.75,
+    "audio_jump": 1.5,
+    # Said. An audience agreeing that something happened, which is worth a
+    # great deal as confirmation and nothing at all on its own.
+    #
+    # These look small next to laughter at 5.0, and they are not: a clip
+    # request is painted across the ten seconds before it was typed, because
+    # that is how much of the past it could be about, so it accumulates ten
+    # buckets where a three-second laugh accumulates three. Weight per bucket
+    # is not weight per moment, and the numbers that matter are the totals -
+    # roughly 12 for a request against 13.5 for a laugh.
+    "chat_request": 1.2,
+    "chat_burst": 0.7,
     "heatmap": 3.0,
+    # Neither. How busy or loud things are in general.
+    "chat_voices": 0.4,
+    "audio_energy": 0.5,
 }
 
-#: Signals that are **events**: zero when nothing is happening, positive when
-#: something is. These are the only things that may nominate a moment.
-EVENTS = frozenset({"chat_request", "chat_burst", "audio_jump", "scene_cuts", "heatmap"})
+#: Signals that come from the stream itself - what the bot heard and what it
+#: saw. Only these may nominate a moment, because only these are evidence that
+#: something happened rather than evidence that people are present.
+SENSED = frozenset({
+    "laughter", "shout", "audio_drop", "audio_jump",
+    "motion_surge", "scene_cuts", "flash",
+})
+
+#: What the crowd thinks. Chat is the best confirmation available and the worst
+#: possible driver: half of any Kick chat is the channel's own emote pasted
+#: forty times, and a clip cut because a lot of people typed is a clip of
+#: people typing. It can raise a moment the senses already found and it can
+#: rank two of them against each other. It cannot make one.
+CROWD = frozenset({"chat_request", "chat_burst", "heatmap"})
+
+#: Kept for the parts of the pipeline that still ask, and for the dashboard.
+EVENTS = SENSED | CROWD
 
 #: Signals that are **levels**: always a value, because there is always a
 #: loudness and always a number of people talking. A level can corroborate an
@@ -69,9 +99,8 @@ EVENTS = frozenset({"chat_request", "chat_burst", "audio_jump", "scene_cuts", "h
 #: range cannot ever say "nothing here" - there is always a maximum.
 LEVELS = frozenset({"chat_voices", "audio_energy"})
 
-#: How much event evidence a window needs before it counts as a moment at all.
-#: In the same units as the score, so one weak burst clears it and background
-#: chatter does not.
+#: How much *sensed* evidence a window needs before it counts as a moment at
+#: all. In the same units as the score.
 MIN_EVENT_SCORE = 1.0
 
 
@@ -100,8 +129,13 @@ class Moment:
 
     @property
     def event_score(self) -> float:
-        """How much of the score came from something actually happening."""
-        return sum(v for k, v in self.why.items() if k in EVENTS)
+        """How much of the score came from something the bot heard or saw."""
+        return sum(v for k, v in self.why.items() if k in SENSED)
+
+    @property
+    def crowd_score(self) -> float:
+        """...and how much from chat agreeing about it afterwards."""
+        return sum(v for k, v in self.why.items() if k in CROWD)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +145,7 @@ class Moment:
             "peak_s": round(self.peak_s, 2),
             "score": round(self.score, 3),
             "event_score": round(self.event_score, 3),
+            "crowd_score": round(self.crowd_score, 3),
             "top_reason": self.top_reason(),
             "why": {k: round(v, 3) for k, v in sorted(self.why.items(), key=lambda kv: -kv[1])},
             # By frequency, not by arrival. Forty people typing the same three
@@ -238,27 +273,49 @@ def _resample(values: list[float], size: int) -> list[float]:
 # --- collecting the signals -------------------------------------------------
 
 
-def signals_from_chat(curve, messages=None, *, duration_s: float, grid_s: float = GRID_S) -> dict:  # noqa: ANN001
-    """Chat's three curves, on the grid. The cheapest and the most trusted."""
+def signals_from_chat_events(
+    *,
+    requests: list[float],
+    bursts: list[tuple[float, float]],
+    voices: list[float],
+    voices_grid_s: float = GRID_S,
+    duration_s: float,
+    grid_s: float = GRID_S,
+) -> dict:
+    """Chat's curves from events already located on whatever timeline is in use.
+
+    Split out because bursts and requests have to be *found* against the whole
+    five minutes chat remembers - a spike is only a spike next to half a minute
+    of history - while the scoring window is half a minute long. Detect wide,
+    score narrow.
+    """
     size = _grid(duration_s, grid_s)
-    out: dict[str, list[float]] = {}
+    return {
+        # Clip requests point backwards: by the time chat has typed it, the
+        # thing they want clipped has already happened. That asymmetry is the
+        # whole reason this is a window and not a point.
+        "chat_request": _spread(
+            [(t, 1.0) for t in requests], size, grid_s=grid_s, before=8.0, after=2.0
+        ),
+        "chat_burst": _spread(
+            [(t, min(1.0, ratio / 10.0)) for t, ratio in bursts],
+            size, grid_s=grid_s, before=4.0, after=3.0,
+        ),
+        # Not _normalise: see _excess. A busy channel is not a moment.
+        "chat_voices": _resample(_excess(voices, grid_s=voices_grid_s), size),
+    }
 
-    out["chat_request"] = _spread(
-        [(t, 1.0) for t, _ in curve.clip_requests()],
-        size, grid_s=grid_s, before=8.0, after=2.0,
-    )
-    # Clip requests point backwards: by the time chat has typed it, the thing
-    # they want clipped has already happened. That asymmetry is the whole
-    # reason this is a window and not a point.
-    out["chat_burst"] = _spread(
-        [(t, min(1.0, ratio / 10.0)) for t, ratio in curve.bursts()],
-        size, grid_s=grid_s, before=4.0, after=3.0,
-    )
-    # Not _normalise: see _excess. A busy channel is not a moment.
-    out["chat_voices"] = _resample(
-        _excess([float(v) for v in curve.voices], grid_s=curve.bucket_s or grid_s), size
-    )
 
+def signals_from_chat(curve, messages=None, *, duration_s: float, grid_s: float = GRID_S) -> dict:  # noqa: ANN001
+    """Chat's three curves, on the grid, all measured over the same window."""
+    out = signals_from_chat_events(
+        requests=[t for t, _ in curve.clip_requests()],
+        bursts=curve.bursts(),
+        voices=[float(v) for v in curve.voices],
+        voices_grid_s=curve.bucket_s or grid_s,
+        duration_s=duration_s,
+        grid_s=grid_s,
+    )
     if messages is not None:
         out["_messages"] = messages  # carried through for quoting, not scored
     return out
@@ -275,6 +332,55 @@ def signals_from_audio(env, *, duration_s: float, grid_s: float = GRID_S) -> dic
         # Loudness above its own recent normal. Music playing over a stream is
         # loud for twenty minutes and is not a moment for any of them.
         "audio_energy": _resample(_louder_than_usual(env.rms_db), size),
+    }
+
+
+def signals_from_hearing(heard, *, duration_s: float, grid_s: float = GRID_S) -> dict:  # noqa: ANN001
+    """What was heard, on the grid. See core.hearing for what any of it means."""
+    size = _grid(duration_s, grid_s)
+    out: dict[str, list[float]] = {}
+
+    # A laugh is a stretch, not an instant, and it carries its own confidence.
+    laughs = [0.0] * size
+    for start, end, confidence in heard.laughs:
+        for i in range(max(0, int(start / grid_s)), min(size, int(end / grid_s) + 1)):
+            laughs[i] = max(laughs[i], confidence)
+    out["laughter"] = laughs
+
+    # A raised voice points forwards: whatever caused it is already underway.
+    out["shout"] = _spread(
+        [(t, min(1.0, rise / 20.0)) for t, rise in heard.shouts],
+        size, grid_s=grid_s, before=1.5, after=3.0,
+    )
+    # A room going quiet points the other way - the pause is the setup, and
+    # the thing worth watching is what happens next.
+    out["audio_drop"] = _spread(
+        [(start, 1.0) for start, _ in heard.drops],
+        size, grid_s=grid_s, before=1.0, after=4.0,
+    )
+    return out
+
+
+def signals_from_watching(seen, *, duration_s: float, grid_s: float = GRID_S) -> dict:  # noqa: ANN001
+    """What was seen, on the grid. See core.watching."""
+    size = _grid(duration_s, grid_s)
+    surges = _spread(
+        [(t, min(1.0, (size_ - 1.0) / 4.0)) for t, size_ in seen.surges],
+        size, grid_s=grid_s, before=1.5, after=2.5,
+    )
+    cuts = _spread(
+        [(t, 1.0) for t in seen.cuts], size, grid_s=grid_s, before=0.5, after=1.5
+    )
+    flashes = _spread(
+        [(t, 1.0) for t in seen.flashes], size, grid_s=grid_s, before=0.5, after=1.5
+    )
+    # Nothing moving is the opposite of a moment. Subtracted rather than
+    # ignored, so a coincidental cut cannot carry an empty chair.
+    dead = _from_ranges(list(seen.stillness), size, grid_s=grid_s, weight=1.0)
+    return {
+        "motion_surge": [v * (1.0 - d) for v, d in zip(surges, dead, strict=True)],
+        "scene_cuts": [v * (1.0 - d) for v, d in zip(cuts, dead, strict=True)],
+        "flash": [v * (1.0 - d) for v, d in zip(flashes, dead, strict=True)],
     }
 
 
@@ -355,11 +461,17 @@ def rank(
     second apart, and a page needs ten different moments, not one moment ten
     times.
 
-    A window with no event evidence is not returned at all, whatever its total.
-    Levels are always positive - there is always a loudest second and a
-    busiest second - so a ranking that lets them stand alone will always
-    return its favourite five minutes of nothing, confidently and with a
-    score. Both worthless clips this rule exists for were pure chat_voices.
+    A window with no *sensed* evidence is not returned at all, whatever its
+    total. Two rules are folded into that one sentence and both were paid for:
+
+    Levels are always positive - there is always a loudest second and a busiest
+    second - so a ranking that lets them stand alone will always return its
+    favourite five minutes of nothing, confidently and with a score.
+
+    And chat is not evidence that something happened. It is evidence that
+    people are present and typing, which on a big Kick channel they are doing
+    at four hundred messages a minute regardless. Chat can raise a moment the
+    senses already found; it cannot nominate one.
     """
     total, parts = fuse(signals, duration_s=duration_s, grid_s=grid_s, weights=weights)
     width = max(1, int(clip_s / grid_s))
@@ -370,7 +482,7 @@ def rank(
     # the total: a level drifting up two seconds later would otherwise pull the
     # peak - and with it the quotes, the clip's centre and its length - away
     # from the thing that actually happened.
-    firing = [name for name in parts if name in EVENTS]
+    firing = [name for name in parts if name in SENSED]
     events = [sum(parts[name][i] for name in firing) for i in range(len(total))]
 
     # Prefix sums: every window total in one pass instead of width per window.

@@ -11,9 +11,9 @@ twice to prove it.
 from __future__ import annotations
 
 import pytest
+import synth_video as clips
 
 from core import watching
-from tests import synth_video as clips
 
 
 @pytest.fixture(scope="module")

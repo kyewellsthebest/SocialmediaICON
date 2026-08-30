@@ -15,9 +15,9 @@ measured is the thing the module claims to measure.
 from __future__ import annotations
 
 import pytest
+import synth_audio as synth
 
 from core import hearing
-from tests import synth_audio as synth
 
 
 @pytest.fixture(scope="module")
