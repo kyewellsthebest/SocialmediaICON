@@ -377,6 +377,22 @@ document.addEventListener("click", async (event) => {
       return renderLive();
     }
     if (t.id === "live-refresh") return withBusy(t, renderLive);
+    if (t.id === "live-why") {
+      const d = await withBusy(t, () => api("/live/debug"));
+      const fail = (d.recent_failures || [])[0];
+      $("#live-why-out").innerHTML =
+        `<p style="margin:10px 0 8px">${pill("diagnosis", "warning")}
+           <span class="muted">${esc(d.verdict || "no verdict")}</span></p>
+         <div class="stats">
+           ${stat(d.web?.live_enabled ? "on" : "OFF", "web live_enabled", !d.web?.live_enabled)}
+           ${stat(d.queue?.workers_listening_on_live?.length ?? 0, "workers on live",
+                  !(d.queue?.workers_listening_on_live || []).length)}
+           ${stat(d.queue?.waiting ?? "—", "queued")}
+           ${stat(d.queue?.failed ?? "—", "failed", (d.queue?.failed || 0) > 0)}
+         </div>` +
+        (fail ? `<pre class="raw">${esc(fail.error || "")}</pre>` : "");
+      return;
+    }
 
     if (t.dataset.keep) {
       await withBusy(t, () => api(`/live/catches/${t.dataset.keep}/keep`, { method: "POST" }));

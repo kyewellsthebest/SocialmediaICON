@@ -177,3 +177,114 @@ def _row(c: Catch) -> dict[str, Any]:
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "has_video": bool(c.storage_key and Path(c.storage_key).exists()),
     }
+
+
+@router.get("/debug")
+def debug() -> dict[str, Any]:
+    """Why is nothing happening? Answered from the queue itself.
+
+    Start enqueues a job in one process and a worker in another runs it, so
+    when nothing happens there are four separate places it can have gone: the
+    variable is missing on the web side, the job never reached Redis, no worker
+    is listening on the queue, or the job ran and raised. From the dashboard
+    all four look identical, and each round of guessing costs a deploy.
+
+    This reads the queue directly and says which one it is - including the
+    traceback of the last failure, which is the thing there was previously no
+    way to see at all.
+    """
+    from core import livestate
+
+    out: dict[str, Any] = {
+        "web": {
+            "live_enabled": settings.live_enabled,
+            "has_redis": settings.has_redis,
+            "has_db": settings.has_db,
+            "slots": settings.live_slots,
+        },
+        "snapshot": livestate.read(),
+    }
+
+    # Migrations only run on web, so a web service that spent the morning
+    # crash-looping may never have created this. The watcher counts the day's
+    # clips against it on every tick, so a missing table stops every cut.
+    try:
+        from sqlalchemy import inspect
+
+        from core.db import get_engine
+
+        out["catches_table"] = "catches" in inspect(get_engine()).get_table_names()
+    except Exception as exc:  # noqa: BLE001
+        out["catches_table"] = f"could not check: {type(exc).__name__}: {exc}"
+
+    if not settings.has_redis:
+        out["verdict"] = "No Redis on the web service, so Start cannot queue anything."
+        return out
+
+    try:
+        from rq import Queue, Worker
+
+        from worker.queue import get_redis
+
+        redis = get_redis()
+        redis.ping()
+        queue = Queue("live", connection=redis)
+
+        workers = Worker.all(connection=redis)
+        listening = [
+            {"name": w.name, "state": str(w.get_state()), "job": w.get_current_job_id()}
+            for w in workers
+            if "live" in [q.name for q in w.queues]
+        ]
+
+        failed = queue.failed_job_registry
+        recent: list[dict[str, Any]] = []
+        for job_id in failed.get_job_ids()[-3:]:
+            try:
+                job = queue.fetch_job(job_id)
+                recent.append(
+                    {
+                        "id": job_id,
+                        "ended_at": str(getattr(job, "ended_at", "")),
+                        # The traceback is the whole point of this endpoint.
+                        "error": (getattr(job, "exc_info", "") or "")[-1500:],
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                recent.append({"id": job_id, "error": f"could not fetch: {exc}"})
+
+        out["queue"] = {
+            "waiting": len(queue),
+            "started": len(queue.started_job_registry),
+            "failed": len(failed),
+            "workers_listening_on_live": listening,
+        }
+        out["recent_failures"] = recent
+
+        if out.get("catches_table") is False:
+            out["verdict"] = (
+                "The 'catches' table does not exist - migrations have not run. "
+                "Redeploy web (it runs alembic upgrade head at boot), or the "
+                "watcher will run but never be allowed to cut."
+            )
+        elif not listening:
+            out["verdict"] = (
+                "No worker is listening on the 'live' queue. The worker service "
+                "is either not running this build, or has a custom start command "
+                "that bypasses scripts/start.sh."
+            )
+        elif recent:
+            out["verdict"] = "A job ran and raised - see recent_failures[].error."
+        elif len(queue):
+            out["verdict"] = "A job is queued and no worker has taken it yet."
+        elif out["snapshot"]:
+            out["verdict"] = "A snapshot exists; the watcher is reporting state."
+        else:
+            out["verdict"] = (
+                "Queue empty, no failures, no snapshot: the job finished without "
+                "publishing. Check the worker's LIVE_ENABLED."
+            )
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must never 500
+        out["verdict"] = f"Could not read the queue: {type(exc).__name__}: {exc}"
+
+    return out

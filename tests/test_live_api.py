@@ -217,3 +217,26 @@ class TestNoSilentFailures:
         assert result["ok"] is False
         found = livestate.read()
         assert found and "kick said no" in found["hint"]
+
+
+class TestTheDebugEndpoint:
+    """Four different faults look identical from the dashboard."""
+
+    def test_no_redis_is_named_outright(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "redis_url", None)
+        body = client.get("/api/live/debug", headers=_auth()).json()
+        assert "No Redis" in body["verdict"]
+        assert body["web"]["has_redis"] is False
+
+    def test_it_never_500s_when_the_queue_is_unreachable(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "redis_url", "redis://127.0.0.1:1/0")
+        response = client.get("/api/live/debug", headers=_auth())
+        assert response.status_code == 200, "a diagnostic that crashes diagnoses nothing"
+        assert "verdict" in response.json()
+
+    def test_it_reports_the_web_side_settings(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(settings, "redis_url", None)
+        body = client.get("/api/live/debug", headers=_auth()).json()
+        assert body["web"]["live_enabled"] is True
+        assert body["web"]["slots"] == settings.live_slots

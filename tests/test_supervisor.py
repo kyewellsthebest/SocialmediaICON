@@ -225,3 +225,52 @@ class TestWhatTheDashboardSees:
             "subprocess.run", lambda *a, **k: pytest.fail("signals() decoded video")
         )
         _watched(messages=_chatter()).signals()
+
+
+class TestADeadDatabaseDoesNotStopTheWatch:
+    """The bug that killed the first live run.
+
+    allowed() runs on every tick and hit the database. The 'catches' table did
+    not exist yet, so the very first tick threw and took the whole supervisor
+    down - three buffers, three chat sockets, everything - about a second after
+    Start was pressed. From the dashboard it looked like a dead button.
+    """
+
+    def _broken(self, sup, monkeypatch):
+        def explode(**_kwargs):
+            raise RuntimeError('relation "catches" does not exist')
+
+        monkeypatch.setattr(sup, "recent_catches", explode)
+
+    def test_allowed_refuses_rather_than_raising(self, monkeypatch):
+        sup = Supervisor()
+        self._broken(sup, monkeypatch)
+        assert sup.allowed() is False, "cutting without knowing the count breaks the caps"
+
+    def test_the_reason_is_recorded_where_the_page_can_show_it(self, monkeypatch):
+        sup = Supervisor()
+        self._broken(sup, monkeypatch)
+        sup.allowed()
+        assert any("daily cap" in e for e in sup.errors)
+        assert any("catches" in e for e in sup.errors)
+
+    def test_a_tick_survives_it_and_keeps_the_streams(self, monkeypatch):
+        sup = Supervisor()
+        self._broken(sup, monkeypatch)
+        sup.watching["x"] = _watched(messages=_chatter(burst_at=150.0))
+        sup.tick()  # must not raise
+        assert "x" in sup.watching, "a database fault must not drop the buffers"
+
+    def test_status_never_throws_over_it(self, monkeypatch):
+        sup = Supervisor()
+        self._broken(sup, monkeypatch)
+        found = sup.status()
+        assert found["caps"]["allowed_now"] is False
+
+    def test_a_catch_with_no_timestamps_does_not_crash_the_gap_check(self, monkeypatch):
+        """max() over an empty generator is a ValueError, not a cap decision."""
+        sup = Supervisor()
+        monkeypatch.setattr(
+            sup, "recent_catches", lambda **k: [type("Row", (), {"created_at": None})()]
+        )
+        assert sup.allowed() is True

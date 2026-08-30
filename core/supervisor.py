@@ -337,16 +337,35 @@ class Supervisor:
 
         Counted against the database rather than a counter in memory, so a
         restart cannot quietly reset the day's allowance.
+
+        A database that cannot be reached refuses the cut but does not stop
+        the watch. This is deliberate and it is the bug that killed the first
+        live run: the check ran on every tick, threw, and took the whole
+        supervisor down with it - three buffers and all - because the table it
+        counts had not been created yet. Watching is still worth doing with no
+        database; cutting without knowing the day's count is not, because the
+        caps are the one thing here that must not be exceeded by accident.
         """
         now = time.time() if now is None else now
-        recent = self.recent_catches(since=datetime.fromtimestamp(now, UTC) - timedelta(days=1))
+        try:
+            recent = self.recent_catches(
+                since=datetime.fromtimestamp(now, UTC) - timedelta(days=1)
+            )
+        except Exception as exc:  # noqa: BLE001 - a dead database is not a reason to stop
+            self._note(f"cannot check the daily cap, so not cutting ({exc})")
+            return False
+
         if len(recent) >= settings.live_clips_per_day:
             return False
         if recent:
-            newest = max(r.created_at for r in recent if r.created_at)
-            gap = (datetime.fromtimestamp(now, UTC) - newest).total_seconds() / 60.0
-            if gap < settings.live_min_gap_minutes:
-                return False
+            newest = max(
+                (r.created_at for r in recent if r.created_at),
+                default=None,
+            )
+            if newest is not None:
+                gap = (datetime.fromtimestamp(now, UTC) - newest).total_seconds() / 60.0
+                if gap < settings.live_min_gap_minutes:
+                    return False
         return True
 
     def recent_catches(self, *, since: datetime) -> list:
@@ -391,11 +410,19 @@ class Supervisor:
             "caps": {
                 "per_day": settings.live_clips_per_day,
                 "min_gap_minutes": settings.live_min_gap_minutes,
-                "allowed_now": self.allowed(),
+                # allowed() already swallows its own failures; this is only
+                # here so a status read can never be the thing that throws.
+                "allowed_now": self._allowed_quietly(),
             },
             "streams": [w.signals() for w in self.watching.values()],
             "errors": self.errors[-6:],
         }
+
+    def _allowed_quietly(self) -> bool | None:
+        try:
+            return self.allowed()
+        except Exception:  # noqa: BLE001 - None reads as "unknown" on the page
+            return None
 
     def stop(self) -> None:
         self.running = False
