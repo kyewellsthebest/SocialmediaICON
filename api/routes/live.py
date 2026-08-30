@@ -203,10 +203,19 @@ def spectrogram(channel: str) -> Response:
 
 @router.get("/catches")
 def catches(
-    limit: int = Query(30, ge=1, le=200), db: Session = Depends(get_db)
+    limit: int = Query(30, ge=1, le=200),
+    by: str = Query("best", pattern="^(best|newest)$"),
+    db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """What has been caught, newest first."""
-    rows = db.query(Catch).order_by(Catch.id.desc()).limit(limit).all()
+    # Best first, not newest first. With no gate between clips the list is an
+    # ordering rather than a diary, and the whole point of ranking them is
+    # that the top of the page is the top of the ranking.
+    order = (
+        [Catch.id.desc()] if by == "newest"
+        else [Catch.rank_score.desc().nullslast(), Catch.id.desc()]
+    )
+    rows = db.query(Catch).order_by(*order).limit(limit).all()
     return [_row(c) for c in rows]
 
 
@@ -296,6 +305,9 @@ def _row(c: Catch) -> dict[str, Any]:
         # What a model said when it watched this before it became a clip.
         "verdict": _verdict_of(c),
         "transcript": c.transcript or "",
+        "rank_score": c.rank_score,
+        "rank": c.rank or {},
+        "evidence": c.evidence or {},
         "quotes": c.quotes or [],
         "peak_viewers": c.peak_viewers,
         "status": c.status,

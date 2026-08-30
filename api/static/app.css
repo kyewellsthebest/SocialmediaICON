@@ -289,6 +289,21 @@ main { padding: 14px; display: grid; gap: 12px; max-width: 720px; margin: 0 auto
 .bar .fill { display: block; height: 100%; background: var(--accent); }
 .bar .n { font-family: var(--mono); font-size: 11px; text-align: right; color: var(--ink-2); }
 
+/* ---------- how a clip ranks ---------- */
+
+/* One bar, five segments, widths in proportion. The number is the answer and
+   the shape is why - a clip carried by one enormous part looks different from
+   one that scored on everything, and that difference is worth seeing before
+   any of it is read. */
+.rankbar { display: flex; align-items: center; gap: 2px; }
+.rankbar b { font-size: 20px; margin-right: 8px; color: var(--accent); }
+.rankbar .seg { height: 10px; border-radius: 2px; background: var(--rule-hard); min-width: 2px; }
+.rankbar .seg[data-part="event"] { background: var(--accent); }
+.rankbar .seg[data-part="verdict"] { background: var(--accent-soft); }
+.rankbar .seg[data-part="reaction"] { background: var(--good); }
+.rankbar .seg[data-part="production"] { background: var(--warning); }
+.rankbar .seg[data-part="reach"] { background: var(--ink-3); }
+
 /* ---------- clips ---------- */
 
 /* A clip is judged as a phone sees it, so it is shown at the shape it will

@@ -20,6 +20,7 @@ const state = {
   // Which stream is allowed to make noise. Three players talking over each
   // other is unusable, so it is one at a time or none.
   sound: null,
+  clipOrder: localStorage.getItem("clipengine.cliporder") || "best",
   video: localStorage.getItem(VIDEO_KEY) !== "off",
 };
 
@@ -479,7 +480,7 @@ function fitBars(values, most) {
 
 async function renderClips() {
   let rows;
-  try { rows = await api("/live/catches?limit=40"); } catch (err) {
+  try { rows = await api(`/live/catches?limit=60&by=${state.clipOrder}`); } catch (err) {
     if (err.message !== "unauthorised") toast(err.message, "critical");
     return;
   }
@@ -493,6 +494,8 @@ async function renderClips() {
 
 function clipCard(c) {
   const mood = c.mood || {};
+  const rank = c.rank || {};
+  const parts = Object.entries(rank.parts || {});
   return `<div class="card clip">
     <div class="spread">
       <div>
@@ -502,6 +505,14 @@ function clipCard(c) {
       </div>
       <button class="btn btn-quiet" data-inspect="${c.id}">Inspect</button>
     </div>
+
+    ${c.rank_score != null ? `<div class="rankbar">
+      <b class="mono">${c.rank_score.toFixed(0)}</b>
+      ${parts.map(([name, v]) =>
+        `<span class="seg" style="flex:${Math.max(v, 0.02)}"
+           title="${esc(name)} ${(v * 100).toFixed(0)}%" data-part="${esc(name)}"></span>`
+      ).join("")}
+    </div>` : ""}
 
     ${c.has_video
       ? `<video class="portrait" controls preload="metadata" playsinline
@@ -514,7 +525,9 @@ function clipCard(c) {
         : c.verdict?.watched ? "good" : "warning"}">${
         c.approved ? "kept" : c.verdict?.kind || (c.verdict?.watched ? "caught" : "unwatched")
       }</span>
-      <span class="muted">${(c.score ?? 0).toFixed(1)} · ${Math.round(c.duration_s || 0)}s</span>
+      <span class="muted">${rank.parts
+        ? esc(Object.entries(rank.parts).sort((a, b) => b[1] - a[1])[0][0])
+        : (c.score ?? 0).toFixed(1)} · ${Math.round(c.duration_s || 0)}s</span>
       <span style="flex:1 1 auto"></span>
       <button class="btn" data-keep="${c.id}" ${c.approved ? "disabled" : ""}>Keep</button>
       <button class="btn btn-danger" data-drop="${c.id}">Discard</button>
@@ -549,14 +562,22 @@ function showInspect(id) {
       ${seenBy.watched
         ? `<p><b>${esc(seenBy.happening || "\u2014")}</b></p>
            <p class="muted">${esc(seenBy.why || "")}</p>
-           ${seenBy.kind ? `<div class="row">${pill(seenBy.kind,
-              seenBy.worth_it ? "good" : "warning")}</div>` : ""}`
+           <div class="row">
+             ${seenBy.kind ? pill(seenBy.kind, seenBy.worth_it ? "good" : "warning") : ""}
+             ${seenBy.setting ? pill(seenBy.setting) : ""}
+             ${(seenBy.faces || []).map((f) => pill(f.expression || "")).join("")}
+           </div>`
         : `<p class="empty-note">Nothing watched this before it was cut${
             (seenBy.problems || []).length ? ` \u2014 ${esc(seenBy.problems.join("; "))}` : ""
           }. Clips cut before the check existed all read this way.</p>`}
     </div>
+    ${Object.keys(rank.parts || {}).length
+      ? `<div><p class="label" style="margin-bottom:6px">How it ranks, part by part</p>
+           ${bars(Object.entries(rank.parts).map(([k, v]) => [k, v * 100]))}
+           <p class="muted">${c.rank_score?.toFixed(0)} out of 100.
+             ${rank.detail?.rejected ? esc(rank.detail.rejected) : ""}</p></div>` : ""}
     <div class="stats">
-      ${stat((c.score ?? 0).toFixed(1), "score")}
+      ${stat((c.rank_score ?? c.score ?? 0).toFixed(0), "rank")}
       ${stat(eventScore(c.why).toFixed(1), "from events", eventScore(c.why) <= 0)}
       ${stat(mood.background ? "background" : mood.dominant || "—", "mood",
              !!mood.background)}

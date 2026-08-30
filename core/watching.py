@@ -39,10 +39,16 @@ log = logging.getLogger(__name__)
 #: frame, small enough that a whole clip decodes in well under a second.
 WIDTH, HEIGHT = 96, 54
 STRIDE = WIDTH * HEIGHT
-#: Ten frames a second. Four - what the crop tracker uses - is enough to follow
-#: a person walking and too coarse to catch a punch, a flinch or a fall, which
-#: are the events worth clipping.
-FPS = 10.0
+#: Twenty frames a second. Four - what the crop tracker uses - is enough to
+#: follow a person walking and too coarse to catch a punch, a flinch or a
+#: fall, which are the events worth clipping.
+#:
+#: Raising it is nearly free and that is worth knowing: the decoder has to
+#: decode every frame of the source whatever rate is asked for, so the cost is
+#: the source, not the sample. Measured on 30 seconds of 1080p60 - 1.61s at
+#: ten frames a second, 1.80s at twenty, 2.75s at all sixty. The sampling is
+#: not what any of that is paying for.
+FPS = 20.0
 #: How far back "usual for this stream" reaches.
 BASELINE_S = 30.0
 #: No verdict before there is a past to compare against.

@@ -63,6 +63,11 @@ class Verdict:
     happening: str = ""
     #: What kind of moment - funny, shocking, skilful, an argument, nothing.
     kind: str = ""
+    #: Where this is and what they are doing. A shocked face at a roulette
+    #: wheel is a different clip from a shocked face in a supermarket.
+    setting: str = ""
+    #: What was on the faces, which is the thing arithmetic cannot reach.
+    faces: list[dict[str, Any]] = field(default_factory=list)
     #: Why it is or is not worth clipping, in the model's words.
     why: str = ""
     #: A tighter cut, if the moment turned out to sit inside the window.
@@ -82,6 +87,8 @@ class Verdict:
             "confidence": round(self.confidence, 3),
             "happening": self.happening,
             "kind": self.kind,
+            "setting": self.setting,
+            "faces": self.faces,
             "why": self.why,
             "best_start_s": self.best_start_s,
             "best_end_s": self.best_end_s,
@@ -165,6 +172,18 @@ brought to you; it is not proof that anything happened. Software hears a laugh
 and sees motion; it cannot tell a man laughing at nothing from a man falling
 off a chair, and that difference is the entire job.
 
+Read the faces. Where a frame is a close crop of somebody's face, that is
+because the machine found a face there and could not tell you what was on it.
+Say what you see - shocked, laughing, delighted, furious, bored, embarrassed,
+about to cry - and say when a face changes from one to another, because a face
+changing is usually the moment itself. Say when you cannot tell.
+
+Say what the situation is, too, not only what the reaction is. Somebody at a
+slot machine, at a poker table, walking down a street at night, in a club, in
+a car, at a desk, in a ring - the setting is why a reaction means what it
+means, and a shocked face at a roulette wheel is a different clip from a
+shocked face in a supermarket.
+
 A clip is worth posting when a stranger with no context would watch it to the
 end. That usually means something visibly or audibly happens: a reaction, a
 surprise, a physical event, a joke that lands, an argument, a genuinely
@@ -192,7 +211,7 @@ so rather than repeating what the machine claimed."""
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["happening", "kind", "worth_it", "confidence", "why"],
+    "required": ["happening", "kind", "worth_it", "confidence", "why", "setting"],
     "properties": {
         "happening": {
             "type": "string",
@@ -210,6 +229,25 @@ SCHEMA = {
             "description": "Would a stranger with no context watch this to the end?",
         },
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "setting": {
+            "type": "string",
+            "description": "Where this is and what they are doing - gambling at a "
+                           "slot machine, walking a street at night, at a desk, in a "
+                           "club, in a ring. One short phrase.",
+        },
+        "faces": {
+            "type": "array",
+            "description": "What is on the faces you can see, in order.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "expression": {"type": "string"},
+                    "at_s": {"type": ["number", "null"]},
+                    "changed_from": {"type": "string"},
+                },
+            },
+        },
         "why": {"type": "string", "description": "Why, in one or two sentences."},
         "best_start_s": {
             "type": ["number", "null"],
@@ -251,6 +289,7 @@ def look(
     quotes: list[str] | None = None,
     about: str = "",
     said: str = "",
+    faces_at: list[float] | None = None,
     count: int = FRAMES,
 ) -> Verdict:
     """Watch a candidate and say whether it is worth posting.
@@ -285,6 +324,13 @@ def look(
     for at_s, data in frames:
         content.append({"type": "text", "text": f"t = {at_s:.1f}s"})
         content.append(_image_block(data))
+
+    # Close crops of the faces the machine found, which is where the answer
+    # usually is. A face is a small part of a wide frame, so a whole frame
+    # spends most of its tokens on the wall behind somebody's head.
+    for at_s, data in _face_crops(clip, where=faces_at, count=count // 3):
+        content.append({"type": "text", "text": f"a face at t = {at_s:.1f}s"})
+        content.append(_image_block(data))
     content.append({
         "type": "text",
         "text": "Is anything actually happening here, and is it worth posting?",
@@ -317,6 +363,8 @@ def look(
         confidence=float(payload.get("confidence") or 0.0),
         happening=str(payload.get("happening") or ""),
         kind=str(payload.get("kind") or ""),
+        setting=str(payload.get("setting") or ""),
+        faces=payload.get("faces") or [],
         why=str(payload.get("why") or ""),
         best_start_s=_number(payload.get("best_start_s")),
         best_end_s=_number(payload.get("best_end_s")),
@@ -378,3 +426,33 @@ def _describe_quotes(quotes: list[str] | None) -> str:
     if not quotes:
         return "(chat said nothing notable)"
     return "\n".join(f"- {q}" for q in quotes[:8])
+
+
+def _face_crops(
+    clip: Path | str, *, where: list[float] | None, count: int = 4, width: int = 320
+) -> list[tuple[float, bytes]]:
+    """Close crops of the faces the machine found, as JPEGs.
+
+    A face is a small part of a wide frame, so a whole frame spends most of its
+    tokens on the wall behind somebody's head. These are where the answer
+    usually is: what is on the face, and whether it changed.
+
+    Returns nothing rather than raising - a missing crop should cost a little
+    accuracy on the expression, not the clip.
+    """
+    if not where:
+        return []
+    require_binaries()
+    picked = sorted(where)[: max(1, count)]
+    out: list[tuple[float, bytes]] = []
+    for at_s in picked:
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, at_s):.2f}",
+             "-i", str(clip), "-frames:v", "1",
+             "-vf", f"scale={width}:-2", "-q:v", "5",
+             "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
+            capture_output=True,
+        )
+        if proc.stdout.startswith(b"\xff\xd8\xff"):
+            out.append((at_s, proc.stdout))
+    return out

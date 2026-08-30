@@ -77,7 +77,15 @@ class Heard:
         self.laughs, self.shouts, self.drops = list(laughs), list(shouts), list(drops)
 
     def as_dict(self):
-        return {"laughs": self.laughs, "shouts": self.shouts, "drops": self.drops}
+        return {
+            "laughs": [
+                {"start_s": a, "end_s": b, "confidence": c} for a, b, c in self.laughs
+            ],
+            "shouts": [{"at_s": t, "rise_db": d} for t, d in self.shouts],
+            "drops": [{"start_s": a, "end_s": b} for a, b in self.drops],
+            "speech_share": 0.5,
+            "music_share": 0.05,
+        }
 
 
 class Seen:
@@ -88,7 +96,12 @@ class Seen:
         self.flashes, self.stillness = list(flashes), list(stillness)
 
     def as_dict(self):
-        return {"surges": self.surges, "cuts": self.cuts}
+        return {
+            "surges": [{"at_s": t, "size": v} for t, v in self.surges],
+            "cuts": list(self.cuts),
+            "still_s": 0.0,
+            "duration_s": 30.0,
+        }
 
 
 #: Chat offsets are measured from when the buffer opened, so "the live edge is
@@ -187,10 +200,24 @@ class TestTheCaps:
             for i in range(count)
         ]
 
-    def test_the_daily_cap_stops_further_catches(self, monkeypatch):
+    def test_the_days_number_does_not_block_the_next_clip(self, monkeypatch):
+        """It is a target for how many are kept, not a gate on cutting.
+
+        Blocking was the old rule and it meant the day's allowance went to
+        whatever happened first, which on a live stream is not the same thing
+        as whatever was best. The weakest are trimmed as they are stored.
+        """
         sup = Supervisor()
         monkeypatch.setattr(
             sup, "recent_catches", lambda since: self._rows(settings.live_clips_per_day)
+        )
+        assert sup.allowed() is True
+
+    def test_but_something_has_gone_wrong_well_past_it(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(
+            sup, "recent_catches",
+            lambda since: self._rows(settings.live_clips_per_day * 3 + 1),
         )
         assert sup.allowed() is False
 
@@ -199,15 +226,15 @@ class TestTheCaps:
         monkeypatch.setattr(sup, "recent_catches", lambda since: self._rows(3))
         assert sup.allowed() is True
 
-    def test_the_hourly_gap_is_enforced(self, monkeypatch):
-        sup = Supervisor()
-        monkeypatch.setattr(sup, "recent_catches", lambda since: self._rows(1, 10))
-        assert sup.allowed() is False, "a clip ten minutes ago must block the next"
+    def test_there_is_no_gap_between_clips_any_more(self, monkeypatch):
+        """The single worst rule in the system.
 
-    def test_the_gap_opens_once_it_has_passed(self, monkeypatch):
+        The buffer remembers five minutes and the gap was an hour, so a moment
+        that was not cut immediately was gone before permission arrived - and
+        the bot clipped whatever happened to be happening when the hour turned.
+        """
         sup = Supervisor()
-        gap = settings.live_min_gap_minutes + 5
-        monkeypatch.setattr(sup, "recent_catches", lambda since: self._rows(1, gap))
+        monkeypatch.setattr(sup, "recent_catches", lambda since: self._rows(1, 1))
         assert sup.allowed() is True
 
     def test_the_cap_is_counted_from_storage_not_memory(self, monkeypatch):
@@ -683,21 +710,20 @@ class TestWhyItIsNotCutting:
         assert found["reason"] == "no database"
         assert "catches" in found["detail"]
 
-    def test_the_hourly_gap_says_how_long_is_left(self, monkeypatch):
+    def test_a_clip_a_minute_ago_is_no_longer_a_reason(self, monkeypatch):
+        """The hourly gap is gone; it was the worst rule in the system."""
         sup = Supervisor()
-        monkeypatch.setattr(sup, "recent_catches", lambda **k: self._rows(1, 10))
-        found = sup.cap_state()
-        assert found["reason"] == "hourly gap"
-        assert found["wait_minutes"] == settings.live_min_gap_minutes - 10
+        monkeypatch.setattr(sup, "recent_catches", lambda **k: self._rows(1, 1))
+        assert sup.cap_state()["reason"] == "clear"
 
-    def test_the_daily_cap_says_so_separately(self, monkeypatch):
+    def test_far_past_the_days_number_says_so(self, monkeypatch):
         sup = Supervisor()
         monkeypatch.setattr(
-            sup, "recent_catches", lambda **k: self._rows(settings.live_clips_per_day)
+            sup, "recent_catches",
+            lambda **k: self._rows(settings.live_clips_per_day * 3 + 1),
         )
         found = sup.cap_state()
-        assert found["reason"] == "daily cap"
-        assert found["cut_today"] == settings.live_clips_per_day
+        assert "past the day" in found["reason"]
 
     def test_clear_reports_how_many_are_gone(self, monkeypatch):
         sup = Supervisor()
@@ -711,7 +737,10 @@ class TestWhyItIsNotCutting:
         sup = Supervisor()
         monkeypatch.setattr(sup, "recent_catches", lambda **k: self._rows(3))
         assert sup.allowed() is True
-        monkeypatch.setattr(sup, "recent_catches", lambda **k: self._rows(1, 10))
+        monkeypatch.setattr(
+            sup, "recent_catches",
+            lambda **k: self._rows(settings.live_clips_per_day * 3 + 1),
+        )
         assert sup.allowed() is False
 
     def test_the_reason_reaches_the_dashboard(self, monkeypatch):

@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from core import chat as chatlib
-from core import live, livechat, moments, reframe, roster
+from core import live, livechat, moments, ranking, reframe, roster
 from core.config import settings
 
 log = logging.getLogger(__name__)
@@ -140,6 +140,7 @@ class Watched:
     #: as dicts because the dashboard needs the summary.
     heard: Any = None
     seen: Any = None
+    people: Any = None
     senses_at: float = 0.0
     sense_window_s: float = 0.0
     senses: dict[str, Any] = field(default_factory=dict)
@@ -288,7 +289,7 @@ class Watched:
         looks at the stream itself. Everything the scorer treats as evidence
         comes from here; chat only ever gets to agree with it.
         """
-        from core import hearing, watching
+        from core import faces, hearing, watching
 
         now = time.time() if now is None else now
         joined, held = self.window(SENSE_WINDOW_S)
@@ -302,6 +303,10 @@ class Watched:
             self.seen = watching.watch(joined)
         except Exception as exc:  # noqa: BLE001
             self.seen, _ = None, problems.append(f"watching: {type(exc).__name__}: {exc}")
+        try:
+            self.people = faces.watch(joined)
+        except Exception as exc:  # noqa: BLE001 - a missed face is not an outage
+            self.people, _ = None, problems.append(f"faces: {type(exc).__name__}: {exc}")
 
         self.senses_at = now
         self.sense_window_s = held
@@ -313,6 +318,7 @@ class Watched:
             "window_s": round(held, 1),
             "heard": self.heard.as_dict() if self.heard else None,
             "seen": self.seen.as_dict() if self.seen else None,
+            "faces": self.people.as_dict() if self.people else None,
             "said": self.said.status() if self.said is not None else None,
             "problems": problems,
         }
@@ -510,12 +516,18 @@ class Held:
     senses: dict[str, Any] = field(default_factory=dict)
     mood: dict[str, Any] = field(default_factory=dict)
     quotes: list[str] = field(default_factory=list)
+    #: What chat was doing at the moment, for the ranking to read later.
+    chat_stats: dict[str, Any] = field(default_factory=dict)
+    said_reactions: list = field(default_factory=list)
     #: What the research knows about the channel. Carried because the model
     #: judging a clip of someone should know who they are - a man shouting at
     #: a boxing weigh-in reads differently from a man shouting at nobody.
     about: str = ""
     #: What was being said in the seconds around the moment, caught live.
     said: str = ""
+    #: Seconds into the clip where a face was doing something, so the model is
+    #: shown close crops of those rather than only wide frames.
+    faces_at: list[float] = field(default_factory=list)
 
     @property
     def megabytes(self) -> float:
@@ -931,6 +943,8 @@ class Supervisor:
             signals |= moments.signals_from_hearing(watched.heard, duration_s=window_s)
         if watched.seen is not None:
             signals |= moments.signals_from_watching(watched.seen, duration_s=window_s)
+        if watched.people is not None:
+            signals |= moments.signals_from_faces(watched.people, duration_s=window_s)
 
         if watched.said is not None and watched.said.words:
             from core import speech as speechlib
@@ -1090,6 +1104,7 @@ class Supervisor:
             evidence=candidate.senses,
             about=candidate.about,
             said=candidate.said,
+            faces_at=candidate.faces_at,
             transcript=transcript,
             quotes=[q["text"] for q in _top_quotes(candidate.quotes)],
             count=settings.verdict_frames,
@@ -1147,6 +1162,8 @@ class Supervisor:
         read later, because "later" can be forty minutes and by then chat has
         forgotten the whole thing: the log only remembers five minutes.
         """
+        from core import speech as speechlib
+
         held = watched.chat.log.recent()
         out_dir = Path(settings.work_dir) / "catches"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1186,7 +1203,12 @@ class Supervisor:
             senses=dict(watched.senses),
             mood=chatlib.mood_around(held, found.chat_s, window_s=8.0),
             quotes=chatlib.quotes_around(held, found.chat_s, window_s=8.0),
+            chat_stats=_chat_stats(watched, found.chat_s),
+            said_reactions=(
+                speechlib.reactions(watched.said.words) if watched.said is not None else []
+            ),
             about=watched.about,
+            faces_at=_face_moments(watched, found),
             said=(
                 watched.said.text_around(found.chat_s, window_s=12.0)
                 if watched.said is not None else ""
@@ -1308,6 +1330,9 @@ class Supervisor:
             "why": {k: round(v, 3) for k, v in sorted(why.items(), key=lambda kv: -kv[1])},
             "heard": (candidate.senses or {}).get("heard"),
             "seen": (candidate.senses or {}).get("seen"),
+            "watched_faces": (candidate.senses or {}).get("faces"),
+            "chat": candidate.chat_stats,
+            "said": {"reactions": candidate.said_reactions},
             "verdict": judged.as_dict(),
             "transcript": spoken,
             # What the ear claimed, next to what the model actually heard.
@@ -1324,6 +1349,11 @@ class Supervisor:
             "caught_at": datetime.fromtimestamp(candidate.cut_at, UTC).isoformat(),
             "held_s": round(now - candidate.cut_at, 1),
         }
+        # Rank it against every other clip, on every axis at once. The score
+        # that got it cut is a threshold; this is an ordering, and with no
+        # hourly gate the ordering is what decides which clips survive.
+        record["rank"] = ranking.rank(record).as_dict()
+        record["rank_score"] = record["rank"]["score"]
         self.store(record)
         log.info(
             "supervisor: kept %s (%s, score %.1f, held %.0fs) -> %s",
@@ -1376,11 +1406,20 @@ class Supervisor:
             }
 
         cut_today = len(recent)
-        if cut_today >= settings.live_clips_per_day:
+        # The day's number is how many are *kept*, and it is enforced by
+        # trimming the weakest after the fact rather than by refusing the next
+        # one. Refusing was the old rule and it meant the day's allowance went
+        # to whatever happened first, which on a live stream is not the same
+        # thing as whatever was best.
+        if cut_today >= settings.live_clips_per_day * 3:
             return {
                 "allowed": False,
-                "reason": "daily cap",
-                "detail": f"{cut_today} cut in the last 24 hours, which is the cap.",
+                "reason": "far past the day's number",
+                "detail": (
+                    f"{cut_today} kept in the last 24 hours against a target of "
+                    f"{settings.live_clips_per_day}. The weakest are trimmed as they "
+                    "are stored; this only stops when something has gone wrong."
+                ),
                 "cut_today": cut_today,
                 "wait_minutes": None,
             }
@@ -1472,10 +1511,49 @@ class Supervisor:
                     peak_viewers=record["peak_viewers"],
                     verdict=record.get("verdict") or {},
                     transcript=record.get("transcript") or None,
+                    rank_score=record.get("rank_score"),
+                    rank=record.get("rank") or {},
+                    evidence={
+                        "heard": record.get("heard"),
+                        "seen": record.get("seen"),
+                        "faces": record.get("watched_faces"),
+                        "chat": record.get("chat"),
+                        "said": record.get("said"),
+                    },
                     status="caught",
                     source_deleted=True,
                 )
             )
+        self.trim(keep=settings.live_clips_per_day)
+
+    def trim(self, *, keep: int) -> int:
+        """Drop the day's weakest clips once there are more than wanted.
+
+        Trimming after the fact rather than refusing before is the whole
+        change: refusing gave the day's allowance to whatever happened first,
+        which on a live stream is not the same thing as whatever was best.
+        """
+        from core.db import session_scope
+        from core.models import Catch
+
+        since = datetime.now(UTC) - timedelta(days=1)
+        dropped = 0
+        try:
+            with session_scope() as db:
+                rows = (
+                    db.query(Catch)
+                    .filter(Catch.created_at >= since, Catch.approved.is_(False))
+                    .order_by(Catch.rank_score.desc().nullslast(), Catch.id.desc())
+                    .all()
+                )
+                for row in rows[keep:]:
+                    db.delete(row)
+                    dropped += 1
+        except Exception as exc:  # noqa: BLE001 - a failed trim is a disk bill, not an outage
+            self._note(f"could not trim the day's clips ({exc})")
+        if dropped:
+            log.info("supervisor: trimmed %d clip(s) below the day's best %d", dropped, keep)
+        return dropped
 
     # --- status and lifecycle ----------------------------------------------
 
@@ -1535,6 +1613,43 @@ class Supervisor:
         log.warning("supervisor: %s", message)
         self.errors.append(f"{datetime.now(UTC).strftime('%H:%M:%S')} {message}")
         del self.errors[:-20]
+
+
+def _face_moments(watched: Watched, found: Found) -> list[float]:
+    """Where in the clip a face was doing something, in clip seconds.
+
+    The sense window and the clip are different timelines: the clip starts
+    `live_lead_s` before the peak, and the peak sits at `found.at_s` in the
+    window. Getting this wrong shows the model a crop of the wrong second.
+    """
+    people = getattr(watched, "people", None)
+    if people is None:
+        return []
+    interesting = [t for t, _ in people.reactions] + [t for t, _ in people.close_ups]
+    if not interesting:
+        return []
+    shift = settings.live_lead_s - found.at_s
+    return sorted({
+        round(t + shift, 2) for t in interesting if t + shift >= 0.0
+    })[:6]
+
+
+def _chat_stats(watched: Watched, at_s: float) -> dict[str, Any]:
+    """What chat was doing at the moment, frozen for the ranking to read.
+
+    Frozen because by the time a clip is ranked and re-ranked, chat has
+    forgotten: the log only keeps five minutes.
+    """
+    curve = watched.chat.log.curve()
+    bursts = [ratio for t, ratio in curve.bursts() if abs(t - at_s) <= 12.0]
+    requests = [t for t, _ in curve.clip_requests() if abs(t - at_s) <= 12.0]
+    return {
+        "burst_ratio": round(max(bursts), 2) if bursts else 0.0,
+        "clip_requests": len(requests),
+        "per_minute": round(
+            sum(curve.counts) / max(curve.duration_s / 60.0, 1e-6), 1
+        ),
+    }
 
 
 def _ear_said(senses: dict[str, Any] | None) -> dict[str, Any]:

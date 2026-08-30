@@ -49,6 +49,10 @@ WEIGHTS: dict[str, float] = {
     # Heard and seen. A moment is a thing that happened in front of a camera.
     "laughter": 5.0,
     "motion_surge": 4.0,
+    # A face changing sharply. The one visual signal that is about a person
+    # rather than about the picture.
+    "face_reaction": 4.5,
+    "close_up": 2.0,
     "shout": 3.5,
     "audio_drop": 2.0,
     "flash": 1.0,
@@ -78,7 +82,7 @@ WEIGHTS: dict[str, float] = {
 #: something happened rather than evidence that people are present.
 SENSED = frozenset({
     "laughter", "shout", "audio_drop", "audio_jump", "said",
-    "motion_surge", "scene_cuts", "flash",
+    "motion_surge", "scene_cuts", "flash", "face_reaction", "close_up",
 })
 
 #: What the crowd thinks. Chat is the best confirmation available and the worst
@@ -398,6 +402,26 @@ def signals_from_speech(
     size = _grid(duration_s, grid_s)
     return {
         "said": _spread(spoken, size, grid_s=grid_s, before=3.0, after=3.0),
+    }
+
+
+def signals_from_faces(people, *, duration_s: float, grid_s: float = GRID_S) -> dict:  # noqa: ANN001
+    """What happened on somebody's face, on the grid.
+
+    The strongest visual cue there is that something happened *to somebody*.
+    A camera panning across a room moves every pixel and means nothing; the
+    pixels inside a face box changing sharply mean everything.
+    """
+    size = _grid(duration_s, grid_s)
+    return {
+        "face_reaction": _spread(
+            [(t, min(1.0, (ratio - 1.0) / 4.0)) for t, ratio in people.reactions],
+            size, grid_s=grid_s, before=1.5, after=2.5,
+        ),
+        "close_up": _spread(
+            [(t, min(1.0, share / 0.15)) for t, share in people.close_ups],
+            size, grid_s=grid_s, before=2.0, after=2.0,
+        ),
     }
 
 

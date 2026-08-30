@@ -384,6 +384,15 @@ class Catch(TimestampMixin, Base):
     #: what was said in it - half of what the verdict was reading
     transcript: Mapped[str | None] = mapped_column(Text)
 
+    #: how good this clip is against every other clip, and the working. With no
+    #: gate between clips, the ordering is what decides which ones survive.
+    rank_score: Mapped[float | None] = mapped_column(Float, index=True)
+    rank: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: what was heard, seen and on whose face - kept so the ranking can be
+    #: recomputed when the weights change rather than frozen at whatever they
+    #: happened to be on the day
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="caught")
     #: set once the buffer it came from has been deleted, so an orphaned
     #: working directory is visible rather than silently occupying disk

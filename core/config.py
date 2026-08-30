@@ -339,8 +339,16 @@ class Settings(BaseSettings):
     live_posting_enabled: bool = False
     #: Caps. Ten a day is what one page can post without the median dragging
     #: reach down; an hour apart is what stops a burst reading as automated.
-    live_clips_per_day: int = 10
-    live_min_gap_minutes: int = 60
+    #: How many clips a day are *kept*, not how many are cut. Everything that
+    #: clears the bar is cut and ranked; this is where the list is trimmed, and
+    #: it trims the weakest rather than the newest.
+    live_clips_per_day: int = 60
+    #: Zero. There was an hour between clips and it was the single worst rule
+    #: in the system: the buffer remembers five minutes, so a moment that was
+    #: not cut immediately was gone, and the bot ended up clipping whatever
+    #: happened to be happening when the hour turned over. Everything is cut
+    #: now and the ranking decides what survives.
+    live_min_gap_minutes: int = 0
     #: Directory polling. The listing moves slowly and every call is a request.
     live_roster_poll_s: float = 300.0
 
