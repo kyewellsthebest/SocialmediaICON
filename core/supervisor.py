@@ -1249,6 +1249,13 @@ class Supervisor:
             "seen": (candidate.senses or {}).get("seen"),
             "verdict": judged.as_dict(),
             "transcript": spoken,
+            # What the ear claimed, next to what the model actually heard.
+            # These two columns are the only way either detector will ever be
+            # checked against real audio, so they are kept on every clip.
+            "ear_vs_model": {
+                "ear": _ear_said(candidate.senses),
+                "model": judged.heard,
+            },
             "mood": candidate.mood,
             "quotes": _top_quotes(candidate.quotes),
             "peak_viewers": candidate.viewers,
@@ -1467,6 +1474,17 @@ class Supervisor:
         log.warning("supervisor: %s", message)
         self.errors.append(f"{datetime.now(UTC).strftime('%H:%M:%S')} {message}")
         del self.errors[:-20]
+
+
+def _ear_said(senses: dict[str, Any] | None) -> dict[str, Any]:
+    """What core.hearing claimed, in the same shape the model answers in."""
+    heard = (senses or {}).get("heard") or {}
+    return {
+        "laughter": bool(heard.get("laughs")),
+        "gasp": bool(heard.get("gasps")),
+        "raised_voice": bool(heard.get("shouts")),
+        "sigh": bool(heard.get("sighs")),
+    }
 
 
 def _top_quotes(quotes: list[str], limit: int = 6) -> list[dict[str, Any]]:

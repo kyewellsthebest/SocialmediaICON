@@ -60,16 +60,35 @@ FRAME_MS = 10
 FRAME_HZ = 1000 // FRAME_MS
 SAMPLE_RATE = 16000
 
-#: Four bands, chosen for what lives in them rather than for round numbers.
-#: Rumble and bass are where music and traffic sit; the voice band carries
-#: nearly all speech energy; presence is where vocal effort and consonants go,
-#: which is what makes a shout sound like a shout.
+#: Eight bands, log-spaced, because two different questions are being asked of
+#: them. The coarse one is where the energy is: rumble and bass are where music
+#: and traffic sit, the voice band carries nearly all speech, presence is where
+#: vocal effort goes and is what makes a shout sound like a shout.
+#:
+#: The finer one is *what kind of sound this is*, and it cannot be answered
+#: with four. A voice is harmonic - energy piled into a few places - and a
+#: breath is noise, spread evenly across all of them. That difference is the
+#: whole of telling a gasp from a shout, and measuring it needs enough bands
+#: for "evenly" to mean something.
 BANDS: tuple[tuple[str, int, int], ...] = (
-    ("bass", 60, 300),
-    ("voice", 300, 1000),
-    ("upper", 1000, 3000),
-    ("presence", 3000, 7500),
+    ("sub", 60, 160),
+    ("bass", 160, 320),
+    ("low", 320, 640),
+    ("mid", 640, 1250),
+    ("upper", 1250, 2500),
+    ("presence", 2500, 4000),
+    ("high", 4000, 6000),
+    ("air", 6000, 7800),
 )
+
+#: The coarse grouping the older signals were written against, so shouting and
+#: dormancy keep asking the question they were tuned for.
+GROUPS: dict[str, tuple[str, ...]] = {
+    "bass": ("sub", "bass"),
+    "voice": ("low", "mid"),
+    "upper": ("upper", "presence"),
+    "presence": ("high", "air"),
+}
 
 #: Laughter's repetition rate. Provine's counts and every acoustic study since
 #: put the syllable rate of a laugh in this band; 4.7 Hz is the usual centre.
@@ -86,6 +105,16 @@ MIN_LIFT = 0.14
 MIN_WINDOWS = 3
 #: History needed before any of this means anything.
 WARMUP_S = 4.0
+#: How much of the energy has to move up the spectrum for a level rise to be a
+#: raised voice rather than a fader. An absolute shift in balance rather than a
+#: ratio, because how big a ratio a shout produces depends entirely on how
+#: bright the voice already was - a ratio test passes on a dark voice and fails
+#: on a bright one for the same shout.
+#:
+#: Swept rather than chosen: at 0.03 ordinary talking produced five shouts in
+#: thirty seconds and at 0.10 a real shout was missed. 0.08 is the only value
+#: that catches the shout, ignores the talking and ignores a fader being pushed.
+BRIGHTEN = 0.08
 ANALYSIS_S = 1.5
 HOP_S = 0.25
 #: How far back "usual for this stream" reaches. Long enough that a steady beat
@@ -125,14 +154,16 @@ def _split_bands(src: Path | str, *, seconds: float | None = None) -> list[array
     file, and the filtering itself is the cheap part.
     """
     require_binaries()
-    taps = "".join(f"[s{i}]" for i in range(len(BANDS)))
-    chain = [f"[0:a]asplit={len(BANDS)}{taps}"]
+    # One more copy than there are bands: the last channel is the signal
+    # untouched, because the pitch tracker needs the waveform and not a
+    # filtered version of it.
+    outs = len(BANDS) + 1
+    taps = "".join(f"[s{i}]" for i in range(outs))
+    chain = [f"[0:a]asplit={outs}{taps}"]
     for i, (_, low, high) in enumerate(BANDS):
         chain.append(f"[s{i}]highpass=f={low},lowpass=f={high}[b{i}]")
-    chain.append(
-        "".join(f"[b{i}]" for i in range(len(BANDS)))
-        + f"amerge=inputs={len(BANDS)}[out]"
-    )
+    chain.append(f"[s{len(BANDS)}]anull[b{len(BANDS)}]")
+    chain.append("".join(f"[b{i}]" for i in range(outs)) + f"amerge=inputs={outs}[out]")
 
     command = ["ffmpeg", "-v", "error"]
     if seconds:
@@ -141,7 +172,7 @@ def _split_bands(src: Path | str, *, seconds: float | None = None) -> list[array
         "-i", str(src),
         "-filter_complex", ";".join(chain), "-map", "[out]",
         "-f", "s16le", "-acodec", "pcm_s16le",
-        "-ar", str(SAMPLE_RATE), "-ac", str(len(BANDS)), "-",
+        "-ar", str(SAMPLE_RATE), "-ac", str(len(BANDS) + 1), "-",
     ]
     proc = subprocess.run(command, capture_output=True)
     if not proc.stdout:
@@ -150,11 +181,13 @@ def _split_bands(src: Path | str, *, seconds: float | None = None) -> list[array
             f"{proc.stderr.decode('utf-8', 'replace')[-300:]}"
         )
 
+    stride = 2 * (len(BANDS) + 1)
     interleaved = array("h")
-    interleaved.frombytes(proc.stdout[: len(proc.stdout) - len(proc.stdout) % (2 * len(BANDS))])
-    # Extended slices on array are a C-level copy, so this is four passes over
+    interleaved.frombytes(proc.stdout[: len(proc.stdout) - len(proc.stdout) % stride])
+    # Extended slices on array are a C-level copy, so this is nine passes over
     # the buffer rather than a Python loop over every sample.
-    return [interleaved[i :: len(BANDS)] for i in range(len(BANDS))]
+    channels = len(BANDS) + 1
+    return [interleaved[i::channels] for i in range(channels)]
 
 
 # --- the envelope, and what its shape means ---------------------------------
@@ -175,6 +208,15 @@ class Hearing:
     shouts: list[tuple[float, float]] = field(default_factory=list)
     #: (start_s, end_s) where a loud room went abruptly quiet.
     drops: list[tuple[float, float]] = field(default_factory=list)
+    #: (time_s, confidence) of a sharp intake of breath - shock, a near miss.
+    gasps: list[tuple[float, float]] = field(default_factory=list)
+    #: (start_s, end_s) of a long breath out - exasperation, relief, defeat.
+    sighs: list[tuple[float, float]] = field(default_factory=list)
+    #: How noise-like each frame is, 0..1. Breath is high, a voice is low.
+    flatness: list[float] = field(default_factory=list)
+    #: ...and the other way round: how periodic it is. A voice repeats at the
+    #: pitch; turbulence repeats at nothing.
+    voicing: list[float] = field(default_factory=list)
     #: How much of the time this sounds like a person rather than a mix.
     speech_share: float = 0.0
     music_share: float = 0.0
@@ -195,7 +237,13 @@ class Hearing:
             ],
             "shouts": [{"at_s": round(t, 2), "rise_db": round(d, 1)} for t, d in self.shouts],
             "drops": [{"start_s": round(a, 2), "end_s": round(b, 2)} for a, b in self.drops],
+            "gasps": [{"at_s": round(t, 2), "confidence": round(c, 2)} for t, c in self.gasps],
+            "sighs": [{"start_s": round(a, 2), "end_s": round(b, 2)} for a, b in self.sighs],
             "speech_share": round(self.speech_share, 3),
+            "voiced_share": (
+                round(sum(1 for v in self.voicing if v > 1.0 - BREATHY) / len(self.voicing), 3)
+                if self.voicing else None
+            ),
             "music_share": round(self.music_share, 3),
             "mean_db": round(sum(self.level_db) / len(self.level_db), 1) if self.level_db else None,
         }
@@ -267,6 +315,118 @@ def _modulation(window: list[float], rate: float) -> Pulse:
     )
 
 
+def _flatness(energies: list[float]) -> float:
+    """How evenly the energy is spread across the spectrum, 0..1.
+
+    This is the one number that separates a breath from a voice, and it is why
+    there are eight bands instead of four. A voice is *harmonic*: the vocal
+    folds put energy into a fundamental and its multiples, so a few bands hold
+    almost all of it and the rest hold nearly none. A breath is *turbulence* -
+    air rushing past a constriction - and turbulence has no preferred
+    frequency, so it lands everywhere at once.
+
+    Geometric mean over arithmetic mean, which is the standard measure and
+    exactly the right shape for the question: the geometric mean collapses the
+    moment any band is empty, so it approaches the arithmetic mean only when
+    every band is carrying something.
+    """
+    if not energies or sum(energies) <= 0:
+        return 0.0
+    # A band with nothing above its floor is the strongest possible evidence
+    # of a peak somewhere else, so it collapses the answer rather than being
+    # nudged out of the way with an epsilon.
+    if any(e <= 0 for e in energies):
+        return 0.0
+    log_mean = sum(math.log(e) for e in energies) / len(energies)
+    return min(1.0, math.exp(log_mean) / (sum(energies) / len(energies)))
+
+
+#: The pitch range a human voice lives in. Below 70 Hz is a room and above 400
+#: is a whistle; both are outside what a person's vocal folds do.
+PITCH_LOW_HZ, PITCH_HIGH_HZ = 70.0, 400.0
+#: Long enough to hold three cycles of the lowest pitch being looked for.
+VOICING_FRAME_MS = 32
+
+
+def voicing(signal, frames: int) -> list[float]:  # noqa: ANN001 - array("h")
+    """How periodic each frame is, 0..1. A voice is; a breath is not.
+
+    Voiced sound is the vocal folds opening and closing at the pitch, so the
+    waveform repeats every three to twelve milliseconds. Turbulence - a
+    breath, a fricative, a hiss - repeats at nothing. The height of the
+    autocorrelation peak over that lag range is how every pitch tracker ever
+    written asks the question.
+
+    Verified against signals whose nature is not in doubt rather than against
+    an opinion: white noise reads 0.10, pink noise 0.17, band-limited noise in
+    the range breath occupies 0.12, a pure tone 0.84 and a stack of harmonics
+    0.78. That is the separation the whole measurement rests on.
+
+    Normalised by the frame's own zero-lag energy. Normalising by the two
+    shifted halves instead - which looks more symmetrical and is what I wrote
+    first - makes any smooth signal correlate with itself at every lag and
+    reports 0.98 for white noise.
+    """
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - numpy is a dependency
+        return [0.0] * frames
+
+    x = np.frombuffer(signal.tobytes(), dtype="<i2").astype(np.float32) / 32768.0
+    per_frame = SAMPLE_RATE // FRAME_HZ
+    width = int(SAMPLE_RATE * VOICING_FRAME_MS / 1000)
+    if len(x) < width + per_frame:
+        return [0.0] * frames
+
+    starts = np.arange(frames) * per_frame
+    starts = np.clip(starts, 0, len(x) - width)
+    windows = x[starts[:, None] + np.arange(width)[None, :]]
+    windows = windows - windows.mean(axis=1, keepdims=True)
+    energy = (windows**2).sum(axis=1) + 1e-12
+
+    low = int(SAMPLE_RATE / PITCH_HIGH_HZ)
+    high = min(int(SAMPLE_RATE / PITCH_LOW_HZ), width - 1)
+    best = np.zeros(len(windows), dtype=np.float32)
+    for lag in range(low, high):
+        r = (windows[:, : width - lag] * windows[:, lag:]).sum(axis=1)
+        np.maximum(best, r / energy, out=best)
+    return [float(v) for v in np.clip(best, 0.0, 1.0)]
+
+
+def _noisiness(
+    raw: dict[str, list[float]], names: list[str], frames: int, *, look_back_s: float = 20.0
+) -> list[float]:
+    """Flatness of what rose *above* the noise floor, per frame.
+
+    Flatness of the raw band energies does not work, and the reason is worth
+    keeping: every real recording has a floor - room tone, an air conditioner,
+    encoder noise - and that floor is in every band at once. So every band
+    always has something in it, the geometric mean never collapses, and
+    speech, breath and laughter all measure about 0.85. Measured that way the
+    number says "this is a recording", which nobody asked.
+
+    Against each band's own quiet level it says what was meant. A vowel lifts
+    two bands enormously and leaves the other six at the floor, which is
+    peaky. A breath lifts all eight together, which is flat. That is the
+    difference between a voice and turbulence, and it is only visible once the
+    floor is taken out from underneath.
+    """
+    window = max(1, int(look_back_s * FRAME_HZ))
+    floors = {}
+    for name in names:
+        values = raw[name]
+        floors[name] = [
+            sorted(values[max(0, i - window) : i + 1])[
+                max(0, (min(i + 1, window)) // 10)
+            ]
+            for i in range(frames)
+        ]
+    return [
+        _flatness([max(0.0, raw[n][i] - floors[n][i]) for n in names])
+        for i in range(frames)
+    ]
+
+
 def _median(values: list[float]) -> float:
     if not values:
         return 0.0
@@ -280,7 +440,8 @@ def _amplitude(db: float) -> float:
 
 def listen(src: Path | str, *, seconds: float | None = None) -> Hearing:
     """Read a stretch of audio for what is happening in it."""
-    bands = _split_bands(src, seconds=seconds)
+    channels = _split_bands(src, seconds=seconds)
+    bands, whole = channels[: len(BANDS)], channels[len(BANDS)]
     per_frame = SAMPLE_RATE // FRAME_HZ
     frames = min(len(b) for b in bands) // per_frame
     if frames < int(ANALYSIS_S * FRAME_HZ):
@@ -307,15 +468,35 @@ def listen(src: Path | str, *, seconds: float | None = None) -> Hearing:
             for name in names:
                 shares[name][i] = raw[name][i] / total
 
-    found = Hearing(window_s=1.0 / FRAME_HZ, level_db=level_db, shares=shares)
+    # The coarse view, for the signals written before there were eight bands.
+    # Added to `shares` only, never to `raw`: anything that sums over raw would
+    # then be counting every sample twice, which is exactly how the music
+    # detector quietly halved when this went from four bands to eight.
+    for coarse, parts in GROUPS.items():
+        shares[coarse] = [sum(shares[p][i] for p in parts) for i in range(frames)]
+
+    # Whether each frame is a voice or turbulence. This is the one measurement
+    # here that had to be verified against signals whose nature is not in
+    # doubt: white noise reads 0.10, pink noise 0.17, a pure tone 0.84.
+    voiced_curve = voicing(whole, frames)
+    flat = [1.0 - v for v in voiced_curve]
+
+    found = Hearing(
+        window_s=1.0 / FRAME_HZ, level_db=level_db, shares=shares,
+        flatness=flat, voicing=voiced_curve,
+    )
     # Laughter is read off the voice bands only. A kick drum modulates the
     # envelope beautifully at exactly the wrong frequency, and it lives almost
     # entirely under 300 Hz - so it is simply not in the signal being measured.
-    voiced = [raw["voice"][i] + raw["upper"][i] for i in range(frames)]
+    voiced = [
+        sum(raw[b][i] for b in GROUPS["voice"] + GROUPS["upper"]) for i in range(frames)
+    ]
     found.laughs = _find_laughter(voiced, FRAME_HZ)
     found.shouts = _find_shouts(level_db, shares, FRAME_HZ)
     found.drops = _find_drops(level_db, FRAME_HZ)
-    found.speech_share, found.music_share = _speech_or_music(voiced, raw, FRAME_HZ)
+    found.gasps = _find_gasps(level_db, flat, shares, FRAME_HZ)
+    found.sighs = _find_sighs(level_db, flat, shares, FRAME_HZ)
+    found.speech_share, found.music_share = _speech_or_music(voiced, shares["bass"])
     return found
 
 
@@ -413,8 +594,12 @@ def _find_shouts(
             continue
         if human[i] < shares["bass"][i]:
             continue
+        # An absolute shift in where the energy sits, not a ratio. How big a
+        # *ratio* a shout produces depends entirely on how bright the voice
+        # already was, so a ratio test passes on a dark voice and fails on a
+        # bright one for the same shout. The balance moving is the finding.
         was = _median(bright[i - back : i])
-        if bright[i] <= was * 1.15:
+        if bright[i] - was < BRIGHTEN:
             continue
         at = i / rate
         if found and at - found[-1][0] < 1.0:
@@ -446,21 +631,154 @@ def _find_drops(
     return found
 
 
-def _speech_or_music(
-    voiced: list[float], raw: dict[str, list[float]], rate: float
-) -> tuple[float, float]:
+def _speech_or_music(voiced: list[float], bass_share: list[float]) -> tuple[float, float]:
     """How much of this sounds like people, and how much like a mix.
 
     Two cues, both about gaps. Speech stops between words - a talker's envelope
     is full of short holes - while a mix is continuous. And music carries far
-    more of its energy below 300 Hz than a voice does.
+    more of its energy under a few hundred Hz than a voice does.
     """
     if not voiced:
         return 0.0, 0.0
     live = _median([v for v in voiced if v > 0]) or 1e-9
     gaps = sum(1 for v in voiced if v < live * 0.35) / len(voiced)
-    bass = sum(raw["bass"]) / max(sum(sum(raw[n]) for n in raw), 1e-9)
+    bass = sum(bass_share) / max(len(bass_share), 1)
 
     speech = max(0.0, min(1.0, gaps * 1.8)) * max(0.0, min(1.0, (0.55 - bass) / 0.35))
     music = max(0.0, min(1.0, (bass - 0.30) / 0.35)) * max(0.0, min(1.0, (0.45 - gaps) / 0.35))
     return speech, music
+
+
+#: Below this a frame is turbulence rather than a voice. Placed between the
+#: two clusters the measurement actually produces - noise lands at 0.10-0.17
+#: and voiced sound at 0.78-0.84 - and nowhere near either of them.
+#:
+#: It is worth being clear about what this number is and is not. The *measure*
+#: is verified: white noise 0.10, band-limited noise in breath's range 0.12, a
+#: pure tone 0.84. The *thresholds below it* - how fast a gasp arrives, how
+#: long a sigh runs - are reasoned from what breathing is and have never been
+#: checked against a recording of anybody breathing, because there is no such
+#: recording here. That is why gasps and sighs are reported and score nothing:
+#: they are shown to the model that watches the clip, and what it says back is
+#: the first real data either threshold will ever see.
+BREATHY = 0.35
+#: How fast a gasp arrives. An intake of breath is one of the fastest things a
+#: person does: from nothing to full in around a tenth of a second.
+GASP_ATTACK_S = 0.15
+#: ...and how briefly it lasts. Longer than this and it is not a gasp, it is a
+#: hiss, a fricative held for effect, or the room getting noisy.
+GASP_MAX_S = 0.7
+#: A sigh is the opposite shape: slow, long, and falling away.
+SIGH_MIN_S = 0.7
+SIGH_MAX_S = 3.0
+#: How much of a sigh's energy has to be gone by the end of it. Breath out
+#: decays; a held noise does not.
+SIGH_DECAY = 0.6
+
+
+def _find_gasps(
+    level_db: list[float],
+    flatness: list[float],
+    shares: dict[str, list[float]],
+    rate: float,
+) -> list[tuple[float, float]]:
+    """A sharp intake of breath: shock, a near miss, something going wrong.
+
+    Three things at once, and each one on its own is something else entirely.
+
+    It is **noise, not voice** - air rushing past a narrowed glottis has no
+    fundamental, so the spectrum is flat where a vowel is peaky. That is what
+    separates a gasp from a shout, which is the same suddenness with harmonics
+    in it.
+
+    It **arrives faster than a voice can** - a tenth of a second from nothing
+    to full. Speech has to move a jaw and a tongue and cannot do that.
+
+    And it is **over almost at once**. A breath in is followed by holding it;
+    a noise that is still there a second later is a hiss, a fricative held for
+    effect, or the room simply getting louder.
+    """
+    attack = max(1, int(GASP_ATTACK_S * rate))
+    longest = max(2, int(GASP_MAX_S * rate))
+    least = max(attack, int(WARMUP_S * rate))
+    # Breath is mostly above the vowel range; a rumble that happens to be flat
+    # is a door closing, not a person.
+    breath = [shares["upper"][i] + shares["presence"][i] for i in range(len(level_db))]
+
+    found: list[tuple[float, float]] = []
+    for i in range(least, len(level_db) - longest):
+        rise = level_db[i] - level_db[i - attack]
+        if rise < 9.0:
+            continue
+        # Turbulent, not voiced. This is what separates a gasp from a shout -
+        # the same suddenness, with harmonics in it.
+        if flatness[i] < 1.0 - BREATHY or breath[i] < 0.45:
+            continue
+        # Gone again shortly afterwards - the held breath that follows it.
+        after = min(level_db[i + 1 : i + longest + 1])
+        if after > level_db[i] - 7.0:
+            continue
+
+        at = i / rate
+        confidence = min(1.0, (
+            0.4 * min(1.0, (rise - 9.0) / 12.0)
+            + 0.4 * min(1.0, (flatness[i] - (1.0 - BREATHY)) / 0.25)
+            + 0.2 * min(1.0, (breath[i] - 0.45) / 0.35)
+        ))
+        if found and at - found[-1][0] < 0.6:
+            found[-1] = (found[-1][0], max(found[-1][1], confidence))
+        else:
+            found.append((at, confidence))
+    return found
+
+
+def _find_sighs(
+    level_db: list[float],
+    flatness: list[float],
+    shares: dict[str, list[float]],
+    rate: float,
+) -> list[tuple[float, float]]:
+    """A long breath out: exasperation, relief, giving up.
+
+    The same turbulence as a gasp and the opposite envelope. Where a gasp is
+    fast, short and followed by a hold, a sigh is slow, long and *decaying* -
+    a lungful leaving over a second or more, quieter at the end than at the
+    start, because that is what running out of air sounds like.
+
+    The decay is what makes it a sigh rather than a hiss. A held noise stays
+    where it is; breath out cannot.
+    """
+    shortest = max(2, int(SIGH_MIN_S * rate))
+    longest = max(shortest + 1, int(SIGH_MAX_S * rate))
+    least = max(1, int(WARMUP_S * rate))
+    breath = [shares["voice"][i] + shares["upper"][i] for i in range(len(level_db))]
+
+    found: list[tuple[float, float]] = []
+    i = least
+    while i < len(level_db) - shortest:
+        if flatness[i] < 1.0 - BREATHY or breath[i] < 0.35:
+            i += 1
+            continue
+        end = i
+        while (
+            end < len(level_db) - 1
+            and end - i < longest
+            and flatness[end] >= (1.0 - BREATHY) * 0.9
+        ):
+            end += 1
+        if end - i < shortest:
+            i = end + 1
+            continue
+
+        # Falling away, in amplitude rather than decibels: "sixty percent of
+        # it is gone" is a statement about air, and dB is a statement about
+        # perception.
+        head = _median(level_db[i : i + shortest // 3])
+        tail = _median(level_db[end - shortest // 3 : end])
+        if 10 ** (tail / 20.0) > 10 ** (head / 20.0) * (1.0 - SIGH_DECAY):
+            i = end + 1
+            continue
+
+        found.append((i / rate, end / rate))
+        i = end + 1
+    return found

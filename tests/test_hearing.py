@@ -123,6 +123,60 @@ class TestRaisedVoices:
     def test_a_steady_mix_produces_no_shouts_at_all(self, sound):
         assert heard(sound, "steady", synth.music(30)).shouts == []
 
+    def test_ordinary_talking_produces_no_shouts(self, sound):
+        """Loosening the brightness test to catch a real shout let five
+        through on plain speech. Both ends have to hold at once."""
+        assert heard(sound, "plaintalk", synth.speech(30)).shouts == []
+
+
+class TestTellingAVoiceFromABreath:
+    """The measurement everything about breath rests on.
+
+    Verified against signals whose nature is not in doubt, because there is no
+    recording of anybody breathing available here and an opinion is not a test.
+    """
+
+    def _voicing(self, sound, name, filt, seconds=12):
+        import subprocess
+
+        path = sound(name + "_seed", synth.room(0.5)).parent / f"{name}.wav"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", filt, "-t", str(seconds),
+             "-ar", "16000", "-ac", "1", "-y", str(path)],
+            check=True, capture_output=True,
+        )
+        found = hearing.listen(path)
+        return sorted(found.voicing)[len(found.voicing) // 2]
+
+    def test_white_noise_is_not_a_voice(self, sound):
+        assert self._voicing(sound, "white", "anoisesrc=c=white:a=0.3:r=16000") < 0.25
+
+    def test_noise_in_the_band_breath_occupies_is_not_a_voice(self, sound):
+        found = self._voicing(
+            sound, "breathband",
+            "anoisesrc=c=white:a=0.3:r=16000,highpass=f=900,lowpass=f=6000",
+        )
+        assert found < 0.25
+
+    def test_a_pure_tone_is(self, sound):
+        assert self._voicing(sound, "tone", "sine=frequency=200:sample_rate=16000") > 0.6
+
+    def test_a_stack_of_harmonics_is(self, sound):
+        found = self._voicing(
+            sound, "harm",
+            "aevalsrc='0.3*(sin(2*PI*150*t)+0.5*sin(2*PI*300*t)+0.3*sin(2*PI*450*t))':s=16000",
+        )
+        assert found > 0.6
+
+    def test_the_two_do_not_overlap(self, sound):
+        """A threshold is only meaningful if there is a gap to put it in."""
+        noise = self._voicing(sound, "white2", "anoisesrc=c=white:a=0.3:r=16000")
+        tone = self._voicing(sound, "tone2", "sine=frequency=200:sample_rate=16000")
+        assert tone - noise > 0.4
+
+    def test_the_threshold_sits_between_them(self):
+        assert 0.25 < 1.0 - hearing.BREATHY < 0.7
+
 
 class TestTheRoomGoingQuiet:
     def test_dead_air_after_a_loud_room_is_noticed(self, sound):

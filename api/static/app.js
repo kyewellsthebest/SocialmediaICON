@@ -330,6 +330,9 @@ async function renderStream() {
       ${heard || seen ? `<div class="stats">
         ${stat((heard?.laughs || []).length, "laughs", (heard?.laughs || []).length > 0)}
         ${stat((heard?.shouts || []).length, "raised voices", (heard?.shouts || []).length > 0)}
+        ${stat((heard?.gasps || []).length, "gasps?", (heard?.gasps || []).length > 0)}
+        ${stat(heard?.voiced_share != null ? `${Math.round(heard.voiced_share * 100)}%`
+               : "\u2014", "is a voice")}
         ${stat((seen?.surges || []).length, "motion surges", (seen?.surges || []).length > 0)}
         ${stat((seen?.cuts || []).length, "cuts")}
         ${stat((heard?.drops || []).length, "quiet drops")}

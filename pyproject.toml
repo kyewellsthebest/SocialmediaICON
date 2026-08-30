@@ -27,6 +27,11 @@ dependencies = [
   # logged-out viewer gets. Replay polling is the wrong shape for live.
   "websockets>=13.0",
   "pillow>=10.3",  # draws the studio's instrument overlay frame by frame
+  # Voicing is an autocorrelation over every pitch lag of every frame - about
+  # a million multiply-adds a second of audio. In Python that is minutes; in
+  # numpy it is a second, which is the difference between a measurement the
+  # watcher can afford on a timer and one it cannot.
+  "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

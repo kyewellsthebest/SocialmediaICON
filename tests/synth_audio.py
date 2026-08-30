@@ -105,6 +105,58 @@ def join(*parts):
     return out
 
 
+@functools.cache
+def _noise(seconds: float, seed: int, low: float, high: float):
+    """Band-limited noise: turbulence, which is what breath is.
+
+    Two one-pole filters over white noise. Not a good filter, but the question
+    being asked of it is "is the energy spread out or piled up", and for that
+    it is the right shape.
+    """
+    rng = random.Random(seed)
+    out, lp, hp = [], 0.0, 0.0
+    a_low = min(1.0, high / (RATE / 2))
+    a_high = min(1.0, low / (RATE / 2))
+    for _ in range(int(seconds * RATE)):
+        white = rng.uniform(-1, 1)
+        lp += (white - lp) * a_low
+        hp += (lp - hp) * a_high
+        out.append(lp - hp)
+    return tuple(out)
+
+
+@functools.cache
+def gasp(seconds: float = 0.35, *, level: float = 0.45, seed: int = 21):
+    """A sharp intake of breath.
+
+    Noise, because air past a narrowed glottis has no fundamental. Very fast
+    attack - a tenth of a second - and then gone, because what follows a
+    breath in is holding it. Weighted high, where breath noise lives.
+    """
+    body = _noise(seconds, seed, 900.0, 6000.0)
+    out = []
+    for i, v in enumerate(body):
+        t = i / RATE
+        rise = min(1.0, t / 0.09) ** 0.6
+        fall = max(0.0, 1.0 - max(0.0, t - 0.16) / max(seconds - 0.16, 1e-6)) ** 2
+        out.append(level * v * rise * fall)
+    return tuple(out)
+
+
+@functools.cache
+def sigh(seconds: float = 1.6, *, level: float = 0.22, seed: int = 22):
+    """A long breath out: slow in, long, and decaying to nothing."""
+    body = _noise(seconds, seed, 250.0, 2200.0)
+    out = []
+    for i, v in enumerate(body):
+        t = i / RATE
+        rise = min(1.0, t / 0.30)
+        fall = max(0.0, 1.0 - t / seconds) ** 1.6
+        voiced_part = 0.25 * math.sin(2 * math.pi * (150 - 40 * t / seconds) * t)
+        out.append(level * rise * fall * (v + voiced_part))
+    return tuple(out)
+
+
 def louder(part, factor):
     return [v * factor for v in part]
 

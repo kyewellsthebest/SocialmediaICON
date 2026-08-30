@@ -68,6 +68,11 @@ class Verdict:
     #: A tighter cut, if the moment turned out to sit inside the window.
     best_start_s: float | None = None
     best_end_s: float | None = None
+    #: What the model says was actually in the audio, judged independently of
+    #: what the ear claimed. Kept beside the ear's own reading on every clip,
+    #: because it is the only real data either will ever get: there is no
+    #: recording of anybody laughing in this repository to tune against.
+    heard: dict[str, Any] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -80,6 +85,7 @@ class Verdict:
             "why": self.why,
             "best_start_s": self.best_start_s,
             "best_end_s": self.best_end_s,
+            "heard": self.heard,
             "problems": self.problems,
         }
 
@@ -171,7 +177,16 @@ costs the account's credibility. When you are unsure, say so with a low
 confidence rather than a confident guess.
 
 If the good part is only a slice of what you were given, say where it starts
-and ends in seconds from the beginning of the clip."""
+and ends in seconds from the beginning of the clip.
+
+Finally, and separately from the judgement: say what you can tell was actually
+in the audio - laughter, a gasp, a raised voice, a sigh. Judge that from the
+frames and the transcript, not from the machine's reading, and disagree with
+the machine freely. Its laughter detector has never been checked against a
+recording of anybody laughing, and its gasp and sigh detectors have never been
+checked against anything at all; you are the first thing that will ever tell
+them whether they are right. If you cannot tell from what you were given, say
+so rather than repeating what the machine claimed."""
 
 
 SCHEMA = {
@@ -201,6 +216,18 @@ SCHEMA = {
             "description": "Seconds from the start of the clip where the good part begins.",
         },
         "best_end_s": {"type": ["number", "null"]},
+        "heard": {
+            "type": "object",
+            "additionalProperties": False,
+            "description": "What was actually in the audio, judged independently.",
+            "properties": {
+                "laughter": {"type": ["boolean", "null"]},
+                "gasp": {"type": ["boolean", "null"]},
+                "raised_voice": {"type": ["boolean", "null"]},
+                "sigh": {"type": ["boolean", "null"]},
+                "note": {"type": "string"},
+            },
+        },
     },
 }
 
@@ -291,6 +318,7 @@ def look(
         why=str(payload.get("why") or ""),
         best_start_s=_number(payload.get("best_start_s")),
         best_end_s=_number(payload.get("best_end_s")),
+        heard=payload.get("heard") or {},
         problems=problems,
     )
 
@@ -315,6 +343,16 @@ def _describe(evidence: dict[str, Any] | None) -> str:
         lines.append(f"- a voice raised {len(heard['shouts'])} time(s)")
     if heard.get("drops"):
         lines.append(f"- the room went abruptly quiet {len(heard['drops'])} time(s)")
+    if heard.get("gasps"):
+        lines.append(
+            f"- what may be a sharp intake of breath, {len(heard['gasps'])} time(s) "
+            "(this detector is unproven - say if it is wrong)"
+        )
+    if heard.get("sighs"):
+        lines.append(
+            f"- what may be a long breath out, {len(heard['sighs'])} time(s) "
+            "(also unproven)"
+        )
     if seen.get("surges"):
         lines.append(f"- the picture moved far more than usual {len(seen['surges'])} time(s)")
     if seen.get("cuts"):
