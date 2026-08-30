@@ -11,8 +11,6 @@ insistence that the change moves the score in the direction it should.
 
 from __future__ import annotations
 
-import pytest
-
 from core import ranking
 
 
@@ -100,9 +98,25 @@ class TestWhatIsNotAllowedToCarryAClip:
     def test_a_clip_nothing_watched_loses_the_whole_verdict(self):
         watched = score()
         unwatched = score(verdict={})
-        assert watched - unwatched == pytest.approx(
-            ranking.WEIGHTS["verdict"] * 0.86, abs=0.5
-        )
+        assert unwatched < watched
+        assert ranking.rank(clip(verdict={})).parts["verdict"] == 0.0
+
+    def test_a_clip_where_a_face_could_be_read_is_worth_more(self):
+        """A short vertical clip is about a person. A readable face says so."""
+        blank = score(verdict={"watched": True, "worth_it": True,
+                               "confidence": 0.86, "kind": "funny"})
+        faces = score(verdict={"watched": True, "worth_it": True,
+                               "confidence": 0.86, "kind": "funny",
+                               "faces": [{"expression": "shocked"}]})
+        assert faces > blank
+
+    def test_the_setting_is_kept_for_the_page_to_show(self):
+        found = ranking.rank(clip(verdict={
+            "watched": True, "worth_it": True, "confidence": 0.9, "kind": "shocking",
+            "setting": "at a roulette wheel", "faces": [{"expression": "stunned"}],
+        }))
+        assert found.detail["verdict"]["setting"] == "at a roulette wheel"
+        assert found.detail["verdict"]["faces"] == ["stunned"]
 
     def test_worth_it_but_kind_nothing_is_distrusted(self):
         """The model contradicting itself is worth less than the model agreeing."""
