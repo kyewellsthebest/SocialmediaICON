@@ -8,6 +8,8 @@ two of these would double the bandwidth and race on the caps.
 from __future__ import annotations
 
 import logging
+import os
+import socket
 import time
 
 from core import livestate
@@ -23,6 +25,11 @@ _current: Supervisor | None = None
 
 def current() -> Supervisor | None:
     return _current
+
+
+def _holder() -> str:
+    """Who this watcher is, for the lease. Unique per process."""
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 def _stalled(hint: str, **extra: object) -> dict:
@@ -72,6 +79,13 @@ def run(max_seconds: float | None = None) -> dict:
     if _current is not None and _current.running:
         return _stalled("A watcher is already running in this worker.")
 
+    # One watcher, enforced across processes rather than inside one. The
+    # watchdog can queue a run while a healthy one is mid-tick, and two
+    # watchers would double the bandwidth and race on the caps.
+    holder = _holder()
+    if not livestate.take_lease(holder):
+        return _stalled("Another watcher already holds the lease; leaving it alone.")
+
     supervisor = Supervisor()
     _current = supervisor
     supervisor.running = True
@@ -110,6 +124,11 @@ def run(max_seconds: float | None = None) -> dict:
                 except Exception as exc:  # noqa: BLE001 - keep the buffers we have
                     supervisor._note(f"roster poll failed ({exc})")
 
+            # Before the work, not after: a tick that throws must still have
+            # said the watcher was alive, or the watchdog starts a second one
+            # on top of a watcher that is merely having a bad minute.
+            livestate.renew_lease(holder)
+
             caught += len(supervisor.tick())
 
             # The dashboard is served by a different process on a different
@@ -134,6 +153,9 @@ def run(max_seconds: float | None = None) -> dict:
         return {"ok": False, "reason": str(exc), "relaunched": True}
     finally:
         supervisor.stop()
+        # Hand it back rather than waiting out the TTL: a deploy should cost
+        # seconds of not watching, not five minutes of it.
+        livestate.release_lease(holder)
 
     if stopped_on_purpose:
         # Leave a readable final state rather than an empty one: "it ran and
@@ -174,6 +196,37 @@ def relaunch(why: str) -> bool:
     except Exception as exc:  # noqa: BLE001 - the next boot will pick it up
         log.warning("live_watch: could not relaunch %s (%s)", why, exc)
         return False
+
+
+def watchdog() -> dict:
+    """Is a watcher alive? If not, start one. Runs every minute, forever.
+
+    `ensure_running` covers a worker booting, which covers deploys and any
+    crash that takes the container with it. It does not cover the rest: a job
+    lost by the queue, a relaunch that failed because Redis blinked at the
+    wrong moment, an out-of-memory kill of the job but not the worker. Each of
+    those leaves a live worker process with nothing watching, and nothing to
+    notice - which is how a night with no clips happens without a single line
+    in the log saying anything is wrong.
+
+    The lease is the test, and it is a fact rather than an inference: the
+    running watcher renews it every tick, so its absence means no watcher
+    ticked in the last five minutes.
+    """
+    if not settings.live_enabled:
+        return {"ok": False, "reason": "LIVE_ENABLED is not set on the worker"}
+    if not livestate.wanted():
+        return {"ok": False, "reason": "Stop was pressed; leaving it stopped"}
+    if livestate.watcher_alive():
+        return {"ok": True, "reason": "a watcher is alive"}
+
+    log.warning("live_watch: no watcher has ticked in %ss - starting one",
+                livestate.LEASE_S)
+    livestate.note(
+        "The watcher stopped without saying so and the watchdog restarted it. "
+        "If this keeps happening, the last errors above say why."
+    )
+    return {"ok": relaunch("watchdog found no live watcher"), "restarted": True}
 
 
 def ensure_running() -> dict:

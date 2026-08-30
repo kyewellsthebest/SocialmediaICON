@@ -614,3 +614,132 @@ class TestTheClaim:
     def test_a_different_name_is_a_different_claim(self):
         assert livestate.claim("a", seconds=60) is True
         assert livestate.claim("b", seconds=60) is True
+
+
+class TestItKeepsWatchingWithoutBeingAskedTo:
+    """"Running" and "watching" were the same claim, and neither was checked
+    by anything. A job lost by the queue, a relaunch that failed on a Redis
+    blink, an out-of-memory kill of the job but not the worker: each leaves a
+    live worker process with nothing watching, no error anywhere, and nobody
+    told until somebody opens the page in the morning."""
+
+    def test_the_lease_is_renewed_every_tick_and_given_back_after(self, monkeypatch):
+        """Taking it once is not enough. It expires in five minutes and the
+        watcher runs for days, so a watcher that stops renewing looks dead to
+        the watchdog and gets a second one started on top of it."""
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(live_watch, "_current", None)
+        monkeypatch.setattr(livestate, "stop_requested", lambda: True)
+
+        alive: list[bool] = []
+
+        def tick(self, **k):
+            # However long the last tick took, the lease has to be good again.
+            # Recorded rather than asserted: the loop catches every exception
+            # a tick raises, so an assert in here would be swallowed and the
+            # test would pass against code that never renews anything.
+            alive.append(livestate.watcher_alive())
+            return []
+
+        # Age the lease past its life the moment it is taken, so only a
+        # renewal inside the loop can make watcher_alive() true.
+        real_take = livestate.take_lease
+
+        def take_and_age(holder):
+            got = real_take(holder)
+            livestate._fallback["lease"] = (holder, time.time() - livestate.LEASE_S - 1)
+            return got
+
+        monkeypatch.setattr(livestate, "take_lease", take_and_age)
+        monkeypatch.setattr("core.supervisor.Supervisor.tick", tick)
+        monkeypatch.setattr("core.supervisor.Supervisor.poll_roster", lambda self, **k: {})
+
+        live_watch.run(max_seconds=0)
+        assert alive == [True], "the lease lapsed while the watcher was working"
+        assert not livestate.watcher_alive(), "a clean exit must hand the lease back"
+
+    def test_a_second_watcher_will_not_start_next_to_a_live_one(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(live_watch, "_current", None)
+        livestate.take_lease("somebody-else")
+
+        result = live_watch.run(max_seconds=0)
+        assert result["ok"] is False
+        assert "lease" in result["reason"]
+
+    def test_the_watchdog_leaves_a_live_watcher_alone(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(settings, "live_enabled", True)
+        livestate.take_lease("the-real-one")
+        queued: list = []
+        monkeypatch.setattr(live_watch, "relaunch", lambda why: queued.append(why) or True)
+
+        assert live_watch.watchdog()["ok"] is True
+        assert queued == [], "restarting a healthy watcher is how you get two"
+
+    def test_the_watchdog_restarts_a_watcher_that_stopped_saying_anything(
+        self, monkeypatch
+    ):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(settings, "live_enabled", True)
+        queued: list = []
+        monkeypatch.setattr(live_watch, "relaunch", lambda why: queued.append(why) or True)
+
+        found = live_watch.watchdog()
+        assert found["ok"] is True
+        assert found["restarted"] is True
+        assert queued, "nothing was queued, so nothing would ever watch again"
+
+    def test_the_watchdog_respects_stop(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(settings, "live_enabled", True)
+        livestate.want(False)
+        queued: list = []
+        monkeypatch.setattr(live_watch, "relaunch", lambda why: queued.append(why) or True)
+
+        assert live_watch.watchdog()["ok"] is False
+        assert queued == [], "Stop is a decision, not a fault to be repaired"
+
+    def test_the_watchdog_runs_in_the_scheduler_rather_than_on_a_queue(self):
+        """One worker serves every queue one job at a time, and the live job
+        never returns - so a queued watchdog would sit behind the thing it
+        exists to check on, forever."""
+        from worker import scheduler
+
+        monkey = [j for j in scheduler._jobs() if j.name == "live_watchdog"]
+        assert monkey, "there is no watchdog at all"
+        assert monkey[0].inline is True
+        assert monkey[0].every_minutes == 1
+
+    def test_the_live_queue_gets_its_own_worker(self, monkeypatch):
+        """Otherwise the hours-long live job starves renders, metrics and
+        autopost - they queue behind a job that does not return."""
+        from worker import queue as workerq
+
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        forked, served = [], []
+        monkeypatch.setattr(workerq, "_fork_live_worker", lambda: forked.append(True))
+        monkeypatch.setattr(workerq, "get_redis", lambda: object())
+        monkeypatch.setattr(workerq, "get_queue", lambda n: served.append(n))
+
+        class _Worker:
+            def __init__(self, *a, **k):
+                pass
+
+            def work(self, **k):
+                pass
+
+        monkeypatch.setitem(__import__("sys").modules, "rq",
+                            type("m", (), {"Worker": _Worker}))
+        workerq.main([])
+
+        assert forked == [True]
+        assert "live" not in served
+        assert "render" in served

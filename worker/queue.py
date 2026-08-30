@@ -99,6 +99,17 @@ def main(argv: list[str] | None = None) -> int:
 
     from rq import Worker
 
+    # An RQ worker runs one job at a time, and the live watcher's job runs for
+    # as long as the bot is up. On one worker serving every queue that means
+    # nothing else ever runs: no renders, no metrics, no autopost - they queue
+    # behind a job that never returns. So the live queue gets a process of its
+    # own, forked here rather than added as another Railway service, because a
+    # fix that needs somebody to change their deployment is a fix that is not
+    # applied at three in the morning.
+    if "live" in names and len(names) > 1:
+        names = [n for n in names if n != "live"]
+        _fork_live_worker()
+
     # A watcher that has to be started by hand is not a watcher. Every deploy
     # ends the previous run, so the boot that follows one has to pick it back
     # up - unless somebody deliberately pressed Stop, which is remembered
@@ -114,6 +125,31 @@ def main(argv: list[str] | None = None) -> int:
     log.info("starting worker on queues: %s", ", ".join(names))
     Worker([get_queue(n) for n in names], connection=get_redis()).work(with_scheduler=True)
     return 0
+
+
+def _fork_live_worker() -> None:
+    """Start a second worker, for the live queue alone, as a child process.
+
+    Restarted if it dies, because the whole point is that the watching never
+    stops. The parent keeps serving the other queues either way: a live worker
+    that will not start must not take rendering down with it.
+    """
+    import subprocess
+    import threading
+
+    def keep_alive() -> None:
+        while True:
+            try:
+                done = subprocess.run(  # noqa: S603
+                    [sys.executable, "-m", "worker.queue", "live"], check=False
+                )
+                log.warning("live worker exited (%s); restarting", done.returncode)
+            except Exception as exc:  # noqa: BLE001 - never kill the parent
+                log.warning("live worker would not start (%s); retrying", exc)
+            time.sleep(5)
+
+    threading.Thread(target=keep_alive, daemon=True, name="live-worker").start()
+    log.info("live queue handed to its own worker process")
 
 
 if __name__ == "__main__":

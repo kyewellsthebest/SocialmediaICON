@@ -34,16 +34,36 @@ class Job:
     every_minutes: int
     func: Callable[..., object]
     enabled: bool = True
+    #: Run here, in the scheduler process, instead of putting it on a queue.
+    #: Only for work that is tiny and must not wait: one worker serves every
+    #: queue one job at a time, and the live watcher holds it for hours, so a
+    #: queued job can sit behind it until tomorrow. That is survivable for a
+    #: metrics sweep and useless for the thing whose whole job is to notice
+    #: that the watcher stopped.
+    inline: bool = False
 
 
 def _jobs() -> list[Job]:
     from worker.tasks.collect_metrics import collect_due
+    from worker.tasks.live_watch import watchdog as live_watchdog
     from worker.tasks.publish import autopost
     from worker.tasks.refresh_tokens import run as refresh_tokens
     from worker.tasks.scout import run as scout_run
     from worker.tasks.scout_reddit import run as scout_reddit
 
     return [
+        Job(
+            # First in the list because it is the only one whose failure means
+            # the product does nothing at all. Every minute: the watcher is
+            # supposed to run forever, and the gap between it dying and this
+            # noticing is the gap in which nothing is clipped.
+            name="live_watchdog",
+            queue="live",  # only nominal - it runs inline, see `inline` below
+            every_minutes=1,
+            func=live_watchdog,
+            enabled=settings.live_enabled,
+            inline=True,
+        ),
         Job(
             name="scout",
             queue="metrics",
@@ -117,11 +137,12 @@ def tick(now: float | None = None) -> list[str]:
         if not _due(job, now):
             continue
         try:
-            if settings.has_redis:
-                enqueue(job.queue, job.func)
-            else:
-                log.info("no redis - running %s inline", job.name)
+            if job.inline or not settings.has_redis:
+                if not job.inline:
+                    log.info("no redis - running %s inline", job.name)
                 job.func()
+            else:
+                enqueue(job.queue, job.func)
             fired.append(job.name)
             log.info("fired %s (every %d min)", job.name, job.every_minutes)
         except Exception as exc:  # noqa: BLE001 - a bad job must not kill the loop

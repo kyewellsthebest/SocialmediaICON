@@ -158,6 +158,103 @@ def get_image(name: str, *, max_age_s: int = 120) -> bytes | None:
         return None
 
 
+# --- the lease: exactly one watcher, and a way to tell it died ---------------
+#
+# The watcher is meant to run forever. It does not: deploys end it, the
+# out-of-memory killer ends it, an unhandled error ends it, and Redis being
+# briefly unreachable can lose the job that was meant to restart it. Every one
+# of those looked identical from outside - the page said "attaching to
+# streams" and nothing was watched until somebody noticed by hand.
+#
+# So the running watcher holds a lease and renews it on every tick. Two things
+# fall out of one key: anything can ask "is a watcher alive right now" by
+# asking whether the lease exists, and a second watcher cannot start while the
+# first holds it - which matters, because two would double the bandwidth and
+# race on the caps.
+#
+# The lease outlives a slow tick by a wide margin. A tick that reads the
+# senses on three streams and renders a clip can take most of a minute, and a
+# lease that expires inside one would have the watchdog starting a second
+# watcher on top of a perfectly healthy first. It is released on the way out,
+# so only a kill -9 waits the whole way.
+
+LEASE_KEY = "clipengine:live:lease"
+LEASE_S = 300
+
+
+def take_lease(holder: str) -> bool:
+    """Claim the right to be the watcher. False means somebody else has it."""
+    client = _redis()
+    if client is None:
+        held = _fallback.get("lease")
+        if held and time.time() - held[1] < LEASE_S and held[0] != holder:
+            return False
+        _fallback["lease"] = (holder, time.time())
+        return True
+    try:
+        if client.set(LEASE_KEY, holder, nx=True, ex=LEASE_S):
+            return True
+        current = client.get(LEASE_KEY)
+        if isinstance(current, bytes):
+            current = current.decode("utf-8", "replace")
+        # Our own lease from a previous run in this same process: take it back
+        # rather than refusing to start next to a watcher that is already gone.
+        if current == holder:
+            client.set(LEASE_KEY, holder, ex=LEASE_S)
+            return True
+        return False
+    except Exception as exc:  # noqa: BLE001 - Redis down means nothing can queue anyway
+        log.warning("livestate: could not take the lease (%s)", exc)
+        return True
+
+
+def renew_lease(holder: str) -> None:
+    """Say the watcher is still alive. Called every tick."""
+    client = _redis()
+    if client is None:
+        _fallback["lease"] = (holder, time.time())
+        return
+    try:
+        client.set(LEASE_KEY, holder, ex=LEASE_S)
+    except Exception as exc:  # noqa: BLE001 - a missed renewal is not a dead tick
+        log.debug("livestate: could not renew the lease (%s)", exc)
+
+
+def release_lease(holder: str) -> None:
+    """Give it up on the way out, so the next one starts in seconds."""
+    client = _redis()
+    if client is None:
+        if (_fallback.get("lease") or ("", 0))[0] == holder:
+            _fallback.pop("lease", None)
+        return
+    try:
+        current = client.get(LEASE_KEY)
+        if isinstance(current, bytes):
+            current = current.decode("utf-8", "replace")
+        if current == holder:
+            client.delete(LEASE_KEY)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("livestate: could not release the lease (%s)", exc)
+
+
+def watcher_alive() -> bool:
+    """Is a watcher renewing its lease right now?
+
+    False here is what the watchdog acts on, so it must never be a guess: if
+    Redis cannot be reached the honest answer is "assume yes", because with no
+    Redis nothing could be queued to fix it anyway and a stream of relaunch
+    attempts would only fill the log.
+    """
+    client = _redis()
+    if client is None:
+        held = _fallback.get("lease")
+        return bool(held and time.time() - held[1] < LEASE_S)
+    try:
+        return client.get(LEASE_KEY) is not None
+    except Exception:  # noqa: BLE001
+        return True
+
+
 # --- what it should be doing, as opposed to what it is doing -----------------
 #
 # Running is a fact about right now; wanted is an intention that outlives a
