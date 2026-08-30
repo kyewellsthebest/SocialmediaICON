@@ -318,6 +318,21 @@ class Settings(BaseSettings):
     #: False means a broken key stops the bot picking anybody new, which is
     #: safer than it quietly going back to watching whatever is biggest.
     profile_required: bool = True
+    #: Listening to the words as they are said, rather than only once a clip
+    #: has already been chosen. Off by default and metered when on, because
+    #: this is the one thing here that costs money per minute of stream rather
+    #: than per clip: three streams around the clock is 4,300 stream-minutes a
+    #: day, which at any provider's per-minute rate is more than the entire
+    #: budget for everything else together. The budget below is in minutes of
+    #: audio a day - set it to what you are willing to spend and it will stop
+    #: there rather than surprise you.
+    speech_live: bool = False
+    speech_minutes_per_day: float = 240.0
+    #: Only transcribe windows the ear can hear somebody talking in. A stream
+    #: playing music to an empty chair is not worth a penny a minute.
+    speech_min_share: float = 0.15
+    #: How long the words are kept, matching how long chat is kept.
+    speech_window_s: float = 300.0
     #: How hard chat has to spike, as a multiple of its own recent baseline.
     live_trigger_ratio: float = 3.0
     #: Nothing is posted anywhere yet - clips are cut and held for review.

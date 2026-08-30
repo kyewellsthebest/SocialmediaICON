@@ -130,6 +130,8 @@ class Watched:
     category: str = ""
     #: What a model said when it last watched a candidate from this channel.
     last_verdict: dict[str, Any] = field(default_factory=dict)
+    #: What has been said out loud, word by word, on the same clock as chat.
+    said: Any = None
     #: The most recent audio reading, refreshed on its own slower timer.
     audio: dict[str, Any] = field(default_factory=dict)
     audio_at: float = 0.0
@@ -246,6 +248,39 @@ class Watched:
                 break
         return f"concat:{'|'.join(str(seg.path) for seg in wanted)}", held
 
+    def listen_for_words(self, now: float) -> int:
+        """Transcribe the window just read, if there is anything in it to hear.
+
+        Metered twice over: only windows the ear says contain speech, and only
+        while the day's minutes last. This is the one measurement in the whole
+        watcher that costs money per minute of stream rather than per clip.
+        """
+        from core import speech as speechlib
+
+        if not settings.speech_live or self.said is None:
+            return 0
+        share = getattr(self.heard, "speech_share", 0.0) if self.heard else 0.0
+        if share < settings.speech_min_share:
+            return 0
+        if self.said.minutes_spent >= settings.speech_minutes_per_day:
+            return 0
+        if not settings.has_whisper:
+            return 0
+
+        try:
+            joined, held = self.window(SENSE_WINDOW_S)
+            words = speechlib.transcribe_window(
+                joined, offset_s=self.chat_offset(0.0)
+            )
+        except Exception as exc:  # noqa: BLE001 - a silent minute is not a fault
+            log.info("supervisor: no words for %s (%s)", self.channel, exc)
+            return 0
+
+        self.said.minutes_spent += held / 60.0
+        before = len(self.said.words)
+        self.said.extend(words)
+        return len(self.said.words) - before
+
     def read_senses(self, out_dir: Path, *, now: float | None = None) -> dict[str, Any]:
         """Listen to and look at the last half minute, and remember what for.
 
@@ -270,10 +305,15 @@ class Watched:
 
         self.senses_at = now
         self.sense_window_s = held
+        try:
+            self.listen_for_words(now)
+        except Exception as exc:  # noqa: BLE001 - words are a bonus, not the job
+            problems.append(f"words: {type(exc).__name__}: {exc}")
         self.senses = {
             "window_s": round(held, 1),
             "heard": self.heard.as_dict() if self.heard else None,
             "seen": self.seen.as_dict() if self.seen else None,
+            "said": self.said.status() if self.said is not None else None,
             "problems": problems,
         }
         return self.senses
@@ -474,6 +514,8 @@ class Held:
     #: judging a clip of someone should know who they are - a man shouting at
     #: a boxing weigh-in reads differently from a man shouting at nobody.
     about: str = ""
+    #: What was being said in the seconds around the moment, caught live.
+    said: str = ""
 
     @property
     def megabytes(self) -> float:
@@ -796,6 +838,8 @@ class Supervisor:
 
         # Chat offsets are measured from when the buffer opened, so a chat
         # burst at t lines up with the video the buffer holds at t.
+        from core import speech as speechlib
+
         talk = livechat.LiveChat(
             channel=channel,
             log=chatlib.LiveLog(window_s=settings.live_window_s),
@@ -807,7 +851,8 @@ class Supervisor:
             self._note(f"{channel}: chat would not start ({exc})")
 
         watched = Watched(
-            channel=channel, buffer=buffer, chat=talk, started_at=started, viewers=viewers
+            channel=channel, buffer=buffer, chat=talk, started_at=started, viewers=viewers,
+            said=speechlib.SpeechLog(window_s=settings.speech_window_s),
         )
         if entry is not None:
             self._describe(watched, entry)
@@ -886,6 +931,17 @@ class Supervisor:
             signals |= moments.signals_from_hearing(watched.heard, duration_s=window_s)
         if watched.seen is not None:
             signals |= moments.signals_from_watching(watched.seen, duration_s=window_s)
+
+        if watched.said is not None and watched.said.words:
+            from core import speech as speechlib
+
+            spoken = speechlib.reactions(
+                [
+                    speechlib.Said(w.word, watched.window_position(w.at_s), 0.0, w.confidence)
+                    for w in watched.said.words
+                ]
+            )
+            signals |= moments.signals_from_speech(spoken, duration_s=window_s)
 
         full = watched.chat.log.curve()
         place = watched.window_position
@@ -1033,6 +1089,7 @@ class Supervisor:
             candidate.raw,
             evidence=candidate.senses,
             about=candidate.about,
+            said=candidate.said,
             transcript=transcript,
             quotes=[q["text"] for q in _top_quotes(candidate.quotes)],
             count=settings.verdict_frames,
@@ -1130,6 +1187,10 @@ class Supervisor:
             mood=chatlib.mood_around(held, found.chat_s, window_s=8.0),
             quotes=chatlib.quotes_around(held, found.chat_s, window_s=8.0),
             about=watched.about,
+            said=(
+                watched.said.text_around(found.chat_s, window_s=12.0)
+                if watched.said is not None else ""
+            ),
         )
 
     def shortlist_add(self, candidate: Held) -> None:

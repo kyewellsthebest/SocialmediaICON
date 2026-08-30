@@ -338,6 +338,11 @@ async function renderStream() {
         ${stat((heard?.drops || []).length, "quiet drops")}
         ${stat(heard ? `${Math.round((heard.speech_share || 0) * 100)}%` : "\u2014", "sounds like speech")}
       </div>
+      ${senses.said?.words
+        ? `<p class="label" style="margin-top:6px">Being said right now</p>
+           <p class="muted">${esc(senses.said.recent)}</p>
+           <p class="label">${senses.said.words} words held \u00b7
+             ${senses.said.minutes_spent} min transcribed today</p>` : ""}
       <p class="muted">This is what decides. Chat can agree with it and cannot
         replace it.</p>`
       : `<p class="empty-note">${esc((senses.problems || []).join(" \u00b7 ")

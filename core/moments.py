@@ -54,6 +54,8 @@ WEIGHTS: dict[str, float] = {
     "flash": 1.0,
     "scene_cuts": 0.75,
     "audio_jump": 1.5,
+    # The person on camera reacting out loud. First-hand, so it nominates.
+    "said": 3.0,
     # Said. An audience agreeing that something happened, which is worth a
     # great deal as confirmation and nothing at all on its own.
     #
@@ -75,7 +77,7 @@ WEIGHTS: dict[str, float] = {
 #: saw. Only these may nominate a moment, because only these are evidence that
 #: something happened rather than evidence that people are present.
 SENSED = frozenset({
-    "laughter", "shout", "audio_drop", "audio_jump",
+    "laughter", "shout", "audio_drop", "audio_jump", "said",
     "motion_surge", "scene_cuts", "flash",
 })
 
@@ -381,6 +383,21 @@ def signals_from_watching(seen, *, duration_s: float, grid_s: float = GRID_S) ->
         "motion_surge": [v * (1.0 - d) for v, d in zip(surges, dead, strict=True)],
         "scene_cuts": [v * (1.0 - d) for v, d in zip(cuts, dead, strict=True)],
         "flash": [v * (1.0 - d) for v, d in zip(flashes, dead, strict=True)],
+    }
+
+
+def signals_from_speech(
+    spoken: list[tuple[float, float]], *, duration_s: float, grid_s: float = GRID_S
+) -> dict:
+    """What the person on camera said out loud, on the grid.
+
+    Sensed, not crowd: the streamer reacting is first-hand evidence that
+    something happened to them. An audience typing is an opinion about
+    evidence, which is why chat cannot nominate a moment and this can.
+    """
+    size = _grid(duration_s, grid_s)
+    return {
+        "said": _spread(spoken, size, grid_s=grid_s, before=3.0, after=3.0),
     }
 
 

@@ -250,6 +250,7 @@ def look(
     transcript: str = "",
     quotes: list[str] | None = None,
     about: str = "",
+    said: str = "",
     count: int = FRAMES,
 ) -> Verdict:
     """Watch a candidate and say whether it is worth posting.
@@ -277,6 +278,7 @@ def look(
             f"Who this is:\n{about.strip() or '(nothing known about this channel)'}\n\n"
             f"What the machine heard and saw:\n{_describe(evidence)}\n\n"
             f"What was said:\n{transcript.strip() or '(no transcript available)'}\n\n"
+            f"{_describe_words(said)}"
             f"What chat was saying:\n{_describe_quotes(quotes)}"
         ),
     }]
@@ -363,6 +365,13 @@ def _describe(evidence: dict[str, Any] | None) -> str:
             f"{round((heard.get('music_share') or 0) * 100)}% music-like"
         )
     return "\n".join(lines) or "(nothing stood out)"
+
+
+def _describe_words(said: str) -> str:
+    """What was being said in the seconds around the moment, if it was heard live."""
+    if not said.strip():
+        return ""
+    return f"What was said right at the moment:\n{said.strip()}\n\n"
 
 
 def _describe_quotes(quotes: list[str] | None) -> str:
