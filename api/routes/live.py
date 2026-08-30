@@ -79,6 +79,32 @@ def start() -> dict[str, Any]:
     # long for the same reason - the default hour would kill it mid-stream.
     livestate.clear()
     job = enqueue("live", "worker.tasks.live_watch.run", job_timeout=24 * 3600)
+    if job is None:
+        raise HTTPException(503, "the job could not be queued - is Redis reachable?")
+
+    # Claim the state immediately. Until a worker picks the job up nothing else
+    # writes here, so without this the page shows "not running" and there is no
+    # way to tell a queued job from a button that did nothing.
+    livestate.publish(
+        {
+            "running": False,
+            "queued": True,
+            "enabled": True,
+            "slots": settings.live_slots,
+            "posting_enabled": settings.live_posting_enabled,
+            "caps": {
+                "per_day": settings.live_clips_per_day,
+                "min_gap_minutes": settings.live_min_gap_minutes,
+            },
+            "streams": [],
+            "errors": [],
+            "hint": (
+                "Queued. Waiting for the worker to pick it up - if this does not "
+                "change within a minute, the worker is not listening on the "
+                "'live' queue, or LIVE_ENABLED is not set on the worker service."
+            ),
+        }
+    )
     return {"ok": True, "queued": True, "job": getattr(job, "id", None)}
 
 

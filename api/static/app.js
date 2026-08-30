@@ -88,15 +88,20 @@ async function renderLive() {
   state.live = data;
 
   const running = !!data.running;
+  const queued = !!data.queued;
   const watching = (data.streams || []).length;
-  $("#live-state").textContent = running ? "watching" : "idle";
-  $("#live-state").dataset.state = running ? "live" : "warning";
-  $("#top-state").textContent = running ? `${watching} live` : "idle";
-  $("#top-state").dataset.state = running ? "live" : "warning";
+  const label = running ? "watching" : queued ? "queued" : "idle";
+  const tone = running ? "live" : queued ? "warning" : "warning";
+  $("#live-state").textContent = label;
+  $("#live-state").dataset.state = tone;
+  $("#top-state").textContent = running ? `${watching} live` : label;
+  $("#top-state").dataset.state = tone;
   $("#nav-live").textContent = running ? `${watching}` : "";
 
   $("#live-head").textContent = running
     ? `Watching ${watching} of ${data.slots}`
+    : queued
+    ? "Starting…"
     : "Not watching";
   $("#live-sub").textContent = data.hint || (
     data.posting_enabled ? "Posting is ON." : "Clips are held for review — nothing is posted."

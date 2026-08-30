@@ -140,3 +140,80 @@ class TestStopping:
         livestate.clear()
         assert livestate.read() is None
         assert livestate.stop_requested() is False
+
+
+class TestNoSilentFailures:
+    """Pressing Start and seeing nothing happen is the worst outcome.
+
+    The first live attempt did exactly that: the job queued, the worker
+    refused it because LIVE_ENABLED was not set on that service, and the
+    refusal was returned as a dict nobody reads. From the dashboard it was
+    indistinguishable from a dead button.
+    """
+
+    def test_queueing_claims_the_state_so_the_page_can_say_so(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        monkeypatch.setattr(
+            "api.routes.live.enqueue", lambda *a, **k: type("Job", (), {"id": "x"})()
+        )
+        client.post("/api/live/start", headers=_auth())
+
+        body = client.get("/api/live", headers=_auth()).json()
+        assert body["queued"] is True
+        assert body["running"] is False
+        assert "worker" in body["hint"], "the hint has to name what to check"
+
+    def test_a_queue_that_silently_did_nothing_is_an_error(self, client, monkeypatch):
+        """enqueue() returns None when Redis is missing; that is not success."""
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        monkeypatch.setattr("api.routes.live.enqueue", lambda *a, **k: None)
+        assert client.post("/api/live/start", headers=_auth()).status_code == 503
+
+    def test_the_worker_refusing_reaches_the_page(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(settings, "live_enabled", False)
+        result = live_watch.run()
+        assert result["ok"] is False
+
+        found = livestate.read()
+        assert found is not None, "a refusal that publishes nothing is invisible"
+        assert "LIVE_ENABLED" in found["hint"]
+        assert "worker service" in found["hint"]
+
+    def test_the_worker_publishes_before_it_does_slow_work(self, monkeypatch):
+        """Three playback URLs and three buffers take most of a minute."""
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(live_watch, "_current", None)
+        seen: list[dict] = []
+        monkeypatch.setattr(livestate, "publish", lambda s: seen.append(s))
+        monkeypatch.setattr(livestate, "stop_requested", lambda: True)
+        monkeypatch.setattr("core.supervisor.Supervisor.tick", lambda self, **k: [])
+        monkeypatch.setattr("core.supervisor.Supervisor.poll_roster", lambda self, **k: {})
+
+        live_watch.run(max_seconds=0)
+        assert seen, "nothing was published at all"
+        assert seen[0]["running"] is True
+        assert "Attaching" in seen[0]["hint"]
+
+    def test_a_crash_inside_the_loop_reaches_the_page(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(live_watch, "_current", None)
+        monkeypatch.setattr(
+            "core.supervisor.Supervisor.poll_roster",
+            lambda self, **k: (_ for _ in ()).throw(RuntimeError("kick said no")),
+        )
+        monkeypatch.setattr(
+            "core.supervisor.Supervisor.tick",
+            lambda self, **k: (_ for _ in ()).throw(RuntimeError("kick said no")),
+        )
+        result = live_watch.run(max_seconds=0)
+        assert result["ok"] is False
+        found = livestate.read()
+        assert found and "kick said no" in found["hint"]

@@ -25,14 +25,46 @@ def current() -> Supervisor | None:
     return _current
 
 
+def _stalled(hint: str, **extra: object) -> dict:
+    """Publish a refusal so it reaches the page instead of dying in a log.
+
+    A job that returns a dict nobody reads is invisible: the button appears to
+    do nothing, the dashboard keeps saying "not running", and there is no way
+    to tell a refusal from a worker that never picked the job up. Every exit
+    from this function has to leave a trace the dashboard can render.
+    """
+    livestate.publish(
+        {
+            "running": False,
+            "enabled": settings.live_enabled,
+            "slots": settings.live_slots,
+            "posting_enabled": settings.live_posting_enabled,
+            "caps": {
+                "per_day": settings.live_clips_per_day,
+                "min_gap_minutes": settings.live_min_gap_minutes,
+            },
+            "streams": [],
+            "errors": [],
+            "hint": hint,
+            **extra,
+        }
+    )
+    log.warning("live_watch: %s", hint)
+    return {"ok": False, "reason": hint}
+
+
 def run(max_seconds: float | None = None) -> dict:
     """Watch until told to stop. Returns a summary of what was caught."""
     global _current
 
     if not settings.live_enabled:
-        return {"ok": False, "reason": "LIVE_ENABLED is not set"}
+        return _stalled(
+            "The worker picked this up but LIVE_ENABLED is not set on the "
+            "worker service. Railway does not share variables between "
+            "services - set it there too."
+        )
     if _current is not None and _current.running:
-        return {"ok": False, "reason": "a supervisor is already running"}
+        return _stalled("A watcher is already running in this worker.")
 
     supervisor = Supervisor()
     _current = supervisor
@@ -40,6 +72,26 @@ def run(max_seconds: float | None = None) -> dict:
     livestate.clear()
     started = time.time()
     caught = 0
+
+    # Say so before doing any work. Resolving three playback URLs and filling
+    # three buffers takes the better part of a minute, and a page that shows
+    # nothing for that long is indistinguishable from a button that did not
+    # work - which is exactly how this looked the first time.
+    livestate.publish(
+        {
+            "running": True,
+            "enabled": True,
+            "slots": settings.live_slots,
+            "posting_enabled": settings.live_posting_enabled,
+            "caps": {
+                "per_day": settings.live_clips_per_day,
+                "min_gap_minutes": settings.live_min_gap_minutes,
+            },
+            "streams": [],
+            "errors": [],
+            "hint": "Attaching to streams - the first buffer takes about fifteen seconds.",
+        }
+    )
 
     try:
         while supervisor.running:
@@ -62,10 +114,21 @@ def run(max_seconds: float | None = None) -> dict:
             if max_seconds is not None and time.time() - started >= max_seconds:
                 break
             time.sleep(TICK_S)
+    except Exception as exc:  # noqa: BLE001 - the page must learn about this
+        supervisor.stop()
+        return _stalled(
+            f"The watcher stopped with an error: {type(exc).__name__}: {exc}",
+            errors=supervisor.errors[-6:],
+        )
     finally:
         supervisor.stop()
-        livestate.clear()
 
+    # Leave a readable final state rather than an empty one: "it ran and
+    # stopped" and "it never started" look identical otherwise.
+    _stalled(
+        f"Stopped after {round(time.time() - started)}s, {caught} clip(s) caught.",
+        errors=supervisor.errors[-6:],
+    )
     return {
         "ok": True,
         "caught": caught,
