@@ -67,7 +67,48 @@ def status() -> dict[str, Any]:
         return _idle("Set LIVE_ENABLED=true on the web and worker, then press Start.")
     if not settings.has_redis:
         return _idle("REDIS_URL is not set, so the watcher cannot be started or read.")
-    return _idle("Not running - press Start.")
+    return _stuck()
+
+
+def _stuck() -> dict[str, Any]:
+    """Nothing is publishing. Say why, and put it back on the queue.
+
+    "Restarting..." was the only thing this page could say once the snapshot
+    expired, and it said it forever - for a job sitting in a queue nobody is
+    listening to, for a worker missing LIVE_ENABLED, and for a run that died
+    without relaunching itself. All three look the same from here and only
+    reading the queue tells them apart.
+    """
+    from core import livestate
+
+    out = _idle("")
+    queue = _queue_view(has_snapshot=False)
+    out["diagnosis"] = queue.get("verdict", "")
+    out["queue"] = queue.get("queue")
+
+    # An explanation the worker left behind outlives its snapshot, so it is
+    # still here long after the thirty seconds in which it was readable.
+    note = livestate.last_note()
+    if note:
+        out["hint"] = note.get("message", "")
+        out["noted_at"] = note.get("at")
+    else:
+        out["hint"] = out["diagnosis"]
+
+    # A watch that is wanted but is neither queued nor running has fallen
+    # through a crack - an out-of-memory kill takes the process without
+    # running the relaunch. Put it back, at most once a minute, and only when
+    # there is genuinely nothing in flight so a stall cannot become a queue
+    # full of identical jobs.
+    counts = queue.get("queue") or {}
+    idle = counts.get("waiting") == 0 and counts.get("started") == 0
+    if out["wanted"] and idle and counts.get("workers_listening_on_live"):
+        if livestate.claim("relaunch", seconds=60):
+            job = enqueue("live", "worker.tasks.live_watch.run", job_timeout=24 * 3600)
+            out["requeued"] = job is not None
+            if job is not None:
+                out["hint"] = "Nothing was running, so it has been put back on the queue."
+    return out
 
 
 @router.post("/start")
@@ -288,10 +329,30 @@ def debug() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         out["catches_table"] = f"could not check: {type(exc).__name__}: {exc}"
 
-    if not settings.has_redis:
-        out["verdict"] = "No Redis on the web service, so Start cannot queue anything."
-        return out
+    found = _queue_view(has_snapshot=bool(out["snapshot"]),
+                        catches_table=out.get("catches_table"))
+    out.update(found)
+    return out
 
+
+def _queue_view(*, has_snapshot: bool, catches_table: Any = True) -> dict[str, Any]:
+    """Read the live queue and say, in one sentence, what is wrong.
+
+    Start enqueues a job in one process and a worker in another runs it, so
+    when nothing happens there are five separate places it can have gone: the
+    variable is missing on the web side, the job never reached Redis, no
+    worker is listening on the queue, the job ran and raised, or it returned
+    without ever publishing. From the dashboard all five look identical, and
+    each round of guessing costs a deploy.
+
+    Split out of the debug endpoint because the Live view needs the same
+    answer: a page that says "restarting" while a job sits in a queue nobody
+    is listening to is worse than a page that says so.
+    """
+    if not settings.has_redis:
+        return {"verdict": "No Redis on the web service, so nothing can be queued."}
+
+    out: dict[str, Any] = {}
     try:
         from rq import Queue, Worker
 
@@ -324,15 +385,16 @@ def debug() -> dict[str, Any]:
             except Exception as exc:  # noqa: BLE001
                 recent.append({"id": job_id, "error": f"could not fetch: {exc}"})
 
+        waiting, started = len(queue), len(queue.started_job_registry)
         out["queue"] = {
-            "waiting": len(queue),
-            "started": len(queue.started_job_registry),
+            "waiting": waiting,
+            "started": started,
             "failed": len(failed),
             "workers_listening_on_live": listening,
         }
         out["recent_failures"] = recent
 
-        if out.get("catches_table") is False:
+        if catches_table is False:
             out["verdict"] = (
                 "The 'catches' table does not exist - migrations have not run. "
                 "Redeploy web (it runs alembic upgrade head at boot), or the "
@@ -344,16 +406,21 @@ def debug() -> dict[str, Any]:
                 "is either not running this build, or has a custom start command "
                 "that bypasses scripts/start.sh."
             )
+        elif has_snapshot:
+            out["verdict"] = "A snapshot exists; the watcher is reporting state."
+        elif started:
+            out["verdict"] = (
+                "A worker has the job and has not published a snapshot yet - "
+                "the first buffer takes about fifteen seconds."
+            )
+        elif waiting:
+            out["verdict"] = "A job is queued and no worker has taken it yet."
         elif recent:
             out["verdict"] = "A job ran and raised - see recent_failures[].error."
-        elif len(queue):
-            out["verdict"] = "A job is queued and no worker has taken it yet."
-        elif out["snapshot"]:
-            out["verdict"] = "A snapshot exists; the watcher is reporting state."
         else:
             out["verdict"] = (
-                "Queue empty, no failures, no snapshot: the job finished without "
-                "publishing. Check the worker's LIVE_ENABLED."
+                "Nothing queued, nothing running, no snapshot: the job finished "
+                "without publishing. Check LIVE_ENABLED on the worker."
             )
     except Exception as exc:  # noqa: BLE001 - a diagnostic must never 500
         out["verdict"] = f"Could not read the queue: {type(exc).__name__}: {exc}"

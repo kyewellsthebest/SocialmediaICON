@@ -28,6 +28,8 @@ STATUS_KEY = "clipengine:live:status"
 IMAGE_KEY = "clipengine:live:image:{name}"
 STOP_KEY = "clipengine:live:stop"
 WANTED_KEY = "clipengine:live:wanted"
+NOTE_KEY = "clipengine:live:note"
+CLAIM_KEY = "clipengine:live:claim:{name}"
 #: A snapshot older than this means the worker died mid-run: better to report
 #: nothing than to show three streams that stopped existing ten minutes ago.
 STATUS_TTL_S = 30
@@ -189,3 +191,77 @@ def wanted(default: bool = True) -> bool:
     if raw is None:
         return default
     return raw in (b"1", "1")
+
+
+# --- the last thing that went wrong, kept ------------------------------------
+#
+# The status snapshot expires after thirty seconds, which is right for a live
+# reading and wrong for an explanation. A worker that refuses to start says so
+# once - "LIVE_ENABLED is not set on the worker service" - and thirty seconds
+# later the page is back to saying "restarting", which is the least useful
+# true statement available. The reason outlives the reading.
+
+
+def note(message: str, **extra: Any) -> None:
+    """Remember why it is not running, for as long as it is not running."""
+    payload = json.dumps({"message": message, "at": time.time(), **extra})
+    client = _redis()
+    if client is None:
+        _fallback["note"] = payload
+        return
+    try:
+        client.set(NOTE_KEY, payload, ex=7 * 24 * 3600)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("livestate: could not record note (%s)", exc)
+        _fallback["note"] = payload
+
+
+def last_note() -> dict[str, Any] | None:
+    client = _redis()
+    raw = _fallback.get("note")
+    if client is not None:
+        try:
+            raw = client.get(NOTE_KEY) or raw
+        except Exception:  # noqa: BLE001
+            pass
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def clear_note() -> None:
+    _fallback.pop("note", None)
+    client = _redis()
+    if client is None:
+        return
+    try:
+        client.delete(NOTE_KEY)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# --- doing a thing at most once every so often -------------------------------
+
+
+def claim(name: str, *, seconds: float) -> bool:
+    """True for the first caller in the window, False for everyone after.
+
+    The dashboard polls every five seconds and there may be more than one web
+    container, so anything the *page* triggers - re-queueing a watcher that
+    died, for instance - has to be claimed before it is done or a stalled
+    watch turns into a queue full of identical jobs.
+    """
+    client = _redis()
+    if client is None:
+        held = _fallback.setdefault("claims", {})
+        if time.time() - held.get(name, 0) < seconds:
+            return False
+        held[name] = time.time()
+        return True
+    try:
+        return bool(client.set(CLAIM_KEY.format(name=name), "1", nx=True, ex=int(seconds)))
+    except Exception:  # noqa: BLE001 - if Redis is unreachable nothing can be queued anyway
+        return False

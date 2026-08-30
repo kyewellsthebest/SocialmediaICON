@@ -49,6 +49,12 @@ def _stalled(hint: str, **extra: object) -> dict:
             **extra,
         }
     )
+    # ...and again where it will still be readable tomorrow. The snapshot
+    # above expires in thirty seconds, which is right for a live reading and
+    # useless for an explanation: "LIVE_ENABLED is not set on the worker" was
+    # visible for half a minute and then the page went back to saying
+    # "restarting" forever.
+    livestate.note(hint, **{k: v for k, v in extra.items() if k == "errors"})
     log.warning("live_watch: %s", hint)
     return {"ok": False, "reason": hint}
 
@@ -70,6 +76,8 @@ def run(max_seconds: float | None = None) -> dict:
     _current = supervisor
     supervisor.running = True
     livestate.clear()
+    # Whatever went wrong last time did not go wrong this time.
+    livestate.clear_note()
     started = time.time()
     caught = 0
     stopped_on_purpose = False
@@ -171,7 +179,16 @@ def relaunch(why: str) -> bool:
 def ensure_running() -> dict:
     """Called when a worker boots. Starts the watch if that is what is wanted."""
     if not settings.live_enabled:
-        return {"ok": False, "reason": "LIVE_ENABLED is not set"}
+        # The worker's own log is the wrong place for this: it is the one
+        # thing about the worker the dashboard cannot otherwise see, and it is
+        # the most common reason the page sits on "restarting" forever.
+        reason = (
+            "The worker is running but LIVE_ENABLED is not set on it. Railway "
+            "does not share variables between services - set LIVE_ENABLED=true "
+            "on the worker service too, then redeploy it."
+        )
+        livestate.note(reason)
+        return {"ok": False, "reason": reason}
     if not livestate.wanted():
         return {"ok": False, "reason": "Stop was pressed; leaving it stopped"}
     if livestate.read():

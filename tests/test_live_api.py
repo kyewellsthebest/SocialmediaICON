@@ -493,3 +493,124 @@ class TestWhyThereIsNoVideo:
         from api.routes.live import _video_state
 
         assert _video_state(self._row(""))[0] is False
+
+
+class TestItSaysWhyItIsNotRunning:
+    """The screenshot this exists for: "RESTARTING" over an empty page.
+
+    Once the snapshot expires - thirty seconds - "restarting" was the only
+    thing the page could say, and it said it forever. It says it for a job
+    queued behind no worker, for a worker missing LIVE_ENABLED, and for a run
+    that died without relaunching, and all three need different fixes.
+    """
+
+    def _no_snapshot(self, monkeypatch, verdict, queue=None):
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        monkeypatch.setattr(
+            "api.routes.live._queue_view",
+            lambda **k: {"verdict": verdict, "queue": queue},
+        )
+
+    def test_the_queue_verdict_reaches_the_page(self, client, monkeypatch):
+        self._no_snapshot(monkeypatch, "No worker is listening on the 'live' queue.")
+        body = client.get("/api/live", headers=_auth()).json()
+        assert "No worker is listening" in body["diagnosis"]
+        assert body["hint"] == body["diagnosis"]
+
+    def test_a_note_the_worker_left_outlives_its_snapshot(self, client, monkeypatch):
+        self._no_snapshot(monkeypatch, "Nothing queued, nothing running.")
+        livestate.note("LIVE_ENABLED is not set on the worker service.")
+        body = client.get("/api/live", headers=_auth()).json()
+        assert "LIVE_ENABLED is not set on the worker" in body["hint"]
+        assert body["noted_at"] > 0
+
+    def test_a_run_that_starts_clears_the_old_explanation(self):
+        livestate.note("something went wrong")
+        livestate.clear_note()
+        assert livestate.last_note() is None
+
+    def test_the_shape_is_still_the_one_the_page_reads(self, client, monkeypatch):
+        self._no_snapshot(monkeypatch, "anything")
+        body = client.get("/api/live", headers=_auth()).json()
+        for key in ("running", "slots", "posting_enabled", "caps", "streams", "errors"):
+            assert key in body
+
+
+class TestItPutsItselfBackOnTheQueue:
+    """An out-of-memory kill takes the process without running the relaunch."""
+
+    def _stuck(self, monkeypatch, queue, calls):
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        # There is no Redis here, and a claim that cannot be written must not
+        # be granted in production - so the in-process store stands in for it.
+        monkeypatch.setattr("core.livestate._redis", lambda: None)
+        monkeypatch.setattr(
+            "api.routes.live._queue_view", lambda **k: {"verdict": "", "queue": queue}
+        )
+        monkeypatch.setattr(
+            "api.routes.live.enqueue",
+            lambda *a, **k: calls.append(1) or type("Job", (), {"id": "j"})(),
+        )
+
+    def _idle_queue(self, workers=1):
+        return {
+            "waiting": 0, "started": 0, "failed": 0,
+            "workers_listening_on_live": [{"name": f"w{i}"} for i in range(workers)],
+        }
+
+    def test_a_watch_that_is_wanted_but_gone_is_requeued(self, client, monkeypatch):
+        calls = []
+        self._stuck(monkeypatch, self._idle_queue(), calls)
+        body = client.get("/api/live", headers=_auth()).json()
+        assert body["requeued"] is True
+        assert len(calls) == 1
+
+    def test_it_does_not_queue_a_second_copy_on_the_next_poll(self, client, monkeypatch):
+        """The page polls every five seconds. A stall must not become a backlog."""
+        calls = []
+        self._stuck(monkeypatch, self._idle_queue(), calls)
+        for _ in range(6):
+            client.get("/api/live", headers=_auth())
+        assert len(calls) == 1
+
+    def test_a_job_already_waiting_is_left_alone(self, client, monkeypatch):
+        calls = []
+        queue = self._idle_queue()
+        queue["waiting"] = 1
+        self._stuck(monkeypatch, queue, calls)
+        client.get("/api/live", headers=_auth())
+        assert not calls
+
+    def test_a_job_already_running_is_left_alone(self, client, monkeypatch):
+        calls = []
+        queue = self._idle_queue()
+        queue["started"] = 1
+        self._stuck(monkeypatch, queue, calls)
+        client.get("/api/live", headers=_auth())
+        assert not calls
+
+    def test_nothing_is_queued_when_no_worker_could_take_it(self, client, monkeypatch):
+        """Queueing into a queue nobody reads just builds a pile of jobs."""
+        calls = []
+        self._stuck(monkeypatch, self._idle_queue(workers=0), calls)
+        client.get("/api/live", headers=_auth())
+        assert not calls
+
+    def test_stop_means_stop(self, client, monkeypatch):
+        calls = []
+        self._stuck(monkeypatch, self._idle_queue(), calls)
+        livestate.want(False)
+        client.get("/api/live", headers=_auth())
+        assert not calls
+
+
+class TestTheClaim:
+    def test_only_the_first_caller_in_the_window_gets_it(self):
+        assert livestate.claim("x", seconds=60) is True
+        assert livestate.claim("x", seconds=60) is False
+
+    def test_a_different_name_is_a_different_claim(self):
+        assert livestate.claim("a", seconds=60) is True
+        assert livestate.claim("b", seconds=60) is True

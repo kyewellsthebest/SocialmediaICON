@@ -98,14 +98,21 @@ async function renderLive() {
   // "wanted" is the intention, which outlives a deploy or a crash. Showing it
   // as "restarting" rather than "idle" is the difference between a gap you
   // have to act on and a gap that closes itself.
-  const resuming = !running && !queued && data.wanted;
   const streams = data.streams || [];
-  const label = running ? `${streams.length} live` : queued ? "starting" : resuming ? "restarting" : "off";
+  // "Restarting" is only true while something is actually in flight. With an
+  // empty queue and no worker it was a comforting word for a watch that had
+  // stopped, and it kept saying it forever.
+  const inflight = (data.queue?.waiting || 0) + (data.queue?.started || 0) > 0;
+  const resuming = !running && !queued && data.wanted && inflight;
+  const stuck = !running && !queued && !resuming && !!data.diagnosis;
+  const label = running ? `${streams.length} live`
+    : queued ? "starting" : resuming ? "restarting" : stuck ? "stuck" : "off";
   $("#top-state").textContent = label;
-  $("#top-state").dataset.state = running ? "live" : "warning";
+  $("#top-state").dataset.state = running ? "live" : stuck ? "critical" : "warning";
   $("#nav-live").textContent = running ? String(streams.length) : "";
 
-  paintStreams(streams, { running, queued, resuming });
+  paintStreams(streams, { running, queued, resuming, stuck, hint: data.hint,
+                          diagnosis: data.diagnosis });
 
   const errors = data.errors || [];
   $("#live-errors").hidden = errors.length === 0;
@@ -140,11 +147,15 @@ function paintStreams(streams, status) {
     note.className = "card empty-note-card";
     host.append(note);
   }
-  note.innerHTML = `<p class="empty-note">${status.running
+  // Whatever the server actually knows beats anything written here. "Starting
+  // up, this takes a few seconds after a deploy" was a guess, and it kept
+  // saying it for as long as the page was open.
+  const said = status.hint || status.diagnosis;
+  note.innerHTML = `<p class="empty-note">${esc(said || (status.running
     ? "Attaching to streams - the first buffer takes about fifteen seconds."
-    : status.queued || status.resuming
-    ? "Starting up. This takes a few seconds after a deploy."
-    : "Nothing is being watched."}</p>`;
+    : "Nothing is being watched."))}</p>` +
+    (status.diagnosis && status.diagnosis !== said
+      ? `<p class="muted">${esc(status.diagnosis)}</p>` : "");
 }
 
 /* Attribute selectors are not a safe place to interpolate a channel name. */
@@ -506,9 +517,11 @@ async function renderSettings() {
     stat(caps.cap_reason || (caps.allowed_now === false ? "no" : "yes"), "can cut now",
          caps.allowed_now === false && caps.cap_reason !== "hourly gap");
   $("#cap-detail").textContent = caps.cap_detail || "";
-  $("#live-sub").textContent = live.hint || (live.running
-    ? "Watching. It restarts itself after a deploy or a crash."
-    : "Not watching right now — it restarts itself, or start it by hand below.");
+  $("#live-sub").textContent = [live.hint, live.diagnosis]
+    .filter((line, i, all) => line && all.indexOf(line) === i).join(" ")
+    || (live.running
+      ? "Watching. It restarts itself after a deploy or a crash."
+      : "Not watching right now — it restarts itself, or start it by hand below.");
 
   const wanted = [
     ["database", "Postgres"], ["redis", "Redis"], ["r2", "R2 storage"],
