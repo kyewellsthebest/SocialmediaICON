@@ -7,6 +7,7 @@ insist it comes back, which is the only version of this that can fail honestly.
 
 from __future__ import annotations
 
+import random
 from datetime import UTC, datetime
 
 import pytest
@@ -251,3 +252,123 @@ class TestWhereTheMomentEnds:
     def test_a_peak_past_the_end_of_the_curve_does_not_crash(self):
         curve = self._curve(idle=2, burst_from=120.0, burst_to=140.0, burst=30)
         assert moments.moment_end(curve, 9999.0, min_s=11.0) == 11.0
+
+
+class TestBackgroundIsNotAMoment:
+    """The two worthless clips this file exists for.
+
+    Both scored on chat_voices alone. Both were cut from five minutes in which
+    nothing happened: the second one was a streamer typing bet amounts into a
+    gambling site with music over it, and chat had not reacted to anything.
+
+    The mechanism was that chat_voices came through _normalise(), which scales
+    a curve against its own min and max. There is always a maximum, so the
+    busiest second in any window scored 1.0 whether that second was a crowd
+    gasping or the same steady spam as the four minutes either side of it. A
+    level normalised against its own range cannot ever say "nothing here".
+    """
+
+    def _flat(self, per_second: int = 8, seconds: int = 300) -> list[chat.Message]:
+        """A busy channel where nothing happens. Steady rate, no reaction."""
+        spam = ["deenthegreatWdeenthegreatW", "deenthegreatDigg", "CaptFail", "W"]
+        return _messages([
+            (float(t), spam[i % len(spam)], f"u{(t * per_second + i) % 400}")
+            for t in range(seconds)
+            for i in range(per_second)
+        ])
+
+    def _reaction(self, at: float = 200.0, size: int = 60) -> list[chat.Message]:
+        return _messages([(at + (i % 25) * 0.12, "KEKW", f"r{i}") for i in range(size)])
+
+    def _rank(self, msgs, **kwargs):
+        curve = chat.build_curve(msgs, duration_s=300.0, bucket_s=1.0)
+        signals = moments.signals_from_chat(curve, messages=msgs, duration_s=300.0)
+        return moments.rank(signals, duration_s=300.0, clip_s=30.0, top=1,
+                            messages=msgs, **kwargs)
+
+    def test_a_busy_channel_with_no_reaction_produces_nothing(self):
+        assert self._rank(self._flat()) == []
+
+    def test_a_quiet_channel_with_no_reaction_produces_nothing(self):
+        assert self._rank(self._flat(per_second=1)) == []
+
+    def test_the_same_channel_with_a_real_reaction_still_produces_one(self):
+        """The bar has to reject nothing without also rejecting everything."""
+        found = self._rank(self._flat(per_second=1) + self._reaction())
+        assert found, "a burst on top of the same background must still be caught"
+        assert found[0].peak_s == pytest.approx(200.0, abs=12.0)
+
+    def _jittery(self, seconds: int = 300) -> list[chat.Message]:
+        """A real chat wobbles. Nothing happens; the rate is not a straight line."""
+        rng = random.Random(4)
+        spam = ["deenthegreatWdeenthegreatW", "deenthegreatDigg", "CaptFail", "W"]
+        return _messages([
+            (float(t), rng.choice(spam), f"u{rng.randint(0, 400)}")
+            for t in range(seconds)
+            for _ in range(rng.randint(6, 10))
+        ])
+
+    def test_an_ordinary_wobble_in_the_rate_is_not_a_moment(self):
+        assert self._rank(self._jittery()) == []
+
+    def test_levels_alone_never_clear_the_bar(self):
+        """With the bar off, the wobble does score - which is why the bar exists."""
+        found = self._rank(self._jittery(), min_event_score=0.0)
+        assert found, "the level does have an opinion; the bar is what ignores it"
+        assert set(found[0].why) <= moments.LEVELS
+        assert found[0].event_score == 0.0
+
+    def test_a_level_scores_zero_on_a_flat_curve(self):
+        assert moments._excess([7.0] * 200) == [0.0] * 200
+
+    def test_a_level_scores_on_a_rise_above_its_own_normal(self):
+        values = [4.0] * 120 + [20.0] * 10
+        found = moments._excess(values)
+        assert max(found[:120]) == 0.0
+        assert max(found[120:]) == 1.0
+
+    def test_a_level_has_no_opinion_before_it_has_history(self):
+        """A moment found four seconds in has neither a baseline nor a lead-in."""
+        found = moments._excess([1.0] * 10 + [99.0] * 10, warmup_s=20.0)
+        assert found[:20] == [0.0] * 20
+
+    def test_steady_loudness_is_not_a_moment(self):
+        """Music playing over a stream is loud for twenty minutes."""
+        assert moments._louder_than_usual([-21.0] * 200) == [0.0] * 200
+
+    def test_a_shout_over_steady_loudness_is(self):
+        found = moments._louder_than_usual([-21.0] * 120 + [-9.0] * 5)
+        assert max(found[:120]) == 0.0
+        assert max(found[120:]) == 1.0
+
+    def test_the_peak_follows_the_event_not_the_level(self):
+        """The quotes, the clip centre and its length all hang off the peak."""
+        msgs = self._flat(per_second=1) + self._reaction(at=150.0)
+        # ...plus a crowd arriving well after, which moves the level only.
+        msgs += _messages([(170.0 + i * 0.05, "hello", f"crowd{i}") for i in range(120)])
+        found = self._rank(msgs)
+        assert found[0].peak_s == pytest.approx(150.0, abs=12.0)
+
+
+class TestMoodKnowsWallpaperFromReaction:
+    def test_a_channel_that_always_spams_W_does_not_read_as_hype(self):
+        """Its own emote is the letter W. Every second of every stream was 100% hype."""
+        msgs = _messages([(float(t), "W", f"u{t % 40}") for t in range(600)])
+        found = chat.mood_around(msgs, 300.0)
+        assert found["dominant"] == "hype"
+        assert found["background"] is True, "chat feels exactly like this all day"
+        assert found["lift"] == pytest.approx(1.0, abs=0.25)
+
+    def test_a_real_swing_is_not_marked_as_background(self):
+        msgs = _messages([(float(t), "hello", f"u{t % 40}") for t in range(600)])
+        msgs += _messages([(300.0 + i * 0.1, "OH MY GOD", f"r{i}") for i in range(60)])
+        found = chat.mood_around(msgs, 300.0)
+        assert found["dominant"] == "shock"
+        assert found["background"] is False
+        assert found["lift"] > 3.0
+
+    def test_no_emotive_lines_still_returns_the_full_shape(self):
+        found = chat.mood_around(_messages([(1.0, "hello", "u")]), 1.0)
+        assert found["dominant"] is None
+        for key in ("confidence", "emotive_lines", "lift", "background", "counts"):
+            assert key in found

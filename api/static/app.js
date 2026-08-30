@@ -61,6 +61,13 @@ async function withBusy(btn, fn) {
 
 /* ---------- small pieces ---------- */
 
+/* Signals that are zero when nothing is happening. The rest - how busy chat
+   is, how loud the room is - always have a value, so a score made only of
+   those is a score about nothing. Kept in step with moments.EVENTS. */
+const EVENTS = ["chat_request", "chat_burst", "audio_jump", "scene_cuts", "heatmap"];
+const eventScore = (why) =>
+  Object.entries(why || {}).reduce((n, [k, v]) => n + (EVENTS.includes(k) ? v : 0), 0);
+
 const stat = (value, label, hot = false) =>
   `<div class="stat" data-hot="${hot}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`;
 
@@ -227,7 +234,8 @@ function fillStreamCard(card, s) {
 
   card.querySelector('[data-f="stats"]').innerHTML =
     stat(chat.per_minute ?? 0, "msgs/min", (chat.per_minute || 0) > 120) +
-    stat(s.dormant ? "asleep" : mood.dominant || "\u2014", "mood") +
+    stat(s.dormant ? "asleep" : s.reason === "nothing happened" ? "nothing"
+         : mood.dominant || "\u2014", "mood") +
     stat(requests, "clip asks", requests > 0) +
     stat((s.score ?? 0).toFixed(1), "score", (s.score || 0) > 0);
 }
@@ -463,17 +471,28 @@ function showInspect(id) {
     </div>
     <div class="stats">
       ${stat((c.score ?? 0).toFixed(1), "score")}
-      ${stat(mood.dominant || "—", "mood")}
-      ${stat(`${Math.round((mood.confidence || 0) * 100)}%`, "agreement")}
+      ${stat(eventScore(c.why).toFixed(1), "from events", eventScore(c.why) <= 0)}
+      ${stat(mood.background ? "background" : mood.dominant || "—", "mood",
+             !!mood.background)}
+      ${stat(`${mood.lift ?? "—"}\u00d7`, "vs usual", (mood.lift ?? 9) < 1.35)}
       ${stat(Number(c.peak_viewers || 0).toLocaleString(), "watching")}
       ${stat(`${Math.round(c.duration_s || 0)}s`, "length")}
-      ${stat(`${Math.round(c.at_s || 0)}s`, "into stream")}
     </div>
     <div><p class="label" style="margin-bottom:6px">Why it was cut</p>
-      ${why.length ? bars(why) : `<p class="empty-note">No breakdown recorded.</p>`}</div>
+      ${why.length ? bars(why) : `<p class="empty-note">No breakdown recorded.</p>`}
+      ${eventScore(c.why) <= 0
+        ? `<p class="muted">Nothing here says anything <em>happened</em> — this is
+             how busy the channel was, not a reaction to it. A clip scored this
+             way is the mistake this panel exists to make visible.</p>` : ""}</div>
     ${Object.keys(mood.counts || {}).length
       ? `<div><p class="label" style="margin-bottom:6px">What chat felt</p>
-           ${bars(Object.entries(mood.counts))}</div>` : ""}
+           ${bars(Object.entries(mood.counts))}
+           <p class="muted">${mood.background
+             ? `Chat feels this way all the time on this channel (${mood.lift}\u00d7 its
+                usual rate), so it is not a reaction to anything.`
+             : `${Math.round((mood.confidence || 0) * 100)}% agreement over
+                ${mood.emotive_lines || 0} lines, ${mood.lift}\u00d7 the channel's
+                usual rate.`}</p></div>` : ""}
     ${quotes ? `<div><p class="label" style="margin-bottom:6px">What chat said</p>
         <div class="quotes">${quotes}</div></div>` : ""}
     <a class="btn btn-quiet" href="${esc(c.source_url)}" target="_blank" rel="noopener">Open channel</a>`;

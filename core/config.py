@@ -264,6 +264,14 @@ class Settings(BaseSettings):
     #: The longest a clip may run. Short-form platforms stop rewarding much
     #: past this, and a moment that has not ended in a minute is a segment.
     live_max_clip_s: float = 59.0
+    #: Below this a window is not a moment, whatever else is true. The caps
+    #: cap how many clips a day; this decides whether there is one at all.
+    #: Without it the watcher cut its best five minutes of nothing every hour,
+    #: because something always scores highest.
+    live_min_score: float = 20.0
+    #: ...and this much of it has to come from something actually happening
+    #: rather than from how busy or loud the channel generally is.
+    live_min_event_score: float = 15.0
     #: How hard chat has to spike, as a multiple of its own recent baseline.
     live_trigger_ratio: float = 3.0
     #: Nothing is posted anywhere yet - clips are cut and held for review.

@@ -7,6 +7,7 @@ supervisor is glue over modules that already have their own tests.
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -564,3 +565,84 @@ class TestWhyItIsNotCutting:
         assert caps["allowed_now"] is False
         assert caps["cap_reason"] == "no database"
         assert "could not connect" in caps["cap_detail"]
+
+
+class TestItRefusesToClipNothing:
+    """The clip that should never have existed.
+
+    A streamer typing bet amounts into a gambling site, music over the top,
+    nobody saying anything. Scored 18.0, entirely on chat_voices, and was cut
+    because the only bar in front of a cut was the daily cap. Something always
+    scores highest; that is not the same as something being worth watching.
+    """
+
+    def _busy_but_dull(self, seconds: int = 300):
+        """A channel doing eight messages a second and reacting to nothing."""
+        rng = random.Random(4)
+        spam = ["deenthegreatWdeenthegreatW", "deenthegreatDigg", "CaptFail", "W"]
+        return [
+            chatlib.Message(float(t), rng.choice(spam), f"u{rng.randint(0, 400)}")
+            for t in range(seconds)
+            for _ in range(rng.randint(6, 10))
+        ]
+
+    def _ticked(self, monkeypatch, messages):
+        sup = Supervisor()
+        watched = _watched(messages=messages)
+        sup.watching["x"] = watched
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        cut = []
+        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
+        sup.tick()
+        return watched, cut
+
+    def test_a_busy_channel_reacting_to_nothing_is_not_cut(self, monkeypatch):
+        _, cut = self._ticked(monkeypatch, self._busy_but_dull())
+        assert not cut
+
+    def test_and_the_page_is_told_it_was_refused_rather_than_missed(self, monkeypatch):
+        watched, _ = self._ticked(monkeypatch, self._busy_but_dull())
+        assert watched.last_reason in ("too weak", "nothing happened", "")
+
+    def test_a_real_reaction_on_the_same_channel_is_still_cut(self, monkeypatch):
+        """The bar must reject nothing without also rejecting everything."""
+        messages = self._busy_but_dull()
+        messages += [chatlib.Message(200.0 + (i % 25) * 0.1, "KEKW", f"r{i}") for i in range(200)]
+        messages += [chatlib.Message(203.0, "CLIP THAT", f"q{i}") for i in range(6)]
+        _, cut = self._ticked(monkeypatch, messages)
+        assert cut, "a crowd reacting on a busy channel is the thing we are here for"
+
+    def test_a_score_under_the_floor_is_refused(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_min_score", 999.0)
+        _, cut = self._ticked(monkeypatch, _chatter(burst_at=150.0))
+        assert not cut
+
+    def test_a_score_made_only_of_levels_is_refused(self, monkeypatch):
+        """Even a huge total means nothing if none of it is an event."""
+        sup = Supervisor()
+        watched = _watched()
+
+        monkeypatch.setattr(sup, "score", lambda w: (500.0, {"chat_voices": 500.0}, 10.0))
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        sup.watching["x"] = watched
+        cut = []
+        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
+        sup.tick()
+        assert not cut
+        assert watched.last_reason == "nothing happened"
+
+    def test_the_event_share_is_what_is_counted(self):
+        why = {"chat_burst": 9.0, "chat_voices": 40.0, "audio_energy": 5.0}
+        assert Supervisor.event_score(why) == 9.0
+
+    def test_a_level_can_lift_a_real_moment_but_not_carry_one(self, monkeypatch):
+        sup = Supervisor()
+        watched = _watched()
+        why = {"chat_burst": 16.0, "chat_voices": 30.0}
+        monkeypatch.setattr(sup, "score", lambda w: (46.0, why, 10.0))
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        sup.watching["x"] = watched
+        cut = []
+        monkeypatch.setattr(sup, "catch", lambda *a, **k: cut.append(1))
+        sup.tick()
+        assert cut

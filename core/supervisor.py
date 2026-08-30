@@ -517,6 +517,11 @@ class Supervisor:
         best = found[0]
         return best.score, best.why, best.peak_s
 
+    @staticmethod
+    def event_score(why: dict[str, float]) -> float:
+        """The part of a score that came from something happening."""
+        return sum(v for k, v in why.items() if k in moments.EVENTS)
+
     def tick(self, *, now: float | None = None) -> list[dict[str, Any]]:
         """One pass over every watched channel. Returns whatever was caught."""
         now = time.time() if now is None else now
@@ -561,6 +566,19 @@ class Supervisor:
             watched.last_reason = max(why, key=why.get) if why else ""
 
             if value <= 0 or not why:
+                continue
+
+            # Two bars, and both are about whether this is worth anyone's
+            # time. The caps decide how many clips a day; these decide whether
+            # there is a clip at all. Without them the watcher cut its best
+            # five minutes of nothing every hour - a betting screen with music
+            # over it, scored 18.0, entirely on how many people were typing.
+            events = self.event_score(why)
+            if value < settings.live_min_score:
+                watched.last_reason = "too weak"
+                continue
+            if events < settings.live_min_event_score:
+                watched.last_reason = "nothing happened"
                 continue
             if now - watched.last_catch_at < COOLDOWN_S:
                 continue

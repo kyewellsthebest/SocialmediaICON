@@ -382,23 +382,45 @@ def mood_around(
     low, high = at_s - window_s, at_s + window_s
     counts: dict[str, int] = {}
     emotive = 0
+    everywhere = 0
     for message in messages:
+        found = message.emotions()
+        if found:
+            everywhere += 1
         if not low <= message.at_s < high:
             continue
-        found = message.emotions()
         if found:
             emotive += 1
         for name in found:
             counts[name] = counts.get(name, 0) + 1
 
     if not counts:
-        return {"dominant": None, "confidence": 0.0, "emotive_lines": 0, "counts": {}}
+        return {
+            "dominant": None, "confidence": 0.0, "emotive_lines": 0,
+            "lift": 0.0, "background": False, "counts": {},
+        }
+
+    # How much more emotive chat is here than it is the rest of the time.
+    #
+    # Without this, a channel whose own emote is the letter W reads as 100%
+    # "hype" at every second of every stream, and a clip's inspect panel says
+    # 100% agreement about nothing. Chat that always feels this way is not
+    # feeling it about the thing on screen.
+    spans = [m.at_s for m in messages]
+    whole = (max(spans) - min(spans)) if len(spans) > 1 else 0.0
+    here = emotive / max(2 * window_s, 1e-6)
+    usual = (everywhere / whole) if whole > 0 else here
+    lift = round(here / usual, 2) if usual > 0 else 0.0
 
     dominant, top = max(counts.items(), key=lambda kv: kv[1])
     return {
         "dominant": dominant,
         "confidence": round(top / emotive, 3),
         "emotive_lines": emotive,
+        "lift": lift,
+        # True when chat is no more emotive here than it is all day: the
+        # feeling is the channel's wallpaper, not a reaction to anything.
+        "background": bool(whole > 0 and lift < 1.35),
         "counts": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
     }
 

@@ -55,6 +55,25 @@ WEIGHTS: dict[str, float] = {
     "heatmap": 3.0,
 }
 
+#: Signals that are **events**: zero when nothing is happening, positive when
+#: something is. These are the only things that may nominate a moment.
+EVENTS = frozenset({"chat_request", "chat_burst", "audio_jump", "scene_cuts", "heatmap"})
+
+#: Signals that are **levels**: always a value, because there is always a
+#: loudness and always a number of people talking. A level can corroborate an
+#: event and it can rank two events against each other. It must never be the
+#: reason a clip exists, and the bug that produced two worthless clips is
+#: exactly that: chat_voices, normalised against its own window, put 1.0 on
+#: whichever second happened to be busiest and scored 18-38 points on a chat
+#: where nothing had happened for five minutes. A level scaled to its own
+#: range cannot ever say "nothing here" - there is always a maximum.
+LEVELS = frozenset({"chat_voices", "audio_energy"})
+
+#: How much event evidence a window needs before it counts as a moment at all.
+#: In the same units as the score, so one weak burst clears it and background
+#: chatter does not.
+MIN_EVENT_SCORE = 1.0
+
 
 @dataclass
 class Moment:
@@ -79,6 +98,11 @@ class Moment:
             return "unexplained"
         return max(self.why.items(), key=lambda kv: kv[1])[0]
 
+    @property
+    def event_score(self) -> float:
+        """How much of the score came from something actually happening."""
+        return sum(v for k, v in self.why.items() if k in EVENTS)
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "start_s": round(self.start_s, 2),
@@ -86,6 +110,7 @@ class Moment:
             "duration_s": round(self.duration_s, 2),
             "peak_s": round(self.peak_s, 2),
             "score": round(self.score, 3),
+            "event_score": round(self.event_score, 3),
             "top_reason": self.top_reason(),
             "why": {k: round(v, 3) for k, v in sorted(self.why.items(), key=lambda kv: -kv[1])},
             # By frequency, not by arrival. Forty people typing the same three
@@ -115,6 +140,60 @@ def _normalise(values: list[float]) -> list[float]:
         return [0.0] * len(values)
     span = high - low
     return [(v - low) / span for v in values]
+
+
+def _excess(
+    values: list[float], *, grid_s: float = GRID_S,
+    look_back_s: float = 45.0, cap: float = 3.0, warmup_s: float = 20.0,
+) -> list[float]:
+    """How far a level sits above its own recent normal, 0..1. Flat means zero.
+
+    This is the difference between "the busiest second in this window" and
+    "busier than this channel usually is", and it is the whole reason a level
+    signal is safe to include at all. _normalise() answers the first question,
+    which always has an answer: whatever the largest value happens to be
+    becomes 1.0 even if the curve is dead flat, so the signal nominates a
+    winner on every window it is ever shown.
+
+    Measured against a trailing median rather than a mean, because the median
+    is not moved by the very spike being measured. The warm-up exists for the
+    same reason: with no history there is no normal to be above, and a moment
+    found four seconds into a buffer has neither a baseline nor a lead-in.
+    """
+    size = len(values)
+    window = max(1, int(look_back_s / grid_s))
+    least = max(1, int(warmup_s / grid_s))
+    out = [0.0] * size
+    for i in range(least, size):
+        history = sorted(values[max(0, i - window) : i])
+        if not history:
+            continue
+        baseline = max(history[len(history) // 2], 1.0)
+        ratio = values[i] / baseline
+        out[i] = max(0.0, min(1.0, (ratio - 1.0) / (cap - 1.0)))
+    return out
+
+
+def _louder_than_usual(
+    rms_db: list[float], *, look_back_s: float = 45.0,
+    grid_s: float = GRID_S, over_db: float = 9.0, warmup_s: float = 20.0,
+) -> list[float]:
+    """Loudness above the recent normal, 0..1. Steady sound scores zero.
+
+    A difference rather than a ratio, because decibels are already a
+    logarithm: nine dB over the trailing median is the same amount of "louder"
+    at any volume, and a ratio of two negative numbers means nothing at all.
+    """
+    window = max(1, int(look_back_s / grid_s))
+    least = max(1, int(warmup_s / grid_s))
+    out = [0.0] * len(rms_db)
+    for i in range(least, len(rms_db)):
+        history = sorted(rms_db[max(0, i - window) : i])
+        if not history:
+            continue
+        baseline = history[len(history) // 2]
+        out[i] = max(0.0, min(1.0, (rms_db[i] - baseline) / over_db))
+    return out
 
 
 def _spread(
@@ -175,7 +254,10 @@ def signals_from_chat(curve, messages=None, *, duration_s: float, grid_s: float 
         [(t, min(1.0, ratio / 10.0)) for t, ratio in curve.bursts()],
         size, grid_s=grid_s, before=4.0, after=3.0,
     )
-    out["chat_voices"] = _resample(_normalise([float(v) for v in curve.voices]), size)
+    # Not _normalise: see _excess. A busy channel is not a moment.
+    out["chat_voices"] = _resample(
+        _excess([float(v) for v in curve.voices], grid_s=curve.bucket_s or grid_s), size
+    )
 
     if messages is not None:
         out["_messages"] = messages  # carried through for quoting, not scored
@@ -190,7 +272,9 @@ def signals_from_audio(env, *, duration_s: float, grid_s: float = GRID_S) -> dic
             [(t, min(1.0, rise / 30.0)) for t, rise in env.jumps()],
             size, grid_s=grid_s, before=1.0, after=3.0,
         ),
-        "audio_energy": _resample(_normalise(env.rms_db), size),
+        # Loudness above its own recent normal. Music playing over a stream is
+        # loud for twenty minutes and is not a moment for any of them.
+        "audio_energy": _resample(_louder_than_usual(env.rms_db), size),
     }
 
 
@@ -262,6 +346,7 @@ def rank(
     grid_s: float = GRID_S,
     weights: dict[str, float] | None = None,
     messages: list | None = None,
+    min_event_score: float = MIN_EVENT_SCORE,
 ) -> list[Moment]:
     """The best `top` non-overlapping windows of `clip_s`, strongest first.
 
@@ -269,11 +354,24 @@ def rank(
     otherwise fill every slot with ten near-identical windows sliding one
     second apart, and a page needs ten different moments, not one moment ten
     times.
+
+    A window with no event evidence is not returned at all, whatever its total.
+    Levels are always positive - there is always a loudest second and a
+    busiest second - so a ranking that lets them stand alone will always
+    return its favourite five minutes of nothing, confidently and with a
+    score. Both worthless clips this rule exists for were pure chat_voices.
     """
     total, parts = fuse(signals, duration_s=duration_s, grid_s=grid_s, weights=weights)
     width = max(1, int(clip_s / grid_s))
     if len(total) < width:
         return []
+
+    # The event evidence on its own. The peak is read off this rather than off
+    # the total: a level drifting up two seconds later would otherwise pull the
+    # peak - and with it the quotes, the clip's centre and its length - away
+    # from the thing that actually happened.
+    firing = [name for name in parts if name in EVENTS]
+    events = [sum(parts[name][i] for name in firing) for i in range(len(total))]
 
     # Prefix sums: every window total in one pass instead of width per window.
     prefix = [0.0]
@@ -302,7 +400,7 @@ def rank(
         # reliably at the middle or the end - a clip request paints backwards,
         # a loudness jump paints forwards - so this is measured rather than
         # assumed, and it is what the quotes and the thumbnail should follow.
-        peak = max(range(index, index + width), key=lambda i: total[i])
+        peak = max(range(index, index + width), key=lambda i: events[i])
         moment = Moment(
             start_s=start_s,
             end_s=min(start_s + clip_s, duration_s),
@@ -310,6 +408,10 @@ def rank(
             score=score,
             why={k: v for k, v in why.items() if v > 0},
         )
+        if moment.event_score < min_event_score:
+            # Ranked highly on background alone. Skipped rather than broken
+            # out of: a later window may hold a real one.
+            continue
         if messages is not None and any(k.startswith("chat") for k in moment.why):
             from core.chat import quotes_around
 
