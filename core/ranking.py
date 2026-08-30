@@ -72,12 +72,21 @@ class Rank:
         return {
             "score": round(self.score, 1),
             "parts": {k: round(v, 3) for k, v in self.parts.items()},
+            "carried_by": self.best_part,
             "detail": self.detail,
         }
 
     @property
     def best_part(self) -> str:
-        return max(self.parts, key=self.parts.get) if self.parts else ""
+        """What actually carried this clip - weighted, not the biggest fraction.
+
+        Reach is 0.99 on almost every stream worth watching, so by raw
+        fraction it wins nearly every clip and says nothing. What carried a
+        clip is what it contributed: weight times fraction.
+        """
+        if not self.parts:
+            return ""
+        return max(self.parts, key=lambda name: WEIGHTS.get(name, 0.0) * self.parts[name])
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:

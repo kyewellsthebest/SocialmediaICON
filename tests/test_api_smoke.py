@@ -6,6 +6,10 @@ that need Postgres fail with 503 rather than a blank 500.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -151,3 +155,20 @@ def test_railway_config_has_no_global_healthcheck():
     deploy = config.get("deploy", {})
     assert "healthcheckPath" not in deploy
     assert "startCommand" not in deploy, "a start command here is inherited by every service"
+
+
+def test_dashboard_javascript_has_no_undeclared_names():
+    """A name used outside the scope that declares it is a runtime
+    ReferenceError the moment that code path runs, and nothing else in the
+    suite opens the page in a browser. eslint's scope analysis is the only
+    thing that finds it before a user does."""
+    eslint = shutil.which("eslint") or shutil.which("npx")
+    if eslint is None:
+        pytest.skip("eslint is not installed")
+    argv = [eslint] + (["eslint"] if eslint.endswith("npx") else [])
+    root = Path(__file__).resolve().parents[1]
+    done = subprocess.run(  # noqa: S603
+        argv + [str(root / "api" / "static" / "app.js")],
+        cwd=root, capture_output=True, text=True, timeout=120,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr

@@ -170,3 +170,30 @@ class TestItSurvivesMissingData:
     def test_a_clip_from_before_faces_existed_still_ranks(self):
         found = ranking.rank(clip(watched_faces=None))
         assert found.score > 0
+
+
+class TestWhatCarriedTheClip:
+    def test_it_is_the_biggest_contribution_not_the_biggest_fraction(self):
+        """Reach is 0.99 on almost every stream worth watching.
+
+        By raw fraction it therefore wins nearly every clip and says nothing;
+        by contribution it wins only when nothing else did.
+        """
+        assert ranking.rank(clip()).best_part != "reach"
+
+    def test_a_clip_that_only_had_an_audience_says_so(self):
+        found = ranking.rank(clip(
+            heard={"laughs": [{"confidence": 0.2}], "speech_share": 0.3},
+            seen={}, watched_faces={},
+            mood={"dominant": "hype", "lift": 1.0, "background": True, "confidence": 0.4},
+            chat={"burst_ratio": 0, "clip_requests": 0, "per_minute": 100},
+            said={},
+            verdict={"watched": True, "worth_it": True, "confidence": 0.3, "kind": "funny"},
+        ))
+        assert found.best_part in ("reach", "production")
+
+    def test_a_clip_carried_by_what_happened_says_that(self):
+        assert ranking.rank(clip()).best_part == "event"
+
+    def test_it_is_reported_alongside_the_score(self):
+        assert ranking.rank(clip()).as_dict()["carried_by"] == "event"

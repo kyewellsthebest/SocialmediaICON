@@ -525,8 +525,8 @@ function clipCard(c) {
         : c.verdict?.watched ? "good" : "warning"}">${
         c.approved ? "kept" : c.verdict?.kind || (c.verdict?.watched ? "caught" : "unwatched")
       }</span>
-      <span class="muted">${rank.parts
-        ? esc(Object.entries(rank.parts).sort((a, b) => b[1] - a[1])[0][0])
+      <span class="muted">${rank.carried_by
+        ? esc(rank.carried_by)
         : (c.score ?? 0).toFixed(1)} · ${Math.round(c.duration_s || 0)}s</span>
       <span style="flex:1 1 auto"></span>
       <button class="btn" data-keep="${c.id}" ${c.approved ? "disabled" : ""}>Keep</button>
@@ -547,6 +547,7 @@ function showInspect(id) {
     `<span class="q">${esc(q.text)}${q.count > 1 ? `<b>${q.count}</b>` : ""}</span>`).join("");
 
   const seenBy = c.verdict || {};
+  const rank = c.rank || {};
 
   $("#sheet-body").innerHTML = `
     <div class="spread">
