@@ -122,7 +122,7 @@ async function renderLive() {
   $("#nav-live").textContent = running ? String(streams.length) : "";
 
   paintStreams(streams, { running, queued, resuming, stuck, hint: data.hint,
-                          diagnosis: data.diagnosis });
+                          diagnosis: data.diagnosis, health: data.health });
 
   // What it is holding, waiting for a slot. Worth showing: it is the whole
   // difference between a watcher and a chooser, and it is otherwise invisible.
@@ -187,6 +187,18 @@ function paintStreams(streams, status) {
   // up, this takes a few seconds after a deploy" was a guess, and it kept
   // saying it for as long as the page was open.
   const said = status.hint || status.diagnosis;
+  // A fault beats every hint. "Attaching to streams" and "broken since
+  // midnight" looked identical for eight hours, which is how a night of
+  // clipping was lost without anybody being told.
+  const health = status.health || {};
+  if (health.ok === false) {
+    note.className = "card empty-note-card bad";
+    note.innerHTML =
+      `<p class="empty-note"><b>Watching nothing.</b> ${esc(health.detail || "")}</p>` +
+      (health.last_error ? `<p class="muted">${esc(health.last_error)}</p>` : "");
+    return;
+  }
+  note.className = "card empty-note-card";
   note.innerHTML = `<p class="empty-note">${esc(said || (status.running
     ? "Attaching to streams - the first buffer takes about fifteen seconds."
     : "Nothing is being watched."))}</p>` +

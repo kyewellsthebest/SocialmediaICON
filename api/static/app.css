@@ -338,6 +338,10 @@ main { padding: 14px; display: grid; gap: 12px; max-width: 720px; margin: 0 auto
 .toast[data-tone="critical"] { background: var(--critical); color: #fff; }
 
 .empty-note { color: var(--ink-3); font-size: 13.5px; padding: 6px 0; }
+/* A fault has to be louder than a hint. The two read identically for eight
+   hours while nothing was being watched. */
+.empty-note-card.bad { border-color: var(--critical); }
+.empty-note-card.bad .empty-note { color: var(--critical); }
 pre.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; color: var(--ink-3); max-height: 280px; overflow: auto; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

@@ -98,6 +98,10 @@ PROBE_WINDOW_S = 120.0
 #: A probe that has only just connected has seen almost nothing, and reporting
 #: that as a rate would demote a stream for the crime of being new to us.
 PROBE_SETTLE_S = 45.0
+#: How long "watching nothing" is allowed to mean "still starting up".
+#: Resolving three playback URLs and filling three buffers takes most of a
+#: minute; past this it is a fault, not a start-up.
+STARTUP_GRACE_S = 180.0
 #: How long a sleeping stream is passed over before it is considered again.
 #: Long enough not to thrash, short enough that waking up is noticed.
 DORMANT_REST_S = 900.0
@@ -564,7 +568,13 @@ class Supervisor:
         slots=settings.live_slots, drop_rank=settings.live_drop_rank
     ))
     watching: dict[str, Watched] = field(default_factory=dict)
+    #: When this process started watching. Only used to tell "still starting
+    #: up" from "has been broken for eight hours", which read identically on
+    #: the page the night the roster poll was throwing every five seconds.
+    began_at: float = field(default_factory=time.time)
     last_roster_poll: float = 0.0
+    #: The last poll that actually returned. Zero until one does.
+    last_good_poll: float = 0.0
     #: Channels found asleep, and when they may be picked up again. A stream
     #: that wakes before this is simply picked up at the next poll like any
     #: other; the delay only stops the roster re-attaching to a sleeping room
@@ -815,6 +825,7 @@ class Supervisor:
                 self._describe(watched, entry)
 
         self.last_roster_poll = now
+        self.last_good_poll = now
         return moved
 
     @staticmethod
@@ -1584,6 +1595,42 @@ class Supervisor:
             "looked_today": len(self.looked),
             "look_budget": settings.verdict_per_day,
             "errors": self.errors[-6:],
+            "health": self.health(),
+        }
+
+    def health(self) -> dict[str, Any]:
+        """Is this actually working, in one line the page can shout.
+
+        Watching nothing looks exactly like starting up for the first minute
+        and exactly like a fatal bug after the first hour, and the only thing
+        that told them apart was reading a repeating line in a log. It cost a
+        night of clipping. This says which it is.
+        """
+        now = time.time()
+        up = now - self.began_at
+        if self.watching:
+            return {"ok": True, "state": "watching",
+                    "detail": f"{len(self.watching)} stream(s)", "up_s": round(up)}
+        if up < STARTUP_GRACE_S and not self.last_good_poll:
+            return {"ok": True, "state": "starting",
+                    "detail": "attaching to streams", "up_s": round(up)}
+
+        # Watching nothing, and long enough that it is not the first buffer.
+        # The last error is nearly always the repeating one, so it is the
+        # single most useful thing to put in front of somebody.
+        last = self.errors[-1] if self.errors else ""
+        if not self.last_good_poll:
+            why = "no roster poll has ever succeeded"
+        elif self.skipped:
+            why = f"every stream was refused ({len(self.skipped)} skipped)"
+        else:
+            why = "the roster came back empty"
+        return {
+            "ok": False,
+            "state": "watching nothing",
+            "detail": f"{why} - nothing has been clipped for {round(up / 60)} min",
+            "last_error": last,
+            "up_s": round(up),
         }
 
     def _caps_quietly(self) -> dict[str, Any]:

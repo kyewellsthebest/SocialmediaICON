@@ -1266,3 +1266,46 @@ class TestTheRosterPollSurvivesARealListing:
 
         assert sup.watching, "a poll that watches nothing is the bug"
         assert not [n for n in sup.errors if "failed" in n], sup.errors
+
+
+class TestItSaysWhenItIsBroken:
+    """Watching nothing looks exactly like starting up for the first minute
+    and exactly like a fatal bug after the first hour. The only thing that
+    told them apart was a repeating line in a log nobody was reading, and it
+    cost a night of clipping."""
+
+    def test_a_fresh_start_reads_as_starting_up(self):
+        sup = Supervisor()
+        found = sup.health()
+        assert found["ok"] is True
+        assert found["state"] == "starting"
+
+    def test_watching_nothing_an_hour_in_is_a_fault(self):
+        sup = Supervisor()
+        sup.began_at = time.time() - 3600
+        sup.errors.append("20:27:21 roster poll failed (cannot assign to field)")
+        found = sup.health()
+        assert found["ok"] is False
+        assert "no roster poll has ever succeeded" in found["detail"]
+        assert "60 min" in found["detail"]
+        assert "cannot assign" in found["last_error"]
+
+    def test_a_poll_that_works_but_refuses_everyone_says_so(self):
+        sup = Supervisor()
+        sup.began_at = time.time() - 3600
+        sup.last_good_poll = time.time()
+        sup.skipped = {"a": "is a game", "b": "is a game"}
+        found = sup.health()
+        assert found["ok"] is False
+        assert "every stream was refused (2 skipped)" in found["detail"]
+
+    def test_watching_anything_at_all_is_healthy(self):
+        sup = Supervisor()
+        sup.began_at = time.time() - 3600
+        sup.watching["one"] = _watched("one")
+        found = sup.health()
+        assert found["ok"] is True
+        assert found["state"] == "watching"
+
+    def test_the_status_the_page_reads_carries_it(self):
+        assert "health" in Supervisor().status()
