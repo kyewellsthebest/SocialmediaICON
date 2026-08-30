@@ -99,6 +99,18 @@ def main(argv: list[str] | None = None) -> int:
 
     from rq import Worker
 
+    # A watcher that has to be started by hand is not a watcher. Every deploy
+    # ends the previous run, so the boot that follows one has to pick it back
+    # up - unless somebody deliberately pressed Stop, which is remembered
+    # separately and survives the restart too.
+    if "live" in names:
+        try:
+            from worker.tasks.live_watch import ensure_running
+
+            log.info("live: %s", ensure_running())
+        except Exception as exc:  # noqa: BLE001 - never block the worker booting
+            log.warning("live: could not resume the watch (%s)", exc)
+
     log.info("starting worker on queues: %s", ", ".join(names))
     Worker([get_queue(n) for n in names], connection=get_redis()).work(with_scheduler=True)
     return 0

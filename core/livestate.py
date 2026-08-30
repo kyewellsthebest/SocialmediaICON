@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 STATUS_KEY = "clipengine:live:status"
 IMAGE_KEY = "clipengine:live:image:{name}"
 STOP_KEY = "clipengine:live:stop"
+WANTED_KEY = "clipengine:live:wanted"
 #: A snapshot older than this means the worker died mid-run: better to report
 #: nothing than to show three streams that stopped existing ten minutes ago.
 STATUS_TTL_S = 30
@@ -153,3 +154,38 @@ def get_image(name: str, *, max_age_s: int = 120) -> bytes | None:
         return client.get(IMAGE_KEY.format(name=name))
     except Exception:  # noqa: BLE001
         return None
+
+
+# --- what it should be doing, as opposed to what it is doing -----------------
+#
+# Running is a fact about right now; wanted is an intention that outlives a
+# deploy, a crash and an out-of-memory kill. Keeping them apart is what lets
+# the watcher restart itself without also overriding somebody who deliberately
+# pressed Stop. It has no expiry for the same reason - an intention that times
+# out is not an intention.
+
+
+def want(watching: bool) -> None:
+    client = _redis()
+    if client is None:
+        _fallback["wanted"] = watching
+        return
+    try:
+        client.set(WANTED_KEY, "1" if watching else "0")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("livestate: could not record intent (%s)", exc)
+        _fallback["wanted"] = watching
+
+
+def wanted(default: bool = True) -> bool:
+    """Whether it should be watching. Unset means yes - it is a watcher."""
+    client = _redis()
+    if client is None:
+        return bool(_fallback.get("wanted", default))
+    try:
+        raw = client.get(WANTED_KEY)
+    except Exception:  # noqa: BLE001
+        return bool(_fallback.get("wanted", default))
+    if raw is None:
+        return default
+    return raw in (b"1", "1")

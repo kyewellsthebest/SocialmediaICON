@@ -37,8 +37,15 @@ def _idle(hint: str) -> dict[str, Any]:
         },
         "streams": [],
         "errors": [],
+        "wanted": _wanted(),
         "hint": hint,
     }
+
+
+def _wanted() -> bool:
+    from core import livestate
+
+    return livestate.wanted() if settings.has_redis else False
 
 
 @router.get("")
@@ -54,6 +61,7 @@ def status() -> dict[str, Any]:
 
     found = livestate.read()
     if found:
+        found.setdefault("wanted", livestate.wanted())
         return found
     if not settings.live_enabled:
         return _idle("Set LIVE_ENABLED=true on the web and worker, then press Start.")
@@ -77,6 +85,9 @@ def start() -> dict[str, Any]:
     # The queue name comes first; the watcher has its own so a run lasting
     # hours cannot sit in front of every other job. job_timeout has to be
     # long for the same reason - the default hour would kill it mid-stream.
+    # Record the intent before queueing anything: this is what makes the
+    # watch survive the next deploy without being pressed again.
+    livestate.want(True)
     livestate.clear()
     job = enqueue("live", "worker.tasks.live_watch.run", job_timeout=24 * 3600)
     if job is None:

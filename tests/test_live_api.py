@@ -359,3 +359,84 @@ class TestTheClipHasToBeReachable:
 
         monkeypatch.setattr("core.livestate.get_image", lambda *a, **k: b"x")
         assert _playable(Row()) is True
+
+
+class TestItKeepsWatchingByItself:
+    """Pressing Start after every deploy is not a watcher.
+
+    Running is a fact about now; wanted is an intention that has to outlive a
+    deploy, a crash and an OOM kill. Only pressing Stop is a decision to stop.
+    """
+
+    def test_watching_is_the_default_before_anything_is_pressed(self):
+        assert livestate.wanted() is True
+
+    def test_start_records_the_intent(self, client, monkeypatch):
+        livestate.want(False)
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        monkeypatch.setattr(
+            "api.routes.live.enqueue", lambda *a, **k: type("Job", (), {"id": "x"})()
+        )
+        client.post("/api/live/start", headers=_auth())
+        assert livestate.wanted() is True
+
+    def test_stop_records_it_too_so_it_stays_stopped(self, client):
+        livestate.want(True)
+        client.post("/api/live/stop", headers=_auth())
+        assert livestate.wanted() is False
+
+    def test_a_run_that_ends_on_its_own_queues_the_next_one(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        livestate.want(True)
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        queued = []
+        monkeypatch.setattr("worker.queue.enqueue", lambda *a, **k: queued.append(a))
+        assert live_watch.relaunch("after a crash") is True
+        assert queued and queued[0][0] == "live"
+
+    def test_a_run_that_was_stopped_on_purpose_does_not(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        livestate.want(False)
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        queued = []
+        monkeypatch.setattr("worker.queue.enqueue", lambda *a, **k: queued.append(a))
+        assert live_watch.relaunch("after a crash") is False
+        assert not queued
+
+    def test_a_booting_worker_resumes_the_watch(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        livestate.want(True)
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(settings, "redis_url", "redis://localhost:6379/0")
+        queued = []
+        monkeypatch.setattr("worker.queue.enqueue", lambda *a, **k: queued.append(a))
+        assert live_watch.ensure_running()["ok"] is True
+        assert queued
+
+    def test_a_booting_worker_respects_stop(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        livestate.want(False)
+        monkeypatch.setattr(settings, "live_enabled", True)
+        found = live_watch.ensure_running()
+        assert found["ok"] is False
+        assert "Stop" in found["reason"]
+
+    def test_it_does_not_start_a_second_watcher_over_a_live_one(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        livestate.want(True)
+        livestate.publish({"running": True, "streams": []})
+        monkeypatch.setattr(settings, "live_enabled", True)
+        assert live_watch.ensure_running()["reason"] == "already running"
+
+    def test_the_page_can_tell_restarting_from_stopped(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(settings, "redis_url", None)
+        livestate.want(True)
+        body = client.get("/api/live", headers=_auth()).json()
+        assert "wanted" in body

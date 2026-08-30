@@ -89,9 +89,13 @@ async function renderLive() {
 
   const running = !!data.running;
   const queued = !!data.queued;
+  // "wanted" is the intention, which outlives a deploy or a crash. Showing it
+  // as "restarting" rather than "idle" is the difference between a gap you
+  // have to act on and a gap that closes itself.
+  const resuming = !running && !queued && data.wanted;
   const watching = (data.streams || []).length;
-  const label = running ? "watching" : queued ? "queued" : "idle";
-  const tone = running ? "live" : queued ? "warning" : "warning";
+  const label = running ? "watching" : queued ? "queued" : resuming ? "restarting" : "off";
+  const tone = running ? "live" : "warning";
   $("#live-state").textContent = label;
   $("#live-state").dataset.state = tone;
   $("#top-state").textContent = running ? `${watching} live` : label;
@@ -102,10 +106,14 @@ async function renderLive() {
     ? `Watching ${watching} of ${data.slots}`
     : queued
     ? "Starting…"
-    : "Not watching";
-  $("#live-sub").textContent = data.hint || (
-    data.posting_enabled ? "Posting is ON." : "Clips are held for review — nothing is posted."
-  );
+    : resuming
+    ? "Restarting…"
+    : "Stopped";
+  $("#live-sub").textContent = resuming
+    ? "It watches on its own — this restarts itself after a deploy or a crash."
+    : data.hint || (
+      data.posting_enabled ? "Posting is ON." : "Clips are held for review — nothing is posted."
+    );
 
   const caps = data.caps || {};
   $("#live-caps").innerHTML =
@@ -511,12 +519,12 @@ document.addEventListener("click", async (event) => {
 
     if (t.id === "live-start") {
       await withBusy(t, () => api("/live/start", { method: "POST" }));
-      toast("Starting. The first buffer takes about fifteen seconds.");
+      toast("Watching. It will restart itself from now on.");
       return renderLive();
     }
     if (t.id === "live-stop") {
       await withBusy(t, () => api("/live/stop", { method: "POST" }));
-      toast("Stopping.");
+      toast("Stopped. It will stay stopped until you start it again.");
       return renderLive();
     }
     if (t.id === "live-refresh") return withBusy(t, renderLive);

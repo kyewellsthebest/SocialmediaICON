@@ -72,6 +72,7 @@ def run(max_seconds: float | None = None) -> dict:
     livestate.clear()
     started = time.time()
     caught = 0
+    stopped_on_purpose = False
 
     # Say so before doing any work. Resolving three playback URLs and filling
     # three buffers takes the better part of a minute, and a page that shows
@@ -108,27 +109,34 @@ def run(max_seconds: float | None = None) -> dict:
             # snapshot is written somewhere both can reach.
             livestate.publish(supervisor.status())
 
-            if livestate.stop_requested():
+            if livestate.stop_requested() or not livestate.wanted():
                 log.info("live_watch: stop requested")
+                stopped_on_purpose = True
                 break
             if max_seconds is not None and time.time() - started >= max_seconds:
                 break
             time.sleep(TICK_S)
     except Exception as exc:  # noqa: BLE001 - the page must learn about this
         supervisor.stop()
-        return _stalled(
+        _stalled(
             f"The watcher stopped with an error: {type(exc).__name__}: {exc}",
             errors=supervisor.errors[-6:],
         )
+        relaunch("after an error")
+        return {"ok": False, "reason": str(exc), "relaunched": True}
     finally:
         supervisor.stop()
 
-    # Leave a readable final state rather than an empty one: "it ran and
-    # stopped" and "it never started" look identical otherwise.
-    _stalled(
-        f"Stopped after {round(time.time() - started)}s, {caught} clip(s) caught.",
-        errors=supervisor.errors[-6:],
-    )
+    if stopped_on_purpose:
+        # Leave a readable final state rather than an empty one: "it ran and
+        # stopped" and "it never started" look identical otherwise.
+        _stalled(
+            f"Stopped after {round(time.time() - started)}s, {caught} clip(s) caught.",
+            errors=supervisor.errors[-6:],
+        )
+    else:
+        relaunch("after the run ended")
+
     return {
         "ok": True,
         "caught": caught,
@@ -137,8 +145,43 @@ def run(max_seconds: float | None = None) -> dict:
     }
 
 
+def relaunch(why: str) -> bool:
+    """Queue the next run, unless somebody asked it to stop.
+
+    A watcher that has to be started by hand is not a watcher. Deploys,
+    crashes and out-of-memory kills all end a run, and none of them are a
+    decision to stop watching - only pressing Stop is.
+    """
+    if not livestate.wanted():
+        log.info("live_watch: not relaunching %s - Stop was pressed", why)
+        return False
+    if not settings.has_redis:
+        return False
+    try:
+        from worker.queue import enqueue
+
+        enqueue("live", "worker.tasks.live_watch.run", job_timeout=24 * 3600)
+        log.info("live_watch: relaunching %s", why)
+        return True
+    except Exception as exc:  # noqa: BLE001 - the next boot will pick it up
+        log.warning("live_watch: could not relaunch %s (%s)", why, exc)
+        return False
+
+
+def ensure_running() -> dict:
+    """Called when a worker boots. Starts the watch if that is what is wanted."""
+    if not settings.live_enabled:
+        return {"ok": False, "reason": "LIVE_ENABLED is not set"}
+    if not livestate.wanted():
+        return {"ok": False, "reason": "Stop was pressed; leaving it stopped"}
+    if livestate.read():
+        return {"ok": False, "reason": "already running"}
+    return {"ok": relaunch("on worker boot")}
+
+
 def stop() -> dict:
     """Ask the loop to finish - usually from the web process, not this one."""
+    livestate.want(False)
     livestate.request_stop()
     if _current is not None:
         _current.running = False
