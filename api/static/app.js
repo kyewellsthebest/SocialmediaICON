@@ -241,10 +241,33 @@ function paintFunnel(f) {
   card.hidden = !f.scored;
   if (card.hidden) return;
 
-  $("#funnel-label").textContent = `${f.scored} moments scored`;
-  $("#funnel-body").innerHTML = bars((f.stages || []).map((r) => [r.stage, r.n]));
+  $("#funnel-label").textContent = `${f.hours_today}h into today`;
+  // The four numbers that answer "how many clips should I expect", in the
+  // order a moment passes through them.
+  // Two groups: what got through, then what stopped the rest. "cut" belongs
+  // to the first, so it is taken out of the second rather than drawn twice.
+  const rejected = (f.stages || []).filter((r) => r.stage !== "cut");
+  $("#funnel-body").innerHTML =
+    `<p class="label" style="margin-bottom:6px">How far they got</p>`
+    + bars([
+      ["scored", f.scored],
+      ["cut", f.cut_today],
+      ["judged", f.judged_today],
+      ...(f.kept_24h == null ? [] : [["kept 24h", f.kept_24h]]),
+    ])
+    + `<p class="label" style="margin:12px 0 6px">What stopped the rest</p>`
+    + bars(rejected.map((r) => [r.stage, r.n]));
 
   const bits = [];
+  // The projection first: it is the thing being asked for, and a total
+  // partway through a day is not it. Six clips an hour into a day is 144.
+  bits.push(`At today's rate that is about ${f.cut_per_day} cut and `
+    + `${f.judged_per_day} judged a day.`
+    + (f.unjudged_today
+      ? ` ${f.unjudged_today} were cut today and never looked at because the `
+        + `day's money ran out - those are the ones a bigger budget buys.`
+      : ` Nothing was cut and left unjudged, so the budget is not what is `
+        + `limiting the count.`));
   if (f.near_misses) {
     bits.push(`${f.near_misses} came within a quarter of the bar of ${f.bar} `
       + `(best ${f.near_best}). That many near misses is what a bar set too `

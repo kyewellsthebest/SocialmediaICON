@@ -1785,3 +1785,51 @@ class TestTheLookBudgetLastsTheDay:
         sup.record_look(Verdict(watched=True, cost_usd=1.0))
         sup.spend["day"] = "1999-01-01"
         assert sup.spent_today() == 0.0
+
+
+class TestHowManyClipsToExpect:
+    """"How many should I expect a day" is not answerable from a total
+    partway through one. Six clips an hour into a day is 144 a day."""
+
+    def _sup(self, monkeypatch, *, hour, cut, judged):
+        sup = Supervisor()
+        monkeypatch.setattr(Supervisor, "recent_catches", lambda self, **k: [])
+        monkeypatch.setattr(time, "time", lambda: 86400.0 * 100 + 3600.0 * hour)
+        for _ in range(cut):
+            sup._tally("cut", 30.0)
+        sup.spent_today()
+        sup.spend["looks"] = judged
+        return sup
+
+    def test_it_projects_a_day_from_an_hour(self, monkeypatch):
+        found = self._sup(monkeypatch, hour=1, cut=6, judged=6).funnel_report()
+        assert found["cut_today"] == 6
+        assert found["cut_per_day"] == 144
+
+    def test_it_says_how_many_were_cut_and_never_looked_at(self, monkeypatch):
+        """The number a bigger budget buys, and the only one that says the
+        money is what is limiting the count."""
+        found = self._sup(monkeypatch, hour=6, cut=40, judged=12).funnel_report()
+        assert found["unjudged_today"] == 28
+
+    def test_judging_everything_leaves_nothing_unjudged(self, monkeypatch):
+        found = self._sup(monkeypatch, hour=6, cut=12, judged=12).funnel_report()
+        assert found["unjudged_today"] == 0
+
+    def test_more_looks_than_cuts_is_not_a_negative_number(self, monkeypatch):
+        """A look is spent on a refusal too, so judged can exceed cut."""
+        found = self._sup(monkeypatch, hour=6, cut=5, judged=9).funnel_report()
+        assert found["unjudged_today"] == 0
+
+    def test_the_first_seconds_of_a_day_do_not_divide_by_zero(self, monkeypatch):
+        found = self._sup(monkeypatch, hour=0, cut=1, judged=1).funnel_report()
+        assert found["cut_per_day"] > 0
+
+    def test_a_dead_database_still_gives_the_projection(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(Supervisor, "recent_catches",
+                            lambda self, **k: 1 / 0)
+        sup._tally("cut", 30.0)
+        found = sup.funnel_report()
+        assert found["kept_24h"] is None
+        assert "cut_per_day" in found

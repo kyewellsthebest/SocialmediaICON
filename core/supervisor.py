@@ -1986,6 +1986,7 @@ class Supervisor:
             "near_misses": len(near),
             "near_best": max(near) if near else None,
             "bar": settings.live_min_score,
+            **self._pace(stages),
             "looks_spent": int(self.spend.get("looks") or 0),
             "look_model": settings.verdict_model,
             # Measured, not estimated. A bill nobody can see is how a budget of
@@ -1993,6 +1994,35 @@ class Supervisor:
             "spent_usd": round(self.spent_today(), 2),
             "budget_usd": round(float(settings.verdict_daily_usd), 2),
             "declined": len(self.declined),
+        }
+
+    def _pace(self, stages: dict[str, int]) -> dict[str, Any]:
+        """Cut, judged, and what that comes to a day at this rate.
+
+        The question this answers is "how many clips should I expect", and it
+        is not answerable from a total partway through a day. Elapsed time is
+        measured from UTC midnight because that is when the counters reset -
+        an hour into a new day, six clips is 144 a day, not six.
+        """
+        hours = max((time.time() % 86400.0) / 3600.0, 0.05)
+        cut = stages.get("cut", 0)
+        judged = int(self.spend.get("looks") or 0)
+        try:
+            kept = len(self.recent_catches(
+                since=datetime.now(UTC) - timedelta(days=1)
+            ))
+        except Exception:  # noqa: BLE001 - a status read must not throw
+            kept = None
+        return {
+            "hours_today": round(hours, 1),
+            "cut_today": cut,
+            "judged_today": judged,
+            # Cut but never looked at, because the day's money ran out. Zero
+            # is the number to want here: it means everything got judged.
+            "unjudged_today": max(0, cut - judged),
+            "kept_24h": kept,
+            "cut_per_day": round(cut / hours * 24),
+            "judged_per_day": round(judged / hours * 24),
         }
 
     def _note(self, message: str) -> None:
