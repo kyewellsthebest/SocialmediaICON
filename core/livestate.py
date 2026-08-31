@@ -268,6 +268,43 @@ def watcher_alive() -> bool | None:
         return None
 
 
+# --- when the watchdog last looked ------------------------------------------
+#
+# So that "is this actually running 24/7, or only while I have the dashboard
+# open" is a question the dashboard can answer rather than a promise.
+
+BEAT_KEY = "clipengine:live:watchdog"
+
+
+def watchdog_ran(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    client = _redis()
+    if client is None:
+        _fallback["watchdog"] = now
+        return
+    try:
+        client.set(BEAT_KEY, str(now), ex=3600)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("livestate: could not record the watchdog (%s)", exc)
+
+
+def watchdog_last() -> float | None:
+    """When the watchdog last checked, or None if it never has."""
+    client = _redis()
+    if client is None:
+        return _fallback.get("watchdog")
+    try:
+        raw = client.get(BEAT_KEY)
+    except Exception:  # noqa: BLE001
+        return None
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 # --- what it should be doing, as opposed to what it is doing -----------------
 #
 # Running is a fact about right now; wanted is an intention that outlives a

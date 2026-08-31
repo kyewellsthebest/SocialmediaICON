@@ -1577,3 +1577,58 @@ class TestTheStillnessThresholdIsAnchoredToRealFootage:
 
         floor = inspect.signature(watching._find_stillness).parameters["below"].default
         assert floor == DORMANT_MOTION
+
+
+class TestItSaysWhyItIsHoldingThisMany:
+    """Three slots of ten filled is either "there were only three streams
+    worth watching" or "seven would not attach", and those look identical on
+    a page that only prints the number."""
+
+    def _sup(self, monkeypatch, listing, *, eligible):
+        from core import profile as profiles
+
+        sup = Supervisor()
+        keep = set(eligible)
+        monkeypatch.setattr(profiles, "decide", lambda channel, **k: profiles.Profile(
+            channel=channel, eligible=channel in keep, confidence=0.9,
+            reason="an event" if channel not in keep else "a person",
+        ))
+        return sup
+
+    def test_the_arithmetic_reaches_the_page(self, monkeypatch):
+        listing = [roster.Live(channel=f"c{i}", viewers=9000 - i) for i in range(8)]
+        sup = self._sup(monkeypatch, listing, eligible=["c0", "c1", "c2"])
+        sup.wanted(listing, now=1000.0)
+        found = sup.status()["roster"]
+        assert found["considered"] == 8
+        assert found["eligible"] == 3
+        assert found["refused"] == 5
+        assert found["slots"] == settings.live_slots
+
+    def test_a_stream_that_would_not_attach_is_named(self, monkeypatch):
+        """The one case that is a fault rather than an empty directory."""
+        sup = Supervisor()
+        monkeypatch.setattr(Supervisor, "playback_url", lambda self, ch: 1 / 0)
+        assert sup.attach("gone") is None
+        found = sup.status()["roster"]["attach_failed"]
+        assert found and found[0]["channel"] == "gone"
+        assert "playback" in found[0]["why"]
+
+    def test_attaching_clears_an_earlier_failure(self, monkeypatch):
+        sup = Supervisor()
+        sup.attach_failed["gone"] = "playback: RuntimeError"
+        monkeypatch.setattr(Supervisor, "playback_url", lambda self, ch: 1 / 0)
+        sup.watching["gone"] = _watched("gone")
+        sup.attach("gone")
+        assert "gone" not in sup.attach_failed
+
+    def test_the_page_can_tell_whether_a_watchdog_is_running(self):
+        """"Is this watching 24/7 or only while I have the dashboard open" is
+        a question the dashboard should be able to answer."""
+        from core import livestate
+
+        livestate._fallback.clear()
+        assert Supervisor().status()["roster"]["watchdog_last_s"] is None
+        livestate.watchdog_ran()
+        assert Supervisor().status()["roster"]["watchdog_last_s"] is not None
+        livestate._fallback.clear()

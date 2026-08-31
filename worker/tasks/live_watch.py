@@ -220,6 +220,7 @@ def watchdog() -> dict:
     running watcher renews it every tick, so its absence means no watcher
     ticked in the last five minutes.
     """
+    livestate.watchdog_ran()
     if not settings.live_enabled:
         return {"ok": False, "reason": "LIVE_ENABLED is not set on the worker"}
     if not livestate.wanted():
@@ -232,11 +233,46 @@ def watchdog() -> dict:
 
     log.warning("live_watch: no watcher has ticked in %ss - starting one",
                 livestate.LEASE_S)
+
     livestate.note(
         "The watcher stopped without saying so and the watchdog restarted it. "
         "If this keeps happening, the last errors above say why."
     )
     return {"ok": relaunch("watchdog found no live watcher"), "restarted": True}
+
+
+#: How often the in-process watchdog looks. The same minute the scheduler job
+#: uses, and it does the same thing - two of them is not a problem, because
+#: what they queue is refused by the lease if a watcher is already alive.
+WATCHDOG_EVERY_S = 60.0
+
+
+def start_watchdog() -> None:
+    """Run the watchdog inside this process, forever.
+
+    The scheduler runs it too, and this exists because that is not something
+    to rely on. The scheduler is a separate Railway service with its own copy
+    of the environment, and Railway does not share variables between services:
+    with LIVE_ENABLED set on the worker and not on the scheduler, the
+    scheduler's watchdog job is disabled and nothing says so. The whole 24/7
+    guarantee would quietly not exist.
+
+    Here it cannot be misconfigured that way, because this process is the one
+    that runs the watch - if it is running at all, the environment is right.
+    """
+    import threading
+
+    def loop() -> None:
+        while True:
+            time.sleep(WATCHDOG_EVERY_S)
+            try:
+                watchdog()
+            except Exception as exc:  # noqa: BLE001 - a watchdog must not die
+                log.warning("live_watch: watchdog raised (%s)", exc)
+
+    threading.Thread(target=loop, daemon=True, name="live-watchdog").start()
+    log.info("live_watch: watchdog running in this process every %.0fs",
+             WATCHDOG_EVERY_S)
 
 
 def ensure_running() -> dict:

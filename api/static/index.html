@@ -52,6 +52,12 @@
     <!-- No controls. It watches on its own; the top bar says how many. -->
     <section class="view" id="view-live">
       <div id="streams"></div>
+      <div class="card" id="roster" hidden>
+        <header><h3>Why it is holding this many</h3>
+          <span class="label" id="roster-label"></span></header>
+        <div id="roster-body"></div>
+        <p class="muted" id="roster-note"></p>
+      </div>
       <div class="card plate" id="yield" hidden>
         <header><h3>What each stream is worth</h3>
           <span class="label" id="yield-label"></span></header>

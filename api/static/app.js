@@ -97,11 +97,14 @@ const pill = (text, tone = "") => `<span class="pill" data-state="${tone}">${esc
    labels to connect the two. */
 function bars(rows, hues = null) {
   const top = Math.max(...rows.map(([, v]) => v), 1);
+  // Counts are counts. "34.0 seen on kick" reads as a measurement rather than
+  // a number of streams.
+  const whole = rows.every(([, v]) => Number.isInteger(v));
   return `<div class="bars">${rows.map(([name, v], i) =>
     `<div class="bar"><span class="label">${esc(name)}</span>
       <span class="track"><span class="fill" style="width:${Math.round((v / top) * 100)}%${
         hues ? `;background:${hueFor(name, i)}` : ""}"></span></span>
-      <span class="n">${v.toFixed(1)}</span></div>`).join("")}</div>`;
+      <span class="n">${whole ? v : v.toFixed(1)}</span></div>`).join("")}</div>`;
 }
 
 /* Seconds into something human. A dashboard that says 4821 makes you do the
@@ -144,6 +147,7 @@ async function renderLive() {
   paintStreams(streams, { running, queued, resuming, stuck, hint: data.hint,
                           diagnosis: data.diagnosis, health: data.health });
 
+  paintRoster(data.roster || {});
   paintYield(data.yield || {});
 
   // What it is holding, waiting for a slot. Worth showing: it is the whole
@@ -226,6 +230,47 @@ function paintStreams(streams, status) {
     : "Nothing is being watched."))}</p>` +
     (status.diagnosis && status.diagnosis !== said
       ? `<p class="muted">${esc(status.diagnosis)}</p>` : "");
+}
+
+/* Three of ten slots filled is either "there were only three streams worth
+   watching" or "seven would not attach", and those look identical on a page
+   that only prints the number. This is the arithmetic. */
+function paintRoster(r) {
+  const card = $("#roster");
+  card.hidden = !r.considered;
+  if (card.hidden) return;
+
+  const failed = r.attach_failed || [];
+  $("#roster-label").textContent = `${r.watching} of ${r.slots} slots`;
+  // Short labels: the column is narrow on a phone and "passed the gate"
+  // truncated to "PASSED THE ..." says nothing at all.
+  $("#roster-body").innerHTML = bars([
+    ["on kick", r.considered],
+    ["eligible", r.eligible],
+    ["watched", r.watching],
+  ]);
+  const bits = [];
+  if (r.refused) {
+    bits.push(`${r.refused} of ${r.considered} were refused - a competitive `
+      + `event, not in English, or nobody could find out who they were.`);
+  }
+  if (failed.length) {
+    bits.push(`${failed.length} passed the gate and would not attach: `
+      + failed.map((f) => `${f.channel} (${f.why})`).join(", ") + ".");
+  } else if (r.eligible > r.watching) {
+    bits.push(`${r.eligible - r.watching} more are eligible and waiting for the `
+      + `roster to settle - a stream is held for a few minutes before it can be `
+      + `swapped out, so slots fill over a poll or two rather than all at once.`);
+  } else if (r.eligible <= r.slots) {
+    bits.push(`Every eligible stream is being watched. Holding more slots than `
+      + `that changes nothing: there is nothing else on Kick to put in them.`);
+  }
+  bits.push(r.watchdog_last_s == null
+    ? "No watchdog has checked in yet - it runs every minute whether or not "
+      + "this page is open."
+    : `Watchdog last checked ${r.watchdog_last_s}s ago. It runs every minute `
+      + `whether or not this page is open.`);
+  $("#roster-note").textContent = bits.join(" ");
 }
 
 /* How many streams it takes to reach the day's number.
@@ -341,20 +386,55 @@ function fillStreamCard(card, s) {
     stat((s.score ?? 0).toFixed(1), "score", (s.score || 0) > 0);
 }
 
-/* The five axes a stream is scored on, each already a ratio against its own
-   recent past. Normalised to 0..1 for the radar by the point at which each
-   one is decisive, so the shape means the same thing on every channel. */
+/* The five families of evidence, sized by what each actually put on the
+   score - not by how many times something fired.
+
+   The first version of this counted events and capped each axis at a number I
+   picked: four surges was 100 and so was forty, and three chat bursts was 100
+   next to a motion signal worth ten times as much. A stream scoring 50 with
+   44.5 of it from motion drew motion and chat the same size, which is the
+   opposite of what the panel is for. Contribution is a real quantity, the
+   bars underneath are already drawn from it, and the two now agree. */
+const AXIS_OF = {
+  laughter: "laughter", shout: "voice", audio_jump: "voice", audio_drop: "voice",
+  said: "voice",
+  face_reaction: "faces", close_up: "faces",
+  motion_surge: "motion", scene_cuts: "motion", flash: "motion",
+  chat_burst: "chat", chat_request: "chat", chat_voices: "chat", heatmap: "chat",
+};
+const AXES = ["laughter", "voice", "faces", "motion", "chat"];
+
 function streamAxes(s) {
-  const senses = s.senses || {}, heard = senses.heard || {}, seen = senses.seen || {};
-  const faces = senses.faces || {}, chat = s.chat || {};
-  const cap = (n, full) => Math.max(0, Math.min(1, (Number(n) || 0) / full));
-  return [
-    ["laughter", cap((heard.laughs || []).length, 4)],
-    ["voice", cap((heard.shouts || []).length, 3)],
-    ["faces", cap((faces.reactions || []).length, 5)],
-    ["motion", cap((seen.surges || []).length, 4)],
-    ["chat", cap((chat.bursts || []).length, 3)],
-  ];
+  const totals = Object.fromEntries(AXES.map((a) => [a, 0]));
+  for (const [name, value] of Object.entries(s.why || {})) {
+    const axis = AXIS_OF[name];
+    if (axis) totals[axis] += Number(value) || 0;
+  }
+  // Against the biggest of them, so the shape reads as "where the score came
+  // from". Against the total instead, a stream with one signal would fill one
+  // axis completely and look identical to one with five balanced ones.
+  const top = Math.max(...Object.values(totals), 1e-9);
+  return AXES.map((a) => [a, totals[a] / top]);
+}
+
+/* The radar shows where the score came from. Saying which axes are at zero is
+   the useful half: one family of evidence on its own is the weakest a reading
+   can be, and it is the shape a camera being carried down a street makes. */
+function axisNote(axes) {
+  const live = axes.filter(([, v]) => v > 0.02).map(([k]) => k);
+  const base = `Each axis is that family's share of the score, against the `
+    + `biggest of them. Every one is measured as a ratio against this `
+    + `channel's own recent past, so a nightclub and a bedroom read the same `
+    + `when nothing is happening in either.`;
+  if (live.length === 0) return `Nothing is scoring yet. ${base}`;
+  if (live.length === 1) {
+    return `All of it is ${live[0]}, and one family of evidence on its own is `
+      + `the weakest a reading can be - a camera carried down a street makes `
+      + `this exact shape. A clip cut on it will rank low against one where `
+      + `two or three agree. ${base}`;
+  }
+  return `${live.length} families of evidence are contributing, and agreement `
+    + `between them is what separates a moment from a coincidence. ${base}`;
 }
 
 function streamLanes(senses) {
@@ -449,13 +529,11 @@ async function renderStream() {
       <header><h3>Why it is scoring</h3>
         <span class="label">${(s.score ?? 0).toFixed(1)} total</span></header>
       <div class="vz-pair">
-        ${gauge(Math.min(100, (s.score ?? 0) * 2), "score")}
+        ${meter(s.score ?? 0, s.cut_at ?? 20, "score")}
         ${radar(streamAxes(s))}
       </div>
       ${why.length ? bars(why) : `<p class="empty-note">Nothing is standing out right now.</p>`}
-      <p class="muted">Every axis is a ratio against this channel's own recent
-        past, not a fixed threshold - a nightclub and a bedroom read the same
-        when nothing is happening in either.</p>
+      <p class="muted">${axisNote(streamAxes(s))}</p>
     </div>
 
     ${streamLanes(senses)}
@@ -717,6 +795,41 @@ function gauge(value, label) {
       stroke-dasharray="${lit.toFixed(1)} ${(c - lit).toFixed(1)}"/>
     <text x="60" y="54" text-anchor="middle" class="vz-hero">${Math.round(v)}</text>
     <text x="60" y="70" text-anchor="middle" class="vz-ax">${esc(label)}</text>
+  </svg>`;
+}
+
+/* A score with no ceiling, against the bar it has to clear.
+
+   Not a gauge. A gauge is a ratio against a limit and a live score has no
+   limit - it is a weighted sum that can be 3 or 300 - so the first version
+   invented one by doubling the score and capping at 100, and drew a full dial
+   for a stream scoring 50.1 while the header beside it said 50.1. A chart
+   that reads 100 for a number that is not 100 is worse than no chart.
+
+   So: the number itself, and a track marked where the cut threshold is. Past
+   the mark it keeps going and says by how much. */
+function meter(value, cutAt, label) {
+  const v = Number(value) || 0;
+  const bar = Number(cutAt) || 0;
+  // The track holds twice the threshold, so clearing it fills half and there
+  // is somewhere for a big score to go.
+  const full = Math.max(bar * 2, 1e-6);
+  const w = Math.max(0, Math.min(100, (v / full) * 100));
+  const mark = Math.max(0, Math.min(100, (bar / full) * 100));
+  const over = bar > 0 && v >= bar;
+  return `<svg class="vz vz-meter" viewBox="0 0 120 74" role="img"
+      aria-label="${esc(label)} ${v.toFixed(1)}, ${
+        over ? "past" : "under"} the cut threshold of ${bar}">
+    <text x="60" y="30" text-anchor="middle" class="vz-hero">${v.toFixed(1)}</text>
+    <text x="60" y="44" text-anchor="middle" class="vz-ax">${esc(label)}</text>
+    <rect x="6" y="52" width="108" height="7" rx="3.5" fill="var(--grid)"/>
+    <rect x="6" y="52" width="${(w * 1.08).toFixed(1)}" height="7" rx="3.5"
+      fill="var(${over ? "--accent" : "--ink-3"})"/>
+    <line x1="${(6 + mark * 1.08).toFixed(1)}" y1="49"
+      x2="${(6 + mark * 1.08).toFixed(1)}" y2="62"
+      stroke="var(--ink-2)" stroke-width="2"/>
+    <text x="60" y="72" text-anchor="middle" class="vz-ax">${
+      over ? `past the ${bar} it needs` : `needs ${bar} to cut`}</text>
   </svg>`;
 }
 

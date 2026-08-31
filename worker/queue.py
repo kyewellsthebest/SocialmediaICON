@@ -116,9 +116,14 @@ def main(argv: list[str] | None = None) -> int:
     # separately and survives the restart too.
     if "live" in names:
         try:
-            from worker.tasks.live_watch import ensure_running
+            from worker.tasks.live_watch import ensure_running, start_watchdog
 
             log.info("live: %s", ensure_running())
+            # In this process rather than only in the scheduler, which is a
+            # separate service with its own copy of the environment - and
+            # Railway does not share those, so a scheduler without
+            # LIVE_ENABLED has its watchdog job disabled and says nothing.
+            start_watchdog()
         except Exception as exc:  # noqa: BLE001 - never block the worker booting
             log.warning("live: could not resume the watch (%s)", exc)
 

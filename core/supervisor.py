@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from core import chat as chatlib
-from core import live, livechat, moments, ranking, reframe, roster
+from core import live, livechat, livestate, moments, ranking, reframe, roster
 from core.config import settings
 
 log = logging.getLogger(__name__)
@@ -489,6 +489,10 @@ class Watched:
                 ],
             },
             "score": round(self.last_score, 2),
+            # The bar this score has to clear. On the page beside the score,
+            # because a number with no scale beside it is not a reading - and
+            # a chart drawn against an invented ceiling is worse than none.
+            "cut_at": settings.live_min_score,
             "reason": self.last_reason,
             "why": {k: round(v, 3) for k, v in
                     sorted(self.last_why.items(), key=lambda kv: -kv[1])},
@@ -630,6 +634,10 @@ class Supervisor:
     #: the page the night the roster poll was throwing every five seconds.
     began_at: float = field(default_factory=time.time)
     last_roster_poll: float = 0.0
+    #: How the last poll's listing narrowed down, for the page to show.
+    roster_count: dict[str, Any] = field(default_factory=dict)
+    #: Channels that passed the gate but could not be attached, and why.
+    attach_failed: dict[str, str] = field(default_factory=dict)
     #: The last poll that actually returned. Zero until one does.
     last_good_poll: float = 0.0
     #: Channels found asleep, and when they may be picked up again. A stream
@@ -745,6 +753,15 @@ class Supervisor:
         self.skipped = {
             c: why for c, why in self.skipped.items()
             if c in {entry.channel for entry in listing}
+        }
+        # The arithmetic behind "3 of 10". Without it, holding three slots of
+        # ten is indistinguishable from a bug, and the honest answer - there
+        # were only three streams on Kick worth watching - is unavailable.
+        self.roster_count = {
+            "considered": len(listing),
+            "refused": len(listing) - len(kept),
+            "eligible": len(kept),
+            "slots": settings.live_slots,
         }
         return kept
 
@@ -903,6 +920,10 @@ class Supervisor:
 
     def attach(self, channel: str, *, entry=None, viewers: int = 0) -> Watched | None:  # noqa: ANN001
         """Open a buffer and a chat socket for one channel."""
+        # Before the early return, not after: a channel that attached on an
+        # earlier poll would otherwise keep its old failure listed forever and
+        # the page would name a stream as broken while watching it.
+        self.attach_failed.pop(channel, None)
         if channel in self.watching:
             return self.watching[channel]
 
@@ -910,6 +931,11 @@ class Supervisor:
             url = self.playback_url(channel)
         except Exception as exc:  # noqa: BLE001 - one bad channel is not fatal
             self._note(f"{channel}: could not resolve playback ({exc})")
+            # Kept apart from the general error list: a slot standing empty
+            # because a stream would not attach and one standing empty because
+            # nothing on Kick was worth watching look identical on the page,
+            # and only one of them is something to go and fix.
+            self.attach_failed[channel] = f"playback: {type(exc).__name__}"
             return None
 
         started = time.time()
@@ -924,6 +950,7 @@ class Supervisor:
             buffer.start()
         except Exception as exc:  # noqa: BLE001
             self._note(f"{channel}: buffer would not start ({exc})")
+            self.attach_failed[channel] = f"buffer: {type(exc).__name__}"
             return None
 
         # Chat offsets are measured from when the buffer opened, so a chat
@@ -1759,6 +1786,18 @@ class Supervisor:
             "health": self.health(),
             "yield": self._yield_quietly(),
             "lag": self.sense_lag(),
+            "roster": {
+                **self.roster_count,
+                "watching": len(self.watching),
+                "attach_failed": [
+                    {"channel": c, "why": why}
+                    for c, why in list(self.attach_failed.items())[:6]
+                ],
+                "watchdog_last_s": (
+                    round(time.time() - last)
+                    if (last := livestate.watchdog_last()) else None
+                ),
+            },
         }
 
     def _yield_quietly(self) -> dict[str, Any]:

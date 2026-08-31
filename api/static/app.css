@@ -487,7 +487,8 @@ pre.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family
   gap: 4px;
   margin-bottom: 10px;
 }
-.vz-pair .vz-gauge { flex: 0 0 34%; max-width: 132px; }
+.vz-pair .vz-gauge,
+.vz-pair .vz-meter { flex: 0 0 34%; max-width: 132px; }
 .vz-pair .vz + .vz { flex: 1 1 auto; }
 
 .vz-ax {
@@ -521,5 +522,6 @@ pre.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family
    130px wide, which is smaller than its own axis labels. */
 @media (max-width: 460px) {
   .vz-pair { flex-direction: column; gap: 0; }
-  .vz-pair .vz-gauge { flex: none; width: 100%; max-width: 200px; }
+  .vz-pair .vz-gauge,
+  .vz-pair .vz-meter { flex: none; width: 100%; max-width: 190px; }
 }
