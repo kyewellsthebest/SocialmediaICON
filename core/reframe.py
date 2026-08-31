@@ -608,8 +608,23 @@ def to_portrait(
 
 
 def _render(src: Path, dest: Path, chain: str, *, complex_: bool) -> Path:
-    """One encode, whichever way the frame was arrived at."""
-    where = ["-filter_complex", chain, "-map", "[out]"] if complex_ else ["-vf", chain]
+    """One encode, whichever way the frame was arrived at.
+
+    Both branches map their streams explicitly, and the `-vf` one has to even
+    though it reads as redundant. A single `-map` anywhere on the command line
+    turns off ffmpeg's automatic stream selection *for every stream*, so
+    `-vf chain -map 0:a?` does not mean "the filtered video, plus audio if
+    there is any" - it means "audio if there is any", and nothing else. That
+    shipped: every clip from a stream that was followed rather than stacked
+    came out as a correct-length, correctly-audible file with no video track
+    at all, which plays as a black screen. Never map one stream here without
+    mapping the other.
+    """
+    where = (
+        ["-filter_complex", chain, "-map", "[out]"]
+        if complex_
+        else ["-vf", chain, "-map", "0:v:0"]
+    )
     proc = subprocess.run(
         [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",

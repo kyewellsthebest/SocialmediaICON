@@ -437,3 +437,84 @@ class TestTheDetectorHasToFindARealFacecam:
         both axes off centre would refuse it."""
         for cx, cy in ((0.17, 0.55), (0.50, 0.10), (0.85, 0.50)):
             assert max(abs(cx - 0.5), abs(cy - 0.5)) >= reframe.CAM_CORNER
+
+
+class TestTheClipKeepsItsPicture:
+    """Every clip cut from a followed stream shipped as audio over a black
+    screen, and the whole suite passed the entire time.
+
+    The cause is one ffmpeg rule: a single `-map` anywhere on the command
+    line turns off automatic stream selection for *every* stream. So
+    `-vf chain -map 0:a?` does not mean "the filtered video, plus audio if
+    there is any" - it means "audio if there is any". The stacked layout was
+    fine because `-map [out]` named its video explicitly; the followed one
+    named nothing and got nothing.
+
+    And the reason no test noticed: `0:a?` is optional, so on a source with
+    no audio it matches nothing, the map list ends up empty, and ffmpeg falls
+    back to automatic selection and keeps the video after all. Every fixture
+    in this file is silent. The bug existed only on sources with sound, which
+    is to say only on real ones.
+
+    So these build a source with an audio track, and assert both streams
+    survive both layouts.
+    """
+
+    def _noisy(self, tmp_path):
+        import subprocess
+
+        src = tmp_path / "noisy.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y",
+             "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=3",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", str(src)],
+            check=True,
+        )
+        return src
+
+    def _streams(self, path):
+        import json
+        import subprocess
+
+        raw = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json",
+             "-show_streams", str(path)],
+            capture_output=True, check=True,
+        ).stdout
+        return [s["codec_type"] for s in json.loads(raw)["streams"]]
+
+    def test_a_followed_clip_has_a_picture_and_a_soundtrack(self, tmp_path):
+        out = tmp_path / "followed.mp4"
+        reframe.to_portrait(self._noisy(tmp_path), out,
+                            work_dir=tmp_path, layout="follow")
+        found = self._streams(out)
+        assert "video" in found, "this is the bug: a clip that is audio only"
+        assert "audio" in found
+
+    def test_a_stacked_clip_does_too(self, tmp_path):
+        out = tmp_path / "stacked.mp4"
+        cam = reframe.Webcam(x=0.70, y=0.62, w=0.16, h=0.22, seen=0.9)
+        reframe.to_portrait(self._noisy(tmp_path), out, work_dir=tmp_path,
+                            layout="stacked", webcam=cam)
+        found = self._streams(out)
+        assert "video" in found
+        assert "audio" in found
+
+    def test_a_silent_source_still_produces_a_picture(self, tmp_path):
+        """The case that hid it. There is nothing to map for audio, and the
+        video still has to come out."""
+        import subprocess
+
+        src = tmp_path / "silent.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+             "-i", "testsrc2=size=1280x720:rate=30:duration=3",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             str(src)],
+            check=True,
+        )
+        out = tmp_path / "silent_out.mp4"
+        reframe.to_portrait(src, out, work_dir=tmp_path, layout="follow")
+        assert "video" in self._streams(out)
