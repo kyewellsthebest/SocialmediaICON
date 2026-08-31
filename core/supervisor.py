@@ -1222,6 +1222,16 @@ class Supervisor:
                 watched.last_reason = "nothing happened"
                 self._tally("no event", found.score)
                 continue
+            # One kind of evidence is the weakest a moment can be, and on an
+            # IRL stream it is usually the camera: a phone carried down a
+            # street surges against its own baseline all evening and scores 40
+            # every time. Two families agreeing clear the bar above; one on
+            # its own has to be enormous.
+            agreed = moments.agreeing(found.why)
+            if len(agreed) < 2 and found.event_score < settings.live_lone_signal_score:
+                watched.last_reason = f"only {agreed[0] if agreed else 'one signal'}"
+                self._tally("one signal only", found.score)
+                continue
             if now - watched.last_catch_at < COOLDOWN_S:
                 self._tally("cooling down", found.score)
                 continue

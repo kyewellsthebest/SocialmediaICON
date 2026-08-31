@@ -289,6 +289,20 @@ class Settings(BaseSettings):
     #: ...and this much of it has to come from something actually happening
     #: rather than from how busy or loud the channel generally is.
     live_min_event_score: float = 15.0
+    #: What a moment with only *one* kind of evidence has to clear instead.
+    #:
+    #: A camera carried down a street surges constantly against its own
+    #: baseline, so motion alone scores 40 all evening on an IRL stream and
+    #: every one of those readings cleared a bar of 15. None of them was a
+    #: moment. What separates a moment from a coincidence is different kinds
+    #: of evidence landing together - the picture moved AND somebody shouted -
+    #: and the ranking has always believed that; the cut did not.
+    #:
+    #: So: two families agreeing clear the bar above. One family on its own
+    #: clears this, which is high enough that it has to be something genuinely
+    #: enormous rather than a pan. Not a ban - a man falling over with the
+    #: sound muted is still a clip - a price.
+    live_lone_signal_score: float = 55.0
     # A model looks at the frames, the transcript and the evidence and says
     # whether anything is happening. It is the only thing that can tell a man
     # laughing at his own joke about nothing from a man falling off a chair -

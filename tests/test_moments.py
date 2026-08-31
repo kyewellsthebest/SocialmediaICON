@@ -411,3 +411,38 @@ class TestMoodKnowsWallpaperFromReaction:
         assert found["dominant"] is None
         for key in ("confidence", "emotive_lines", "lift", "background", "counts"):
             assert key in found
+
+
+class TestOneSignalIsNotAgreement:
+    """A phone carried down a street surges against its own baseline all
+    evening. Motion 40, flash 3, chat 1 scored 44 and cleared every bar, and
+    not one of those readings was a moment."""
+
+    def test_motion_and_flash_are_one_family_not_two(self):
+        """One eye, one picture, reported twice."""
+        why = {"motion_surge": 40.2, "flash": 3.0}
+        assert list(moments.families(why)) == ["motion"]
+        assert moments.agreeing(why) == ["motion"]
+
+    def test_a_rounding_error_is_not_a_second_opinion(self):
+        """Chat at 3% of a motion reading is noise."""
+        assert moments.agreeing({"motion_surge": 40.2, "chat_voices": 1.1}) == ["motion"]
+
+    def test_two_real_families_are_agreement(self):
+        found = moments.agreeing({"motion_surge": 40.0, "shout": 12.0})
+        assert set(found) == {"motion", "voice"}
+
+    def test_the_families_cover_every_scored_signal(self):
+        """A signal in no family is invisible to the agreement test, which
+        would let it through as neither corroborating nor corroborated."""
+        covered = set().union(*moments.FAMILIES.values())
+        assert moments.EVENTS - covered == set()
+
+    def test_no_signal_is_in_two_families_at_once(self):
+        """It would count as its own corroboration."""
+        seen = [k for keys in moments.FAMILIES.values() for k in keys]
+        assert len(seen) == len(set(seen))
+
+    def test_nothing_scoring_agrees_about_nothing(self):
+        assert moments.agreeing({}) == []
+        assert moments.families({}) == {}

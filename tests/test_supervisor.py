@@ -1833,3 +1833,53 @@ class TestHowManyClipsToExpect:
         found = sup.funnel_report()
         assert found["kept_24h"] is None
         assert "cut_per_day" in found
+
+
+class TestALoneSignalHasToBeEnormous:
+    """The reading that made this necessary: motion 40.2, flash 3.0, chat 1.1,
+    total 44.3, on a man walking down a street with a phone. It cleared the
+    score bar of 20 and the event bar of 15 and would have been cut, and the
+    panel called it "2 families of evidence contributing" because chat was
+    three percent of motion."""
+
+    def _ready(self, monkeypatch, why):
+        monkeypatch.setattr(settings, "live_min_score", 20.0)
+        monkeypatch.setattr(settings, "live_min_event_score", 15.0)
+        monkeypatch.setattr(settings, "live_lone_signal_score", 55.0)
+        sup = Supervisor()
+        watched = _watched("x")
+        sup.watching["x"] = watched
+        found = Found(score=sum(why.values()), why=why, at_s=10.0, chat_s=10.0)
+        monkeypatch.setattr(sup, "score", lambda w, **k: found)
+        cut = []
+        monkeypatch.setattr(sup, "cut", lambda w, **k: cut.append(1) or None)
+        monkeypatch.setattr(sup, "harvest", lambda **k: [])
+        monkeypatch.setattr(sup, "still_wanted", lambda w: True)
+        return sup, watched, cut
+
+    def test_the_walking_camera_is_not_cut(self, monkeypatch):
+        sup, watched, cut = self._ready(
+            monkeypatch, {"motion_surge": 40.2, "flash": 3.0, "chat_voices": 1.1})
+        sup.tick(now=time.time())
+        assert cut == []
+        assert "motion" in watched.last_reason
+
+    def test_the_same_motion_with_a_shout_is_cut(self, monkeypatch):
+        """Two kinds of evidence landing together is the whole difference."""
+        sup, watched, cut = self._ready(
+            monkeypatch, {"motion_surge": 40.2, "shout": 12.0})
+        sup.tick(now=time.time())
+        assert cut == [1]
+
+    def test_an_enormous_lone_signal_is_still_cut(self, monkeypatch):
+        """Not a ban on one signal - a price. A man falling over with the
+        sound muted is still a clip."""
+        sup, watched, cut = self._ready(monkeypatch, {"motion_surge": 62.0})
+        sup.tick(now=time.time())
+        assert cut == [1]
+
+    def test_the_refusal_is_counted_where_it_can_be_seen(self, monkeypatch):
+        sup, watched, cut = self._ready(monkeypatch, {"motion_surge": 40.2})
+        sup.tick(now=time.time())
+        stages = {r["stage"]: r["n"] for r in sup.funnel_report()["stages"]}
+        assert stages.get("one signal only") == 1

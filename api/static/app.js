@@ -476,7 +476,10 @@ function streamAxes(s) {
    the useful half: one family of evidence on its own is the weakest a reading
    can be, and it is the shape a camera being carried down a street makes. */
 function axisNote(axes) {
-  const live = axes.filter(([, v]) => v > 0.02).map(([k]) => k);
+  // A family under 15% of the biggest is a rounding error, not a second
+  // opinion. At 2% this called "motion 100, chat 3" two families agreeing,
+  // which is the exact reading the cut gate now refuses.
+  const live = axes.filter(([, v]) => v >= 0.15).map(([k]) => k);
   const base = `Each axis is that family's share of the score, against the `
     + `biggest of them. Every one is measured as a ratio against this `
     + `channel's own recent past, so a nightclub and a bedroom read the same `
@@ -484,9 +487,9 @@ function axisNote(axes) {
   if (live.length === 0) return `Nothing is scoring yet. ${base}`;
   if (live.length === 1) {
     return `All of it is ${live[0]}, and one family of evidence on its own is `
-      + `the weakest a reading can be - a camera carried down a street makes `
-      + `this exact shape. A clip cut on it will rank low against one where `
-      + `two or three agree. ${base}`;
+      + `the weakest a reading can be - a phone carried down a street surges `
+      + `against its own baseline all evening and makes this exact shape. `
+      + `Nothing is cut on one family unless it is enormous. ${base}`;
   }
   return `${live.length} families of evidence are contributing, and agreement `
     + `between them is what separates a moment from a coincidence. ${base}`;

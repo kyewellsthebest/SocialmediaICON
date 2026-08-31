@@ -95,6 +95,44 @@ CROWD = frozenset({"chat_request", "chat_burst", "heatmap"})
 #: Kept for the parts of the pipeline that still ask, and for the dashboard.
 EVENTS = SENSED | CROWD
 
+#: Which signals are the same evidence wearing different names.
+#:
+#: motion_surge and flash are one eye looking at one picture, and a reading of
+#: "40.2 motion and 3.0 flash" is not two things agreeing - it is one thing,
+#: reported twice. Counting them separately is how a camera being carried down
+#: a street reads as corroborated. What actually distinguishes a moment from a
+#: coincidence is *different kinds* of evidence landing together: the picture
+#: moved AND somebody shouted, the room laughed AND a face changed.
+FAMILIES = {
+    "laughter": frozenset({"laughter"}),
+    "voice": frozenset({"shout", "audio_jump", "audio_drop", "said"}),
+    "faces": frozenset({"face_reaction", "close_up"}),
+    "motion": frozenset({"motion_surge", "scene_cuts", "flash"}),
+    "chat": frozenset({"chat_burst", "chat_request", "chat_voices", "heatmap"}),
+}
+#: A family contributing less than this share of the biggest one is noise, not
+#: agreement. Chat at 3% of a motion reading is a rounding error and calling it
+#: a second opinion is how one signal came to look like two.
+FAMILY_FLOOR = 0.15
+
+
+def families(why: dict[str, float]) -> dict[str, float]:
+    """What each kind of evidence contributed, largest first."""
+    out = {
+        name: sum(why.get(k, 0.0) for k in keys)
+        for name, keys in FAMILIES.items()
+    }
+    return {k: v for k, v in sorted(out.items(), key=lambda kv: -kv[1]) if v > 0}
+
+
+def agreeing(why: dict[str, float]) -> list[str]:
+    """The families genuinely contributing, not merely present."""
+    found = families(why)
+    if not found:
+        return []
+    top = max(found.values())
+    return [k for k, v in found.items() if v >= top * FAMILY_FLOOR]
+
 #: Signals that are **levels**: always a value, because there is always a
 #: loudness and always a number of people talking. A level can corroborate an
 #: event and it can rank two events against each other. It must never be the
