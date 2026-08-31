@@ -359,6 +359,24 @@ class Watched:
     # live edge as it stood at senses_at. Chat offsets are measured from when
     # the buffer opened. The buffer itself only answers to "how long ago".
 
+    def bar_now(self) -> float:
+        """The score this stream actually has to beat, as things stand.
+
+        There are two bars and which one applies depends on the evidence, not
+        on the settings: a reading with two families of evidence agreeing has
+        to clear live_min_score, and a reading carried by one family on its
+        own has to clear live_lone_signal_score, which is far higher.
+
+        Drawing the low bar in both cases is why this page has been asked
+        three times what its scoring means. A stream reading 46 against a bar
+        of 20 looks like a clip about to be cut. It was a lone motion surge,
+        the bar for that is 55, and it was never going to be cut at all - the
+        meter was measuring against a threshold that did not apply to it.
+        """
+        if len(moments.agreeing(self.last_why)) >= 2:
+            return float(settings.live_min_score)
+        return float(settings.live_lone_signal_score)
+
     def wall_time(self, window_s: float) -> float:
         """A position in the sense window, as a wall-clock instant."""
         return self.senses_at - (self.sense_window_s - window_s)
@@ -492,7 +510,7 @@ class Watched:
             # The bar this score has to clear. On the page beside the score,
             # because a number with no scale beside it is not a reading - and
             # a chart drawn against an invented ceiling is worse than none.
-            "cut_at": settings.live_min_score,
+            "cut_at": self.bar_now(),
             "reason": self.last_reason,
             "why": {k: round(v, 3) for k, v in
                     sorted(self.last_why.items(), key=lambda kv: -kv[1])},
@@ -1528,14 +1546,13 @@ class Supervisor:
         # different disks, so a path is not a way to hand it over - the first
         # catch was recorded perfectly and then could not be played, because
         # the file it named existed only on the machine that made it.
-        stored = self.publish_clip(final)
         why = candidate.found.why
 
         record = {
             "channel": candidate.channel,
             "source_url": f"https://kick.com/{candidate.channel}",
             "path": str(final),
-            "storage_key": stored,
+            "storage_key": None,
             "at_s": round(candidate.found.chat_s, 2),
             "duration_s": candidate.duration_s,
             "score": round(sum(why.values()), 3),
@@ -1567,6 +1584,34 @@ class Supervisor:
         # hourly gate the ordering is what decides which clips survive.
         record["rank"] = ranking.rank(record).as_dict()
         record["rank_score"] = record["rank"]["score"]
+
+        # ...and below a certain rank it is not an ordering problem, it is a
+        # clip that should not exist. Six hours of watching filled the page
+        # with clips ranked 17 to 25 - each one cut legitimately, because the
+        # moment score that cuts and the rank that orders are different
+        # numbers on different scales, and nothing anywhere compared the
+        # finished clip against the bar a person would set for it.
+        #
+        # Checked before the upload rather than after, so a clip nobody will
+        # ever see does not cost a transfer as well as an encode.
+        floor = float(settings.live_keep_rank)
+        approved = judged.watched and judged.worth_it
+        if record["rank_score"] < floor and not approved:
+            candidate.discard()
+            final.unlink(missing_ok=True)
+            self._tally("ranked too low", record["rank_score"])
+            self._note(
+                f"{candidate.channel}: dropping this - ranked "
+                f"{record['rank_score']:.0f}, below {floor:.0f}"
+            )
+            log.info(
+                "supervisor: dropped %s at rank %.1f (floor %.0f, carried by %s)",
+                candidate.channel, record["rank_score"], floor,
+                record["rank"].get("carried_by") or "nothing",
+            )
+            return None
+
+        record["storage_key"] = self.publish_clip(final)
         self.store(record)
         log.info(
             "supervisor: kept %s (%s, score %.1f, held %.0fs) -> %s",

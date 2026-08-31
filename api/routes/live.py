@@ -280,6 +280,51 @@ def discard(catch_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"ok": True}
 
 
+@router.post("/catches/rerank")
+def rerank(
+    drop_below: float | None = None, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    """Score every clip in the queue again, and optionally drop the weak ones.
+
+    A rank is written once, when the clip is made, and never revisited - so a
+    queue outlives the rules that ordered it. That was fine while the rules
+    were right and became the whole problem when they were not: a page of
+    clips ranked 17 to 25, every one of them scored as though a model had
+    watched it and been unimpressed, when in fact nothing had watched any of
+    them.
+
+    Re-ranking rather than emptying, because the clips themselves were never
+    the problem. `drop_below` then removes what is genuinely weak once it has
+    been scored honestly; without it this only corrects the ordering. Approved
+    clips are re-scored and never dropped - a person kept those, and a person's
+    decision is not a stale measurement.
+    """
+    from core import ranking
+
+    moved: list[dict[str, Any]] = []
+    dropped = 0
+    for row in db.query(Catch).all():
+        before = row.rank_score
+        found = ranking.rank(ranking.from_stored(row))
+        row.rank_score = found.score
+        row.rank = found.as_dict()
+        if before is None or abs((before or 0.0) - found.score) >= 0.05:
+            moved.append({"id": row.id, "channel": row.channel,
+                          "was": before, "now": found.score})
+        if drop_below is not None and found.score < drop_below and not row.approved:
+            if row.storage_key:
+                Path(row.storage_key).unlink(missing_ok=True)
+            db.delete(row)
+            dropped += 1
+    return {
+        "ok": True,
+        "ranked": len(moved) + dropped,
+        "changed": moved[:50],
+        "dropped": dropped,
+        "drop_below": drop_below,
+    }
+
+
 @router.delete("/catches")
 def discard_all(
     keep_approved: bool = True, db: Session = Depends(get_db)

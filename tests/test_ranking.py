@@ -269,3 +269,113 @@ class TestTheScoreHasToVaryBetweenClips:
             )
         )
         assert got[-1] - got[0] > 50
+
+
+class TestAClipNothingLookedAtIsStillRanked:
+    """Six hours of watching produced a page of clips ranked 17 to 25 and not
+    one above 50, and every one of them was UNWATCHED.
+
+    That was arithmetic, not taste. The verdict is 30 of the 100 merit points
+    and it used to be scored zero whenever nothing had watched the clip, which
+    capped an unwatched clip at 70 even if everything else about it were
+    perfect, and put an ordinary good one - a real event, a chat that reacted,
+    well framed, a big channel - on 23.
+
+    And the reason a clip goes unwatched is almost never the clip. It is the
+    day's budget, or the pace, or the model being switched off. Scoring it
+    zero ranks the bot's wallet and calls it a ranking of the clip.
+    """
+
+    def test_a_strong_unwatched_clip_can_beat_fifty(self):
+        got = score(verdict={"watched": False})
+        assert got > 50.0, f"a strong clip nothing looked at ranked {got}"
+
+    def test_it_still_ranks_below_the_same_clip_verified(self):
+        """A judgement from something that saw the video is worth something,
+        and its absence should still cost - a discount, not a hole."""
+        looked = score()
+        blind = score(verdict={"watched": False})
+        assert blind < looked
+        assert blind > looked * 0.7, "a discount, not a 30-point hole"
+
+    def test_the_discount_is_the_only_thing_between_them(self):
+        assert ranking.UNWATCHED_KEEPS < 1.0
+        looked = ranking.rank(clip())
+        blind = ranking.rank(clip(verdict={"watched": False}))
+        # Same evidence, so the merit before the discount is the same.
+        assert blind.detail["verdict"]["unwatched_keeps"] == ranking.UNWATCHED_KEEPS
+        assert "unwatched_keeps" not in looked.detail["verdict"]
+
+    def test_a_weak_unwatched_clip_is_still_weak(self):
+        """Renormalising must not float the floor up with the ceiling - the
+        motion-only clips are exactly what should stay at the bottom."""
+        got = score(
+            verdict={"watched": False},
+            heard={"laughs": [], "shouts": [], "speech_share": 0.2},
+            watched_faces={"on_screen": 0.1, "reactions": [], "close_ups": []},
+            seen={"surges": [{"size": 1.6}], "cuts": [], "still_s": 0.0,
+                  "duration_s": 32},
+            mood={"dominant": None, "lift": 0.4, "confidence": 0.1,
+                  "emotive_lines": 3},
+            chat={"burst_ratio": 1.1, "clip_requests": 0, "per_minute": 40},
+        )
+        assert got < 20.0, f"a motion-only clip ranked {got}"
+
+    def test_a_clip_the_model_refused_is_still_rejected(self):
+        """Not watched and refused are opposite cases, and only one of them
+        is an absence."""
+        assert score(verdict={"watched": True, "worth_it": False}) == 0.0
+
+
+class TestARankCanBeRecomputedFromWhatWasStored:
+    """A rank is written once, when the clip is made, and never revisited - so
+    a queue outlives the rules that ordered it. That is fine while the rules
+    are right and is the whole problem when they are not.
+
+    Re-ranking has to work off the database, because the video is deleted as
+    soon as the portrait version exists. The evidence column is kept for
+    exactly this, and the test that matters is that a stored clip re-ranks to
+    the number it was given: if the key mapping between the two shapes drifts,
+    the evidence silently reads as empty and every clip re-ranks to zero.
+    """
+
+    def _stored(self, record):
+        """The row store() would write, as an object rank() has never seen."""
+        return type("Row", (), {
+            "evidence": {
+                "heard": record.get("heard"),
+                "seen": record.get("seen"),
+                "faces": record.get("watched_faces"),
+                "chat": record.get("chat"),
+                "said": record.get("said"),
+            },
+            "mood": record.get("mood"),
+            "duration_s": record.get("duration_s"),
+            "peak_viewers": record.get("peak_viewers"),
+            "verdict": record.get("verdict"),
+        })()
+
+    def test_it_re_ranks_to_the_number_it_was_given(self):
+        record = clip()
+        fresh = ranking.rank(record).score
+        again = ranking.rank(ranking.from_stored(self._stored(record))).score
+        assert again == fresh
+
+    def test_an_unwatched_clip_re_ranks_the_same_way_too(self):
+        record = clip(verdict={"watched": False})
+        fresh = ranking.rank(record).score
+        again = ranking.rank(ranking.from_stored(self._stored(record))).score
+        assert again == fresh
+        assert again > 50.0, "and it is the corrected number, not the old one"
+
+    def test_every_part_survives_the_round_trip(self):
+        """Not just the total. A total can match while two parts have swapped
+        or both gone to zero and cancelled out."""
+        record = clip()
+        fresh = ranking.rank(record).parts
+        again = ranking.rank(ranking.from_stored(self._stored(record))).parts
+        assert again == fresh
+        assert all(v > 0 for v in again.values()), again
+
+    def test_a_row_with_nothing_on_it_is_not_a_crash(self):
+        assert ranking.rank(ranking.from_stored(type("Row", (), {})())).score == 0.0

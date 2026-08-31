@@ -85,6 +85,28 @@ WEIGHTS: dict[str, float] = {
     "reach": 100.0 * (1.0 - PENALTY_FLOOR["reach"]),
 }
 
+#: What a clip keeps when nothing ever looked at it.
+#:
+#: The verdict is 30 of the 100 merit points, and it used to be scored zero
+#: whenever a clip had not been watched - on the reasoning that not having a
+#: judgement is a real absence rather than a neutral one. That reasoning is
+#: right about a clip and wrong about this bot, because the reason a clip goes
+#: unwatched is almost never the clip. It is the day's budget, or the pace, or
+#: the model being switched off. Scoring it zero ranks the bot's wallet and
+#: calls it a ranking of the clip.
+#:
+#: What it did in practice: an unwatched clip could not exceed 70 even if
+#: everything else about it were perfect, and an ordinary good one - a real
+#: event, a chat that reacted, well framed, a big channel - landed on 23. Six
+#: hours of watching produced a page of clips scored 17 to 25 and not one
+#: above 50, and every one of them was a clip nothing had looked at.
+#:
+#: So merit is now scored over the parts that could actually be measured, and
+#: an unwatched clip keeps this much of it. Less than a verified one, because
+#: a judgement from something that saw the video is worth something and its
+#: absence should still cost - but a discount, not a hole.
+UNWATCHED_KEEPS = 0.9
+
 #: Viewers at which reach counts as full marks. Logarithmic below it, because
 #: the step from 1k to 10k matters far more than 40k to 50k.
 REACH_FULL = 50_000
@@ -310,6 +332,26 @@ def verdict_score(verdict: dict[str, Any]) -> tuple[float, dict[str, Any]]:
     return _clamp(confidence * (0.88 + 0.12 * read_a_face)), detail
 
 
+def from_stored(catch: Any) -> dict[str, Any]:
+    """A stored catch, in the shape rank() reads.
+
+    The evidence is kept on every row for exactly this: the weights change,
+    and a queue ranked by rules that no longer exist tells you about the old
+    rules rather than about the clips. Re-ranking has to be possible from what
+    is in the database, without the video, which is long gone.
+    """
+    evidence = getattr(catch, "evidence", None) or {}
+    return {
+        "senses": evidence,
+        "chat": evidence.get("chat") or {},
+        "said": evidence.get("said") or {},
+        "mood": getattr(catch, "mood", None) or {},
+        "duration_s": getattr(catch, "duration_s", None) or 0.0,
+        "peak_viewers": getattr(catch, "peak_viewers", None) or 0,
+        "verdict": getattr(catch, "verdict", None) or {},
+    }
+
+
 def rank(record: dict[str, Any]) -> Rank:
     """Score one clip against every other, and show the working.
 
@@ -337,7 +379,19 @@ def rank(record: dict[str, Any]) -> Rank:
 
     # Merit first, then what comes off it. A penalty can only ever reduce, so
     # a clip cannot climb the list by being well lit.
-    merit = sum(MERIT[name] * parts[name] for name in MERIT)
+    #
+    # Scored over the parts that could be measured. Only the verdict can be
+    # missing - the rest come off the clip itself - so when nothing watched
+    # it, the event and the reaction are scored out of the whole 100 between
+    # them and the result is discounted. See UNWATCHED_KEEPS.
+    measured = dict(MERIT)
+    if not (record.get("verdict") or {}).get("watched"):
+        del measured["verdict"]
+    spread = sum(MERIT.values()) / sum(measured.values())
+    merit = sum(measured[name] * parts[name] for name in measured) * spread
+    if "verdict" not in measured:
+        merit *= UNWATCHED_KEEPS
+        detail.setdefault("verdict", {})["unwatched_keeps"] = UNWATCHED_KEEPS
     kept = 1.0
     for name, floor in PENALTY_FLOOR.items():
         factor = floor + (1.0 - floor) * parts[name]

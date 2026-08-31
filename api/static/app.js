@@ -497,11 +497,30 @@ function axisNote(axes) {
   if (live.length === 1) {
     return `All of it is ${live[0]}, and one family of evidence on its own is `
       + `the weakest a reading can be - a phone carried down a street surges `
-      + `against its own baseline all evening and makes this exact shape. `
-      + `Nothing is cut on one family unless it is enormous. ${base}`;
+      + `against its own baseline all evening and makes this exact shape. So `
+      + `the bar beside the score is the high one: on one family alone a `
+      + `reading has to be enormous before anything is cut. ${base}`;
   }
   return `${live.length} families of evidence are contributing, and agreement `
     + `between them is what separates a moment from a coincidence. ${base}`;
+}
+
+/* A zero on an axis means one of two completely different things: nothing of
+   that kind happened, or the sense that would have found it did not run. The
+   panel drew both as 0 and the difference is the whole question - "why is
+   everything zero except motion" has been asked of this page three times and
+   it could not answer, because a failed ear and a quiet room looked the same.
+
+   The senses each report their own failure; this says so out loud. */
+function senseNote(senses) {
+  const down = [];
+  if (!senses.heard) down.push("the ear");
+  if (!senses.seen) down.push("the eye");
+  if (!senses.faces) down.push("the face detector");
+  if (!down.length) return "";
+  const which = down.join(", ").replace(/, ([^,]*)$/, " and $1");
+  return `${which} did not read this window, so anything they would have `
+    + `found is missing rather than absent.`;
 }
 
 function streamLanes(senses) {
@@ -601,6 +620,7 @@ async function renderStream() {
       </div>
       ${why.length ? bars(why) : `<p class="empty-note">Nothing is standing out right now.</p>`}
       <p class="muted">${axisNote(streamAxes(s))}</p>
+      ${senseNote(senses) ? `<p class="empty-note">${esc(senseNote(senses))}</p>` : ""}
     </div>
 
     ${streamLanes(senses)}
@@ -611,14 +631,18 @@ async function renderStream() {
       <header><h3>What it just heard and saw</h3>
         <span class="label">${senses.window_s ? `last ${Math.round(senses.window_s)}s` : "\u2014"}</span></header>
       ${heard || seen ? `<div class="stats">
-        ${stat((heard?.laughs || []).length, "laughs", (heard?.laughs || []).length > 0)}
-        ${stat((heard?.shouts || []).length, "raised voices", (heard?.shouts || []).length > 0)}
-        ${stat((heard?.gasps || []).length, "gasps?", (heard?.gasps || []).length > 0)}
+        ${stat(heard ? (heard.laughs || []).length : "\u2014", "laughs",
+               (heard?.laughs || []).length > 0)}
+        ${stat(heard ? (heard.shouts || []).length : "\u2014", "raised voices",
+               (heard?.shouts || []).length > 0)}
+        ${stat(heard ? (heard.gasps || []).length : "\u2014", "gasps?",
+               (heard?.gasps || []).length > 0)}
         ${stat(heard?.voiced_share != null ? `${Math.round(heard.voiced_share * 100)}%`
                : "\u2014", "is a voice")}
-        ${stat((seen?.surges || []).length, "motion surges", (seen?.surges || []).length > 0)}
-        ${stat((seen?.cuts || []).length, "cuts")}
-        ${stat((heard?.drops || []).length, "quiet drops")}
+        ${stat(seen ? (seen.surges || []).length : "\u2014", "motion surges",
+               (seen?.surges || []).length > 0)}
+        ${stat(seen ? (seen.cuts || []).length : "\u2014", "cuts")}
+        ${stat(heard ? (heard.drops || []).length : "\u2014", "quiet drops")}
         ${stat(heard ? `${Math.round((heard.speech_share || 0) * 100)}%` : "\u2014", "sounds like speech")}
       </div>
       ${senses.said?.words
@@ -626,6 +650,8 @@ async function renderStream() {
            <p class="muted">${esc(senses.said.recent)}</p>
            <p class="label">${senses.said.words} words held \u00b7
              ${senses.said.minutes_spent} min transcribed today</p>` : ""}
+      ${(senses.problems || []).length
+        ? `<p class="empty-note">${esc(senses.problems.join(" \u00b7 "))}</p>` : ""}
       <p class="muted">This is what decides. Chat can agree with it and cannot
         replace it.</p>`
       : `<p class="empty-note">${esc((senses.problems || []).join(" \u00b7 ")
@@ -1191,6 +1217,37 @@ async function clearClips() {
   }
 }
 
+/* Score the queue again against the rules as they stand now, and offer to
+   drop what is genuinely weak once it has been scored honestly.
+
+   Separate from clearing, because the clips were never the problem - the
+   ordering was. Emptying the queue after a scoring change throws away good
+   clips along with the bad reading of them. */
+async function rerankClips() {
+  const floor = window.prompt(
+    "Score every clip again with the current rules.\n\n"
+    + "Drop anything below this rank once it has been re-scored?\n"
+    + "Leave blank to only fix the ordering. Kept clips are never dropped.",
+    "20");
+  if (floor === null) return;
+  const below = floor.trim() === "" ? null : Number(floor);
+  if (below !== null && !Number.isFinite(below)) {
+    return toast("That is not a number.", "critical");
+  }
+  try {
+    const found = await api(
+      `/live/catches/rerank${below === null ? "" : `?drop_below=${below}`}`,
+      { method: "POST" });
+    const moved = (found.changed || []).length;
+    toast(
+      `Re-scored ${found.ranked}. ${moved} moved`
+      + `${found.dropped ? `, ${found.dropped} dropped` : ""}.`, "good");
+    renderClips();
+  } catch (err) {
+    toast(err.message, "critical");
+  }
+}
+
 function sheet(open) {
   $("#sheet").hidden = !open;
   $("#sheet-scrim").hidden = !open;
@@ -1429,6 +1486,7 @@ document.addEventListener("click", async (event) => {
     }
 
     if (t.id === "clips-clear") return clearClips();
+    if (t.id === "clips-rerank") return rerankClips();
     if (t.dataset.inspect) return showInspect(t.dataset.inspect);
     if (t.id === "sheet-close") return sheet(false);
     if (t.dataset.keep) {

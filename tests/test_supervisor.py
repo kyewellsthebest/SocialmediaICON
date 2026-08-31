@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from core import chat as chatlib
-from core import roster
+from core import moments, roster
 from core.config import settings
 from core.supervisor import (
     DORMANT_READINGS,
@@ -1746,9 +1746,17 @@ class TestTheLookBudgetLastsTheDay:
 
     def test_running_ahead_of_the_clock_is_paced(self, monkeypatch):
         """Two dollars of a $2.40 day, spent by breakfast, is the shape that
-        left the evening judged entirely on arithmetic."""
+        left the evening judged entirely on arithmetic.
+
+        The clock is pinned, because the thing under test is a comparison
+        against the time of day and reading the real one makes the test a
+        reading of when it was run. Unpinned, this passed all morning and
+        failed after 20:10 UTC, when a whole day's allowance has accrued and
+        $2.00 is no longer ahead of anything."""
         sup = self._sup(monkeypatch)
         self._spend(sup, 2.00)
+        # A quarter of the way through the day: $0.60 of $2.40 has accrued.
+        monkeypatch.setattr(time, "time", lambda: 86400.0 * 10 + 86400.0 * 0.25)
         found = sup.consider(self._candidate())
         assert found.watched is False
         assert "pacing" in " ".join(found.problems)
@@ -1923,3 +1931,124 @@ class TestBothBarsAreWatchedForBeingWrong:
         for _ in range(300):
             sup._tally("one signal only", 52.0)
         assert len(sup.funnel["near_misses"]["one signal only"]) <= 40
+
+
+class TestAClipTooWeakToKeepIsNotKept:
+    """Six hours of watching filled the page with clips ranked 17 to 25.
+
+    Every one had been cut legitimately. The number that cuts and the number
+    that orders are different things on different scales - live_min_score is a
+    threshold on a moment, measured out of the raw evidence before anything is
+    cut, and the rank is out of 100 against every other clip - and nothing
+    anywhere compared the finished clip against the bar a person would set for
+    it. A moment scoring 46 became a clip ranked 19 and went in the queue.
+    """
+
+    def _sup(self, monkeypatch, *, verdict=None):
+        from core.verdict import Verdict
+
+        sup = Supervisor()
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        monkeypatch.setattr(sup, "store", lambda record: record)
+        monkeypatch.setattr(sup, "publish_clip", lambda path: "key")
+        monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
+        monkeypatch.setattr(settings, "live_keep_rank", 20.0)
+        # Nothing looked at it, which is the case that produced the page.
+        monkeypatch.setattr(
+            sup, "consider",
+            lambda *a, **k: verdict or Verdict(problems=["the day's looking is spent"]),
+        )
+        return sup
+
+    def _finish(self, sup, *, heard=None, seen=None, messages=None):
+        watched = _watched("x", messages=messages if messages is not None else _chatter(),
+                           heard=heard, seen=seen)
+        found = Found(score=46.0, why={"motion_surge": 46.0}, at_s=15.0,
+                      ago_s=90.0, chat_s=285.0)
+        candidate = sup.cut(watched, found=found, now=time.time())
+        return candidate, sup.finish(candidate, now=time.time())
+
+    def test_a_clip_ranked_under_the_floor_never_reaches_the_queue(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        candidate, record = self._finish(sup, seen=Seen(surges=[(15.0, 1.4)]),
+                                         messages=[])
+        assert record is None, "this is the clip the page was full of"
+        assert not candidate.raw.exists()
+
+    def test_it_says_so_where_the_funnel_can_see_it(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        self._finish(sup, seen=Seen(surges=[(15.0, 1.4)]), messages=[])
+        stages = sup.funnel_report()["stages"]
+        assert any(row["stage"] == "ranked too low" for row in stages), stages
+
+    def test_a_clip_over_the_floor_is_kept(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        _, record = self._finish(
+            sup,
+            heard=_laughing_at(285.0),
+            seen=Seen(surges=[(15.0, 4.2)], cuts=[14.0, 16.0]),
+        )
+        assert record is not None
+        assert record["rank_score"] >= settings.live_keep_rank
+
+    def test_a_clip_the_model_approved_is_kept_however_it_ranks(self, monkeypatch):
+        """The verdict is the only judgement here formed by something that
+        saw the video, and arithmetic does not get to overrule it."""
+        from core.verdict import Verdict
+
+        sup = self._sup(monkeypatch, verdict=Verdict(
+            watched=True, worth_it=True, confidence=0.9, kind="funny"))
+        _, record = self._finish(sup, seen=Seen(surges=[(15.0, 1.4)]), messages=[])
+        assert record is not None
+
+    def test_nothing_is_uploaded_for_a_clip_that_is_dropped(self, monkeypatch):
+        """A clip nobody will ever see should not cost a transfer as well as
+        an encode."""
+        sup = self._sup(monkeypatch)
+        sent: list = []
+        monkeypatch.setattr(sup, "publish_clip", lambda path: sent.append(path))
+        self._finish(sup, seen=Seen(surges=[(15.0, 1.4)]), messages=[])
+        assert sent == []
+
+
+class TestThePageShowsTheBarThatActuallyApplies:
+    """"What is this scoring system?" has been asked of this page three times.
+
+    Part of the answer was that the meter drew the wrong bar. There are two,
+    and which applies depends on the evidence rather than on the settings: a
+    reading with two families agreeing has to clear live_min_score, and one
+    carried by a single family has to clear live_lone_signal_score, which is
+    nearly three times higher. The page drew the low one in both cases, so a
+    stream reading 46 off a lone motion surge appeared to be well past the
+    line and about to be clipped, when it was never going to be cut at all.
+    """
+
+    def test_one_family_is_measured_against_the_high_bar(self):
+        watched = _watched()
+        watched.last_why = {"motion_surge": 45.6, "chat_voices": 0.8}
+        assert watched.bar_now() == settings.live_lone_signal_score
+        assert watched.signals()["cut_at"] == settings.live_lone_signal_score
+
+    def test_families_agreeing_are_measured_against_the_low_one(self):
+        watched = _watched()
+        watched.last_why = {"motion_surge": 40.0, "laughter": 30.0}
+        assert watched.bar_now() == settings.live_min_score
+
+    def test_nothing_at_all_is_not_the_easy_bar(self):
+        """An empty reading has no second family either."""
+        watched = _watched()
+        watched.last_why = {}
+        assert watched.bar_now() == settings.live_lone_signal_score
+
+    def test_the_bar_matches_the_gate_that_will_judge_it(self):
+        """The whole point: the number drawn beside the score has to be the
+        number the cut actually uses, or the meter is decoration."""
+        for why in ({"motion_surge": 45.6, "chat_voices": 0.8},
+                    {"motion_surge": 40.0, "laughter": 30.0},
+                    {"laughter": 12.0}):
+            watched = _watched()
+            watched.last_why = why
+            agreed = moments.agreeing(why)
+            gate = (settings.live_min_score if len(agreed) >= 2
+                    else settings.live_lone_signal_score)
+            assert watched.bar_now() == gate, why

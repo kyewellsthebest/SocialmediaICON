@@ -403,6 +403,21 @@ class Settings(BaseSettings):
     #: clears the bar is cut and ranked; this is where the list is trimmed, and
     #: it trims the weakest rather than the newest.
     live_clips_per_day: int = 60
+    #: The rank a finished clip has to beat to be kept at all.
+    #:
+    #: Distinct from live_min_score, and the difference has caused real
+    #: confusion: that one is a *threshold on a moment*, scored out of the raw
+    #: evidence before anything is cut, and this is a *rank on a finished
+    #: clip*, scored out of 100 against every other clip. The two numbers
+    #: being similar is a coincidence of scale, not a relationship, so a
+    #: moment scoring 46 could and did become a clip ranked 19.
+    #:
+    #: A clip below this is not a clip somebody will scroll past - it is one
+    #: that makes the page worse by being on it. The one exception is a clip
+    #: a model watched and approved, which is kept whatever the arithmetic
+    #: says: the verdict is the only judgement here formed by something that
+    #: saw the video, and arithmetic does not get to overrule it.
+    live_keep_rank: float = 20.0
     #: Zero. There was an hour between clips and it was the single worst rule
     #: in the system: the buffer remembers five minutes, so a moment that was
     #: not cut immediately was gone, and the bot ended up clipping whatever
