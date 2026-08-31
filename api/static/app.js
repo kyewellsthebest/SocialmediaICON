@@ -40,8 +40,23 @@ async function api(path, options = {}) {
     },
   });
   if (res.status === 401) { showGate(true); throw new Error("unauthorised"); }
-  if (!res.ok) throw new Error((await res.text()).slice(0, 200) || `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(await reason(res));
   return res.status === 204 ? null : res.json();
+}
+
+/* FastAPI puts the readable part in {"detail": "..."}, and printing the raw
+   body put `{"detail":"lospollostv is not being watched right now"}` on the
+   page, braces and quotes and all. */
+async function reason(res) {
+  const body = (await res.text()).trim();
+  try {
+    const parsed = JSON.parse(body);
+    const said = parsed?.detail ?? parsed?.message;
+    if (typeof said === "string" && said) return said.slice(0, 200);
+    // A validation error is a list of objects; none of it is worth showing.
+    if (said) return `HTTP ${res.status}`;
+  } catch { /* not JSON - the body itself is the message */ }
+  return body.slice(0, 200) || `HTTP ${res.status}`;
 }
 
 function toast(message, tone = "") {
@@ -398,7 +413,15 @@ async function renderStream() {
     // the old header up would say it is still being watched.
     top.hidden = true;
     stopPlayer();
-    box.innerHTML = `<div class="card"><p class="empty-note">${esc(err.message)}</p></div>`;
+    // Being dropped from the roster is the normal end of a stream's life here,
+    // not a fault: it went quiet, or something livelier came up. Saying only
+    // "not being watched right now" reads like something broke.
+    const gone = /not being watched/i.test(err.message);
+    box.innerHTML = `<div class="card"><p class="empty-note">${esc(err.message)}</p>${
+      gone ? `<p class="muted">Streams come and go from the roster as they get
+        livelier or quieter, and a slot only holds while a channel is worth
+        it. Any clips already cut from this one are still on the Clips
+        page.</p>` : ""}</div>`;
     return;
   }
   top.hidden = false;

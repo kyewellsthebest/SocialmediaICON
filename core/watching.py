@@ -249,11 +249,19 @@ def _find_cuts(motion: list[float], fps: float, *, over: float = 0.22) -> list[f
     On a single-camera stream this mostly measures the camera being swung
     about, which is why it is worth little on its own and is here to agree
     with the other signals rather than to lead them.
+
+    The one test in this file that is per *frame* rather than per second, and
+    it has to be. Everything else here asks "how fast is this changing", which
+    is a rate; a cut asks "did one frame differ from the one before it", which
+    is not - and a threshold on the rate says yes on every frame of anything
+    busy. Measured after the units changed: fifty cuts in thirty seconds of a
+    nightclub with no cuts in it at all, and fifty-four on a real stream,
+    which is what put a scene_cuts score on a channel that never cut.
     """
     least = max(1, int(WARMUP_S * fps))
     found: list[float] = []
     for i in range(least, len(motion)):
-        if motion[i] < over:
+        if motion[i] / max(fps, 1e-6) < over:
             continue
         at = i / fps
         if not found or at - found[-1] >= 0.5:

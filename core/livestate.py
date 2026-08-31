@@ -32,7 +32,15 @@ NOTE_KEY = "clipengine:live:note"
 CLAIM_KEY = "clipengine:live:claim:{name}"
 #: A snapshot older than this means the worker died mid-run: better to report
 #: nothing than to show three streams that stopped existing ten minutes ago.
-STATUS_TTL_S = 30
+#:
+#: Ninety rather than thirty. Thirty was set when a pass over the watched
+#: streams took a couple of seconds; at ten streams a pass can legitimately
+#: take most of a minute, and a snapshot that expires inside one normal pass
+#: turns a busy watcher into a page that says "RESTARTING" and a stream page
+#: that 404s. The reading carries its own age, so a stale one can be shown as
+#: stale rather than withheld - which is more useful than nothing, and was the
+#: whole reason this was short in the first place.
+STATUS_TTL_S = 90
 
 #: Used only when Redis is not configured, so a local run still works.
 _fallback: dict[str, Any] = {}
@@ -237,13 +245,17 @@ def release_lease(holder: str) -> None:
         log.debug("livestate: could not release the lease (%s)", exc)
 
 
-def watcher_alive() -> bool:
-    """Is a watcher renewing its lease right now?
+def watcher_alive() -> bool | None:
+    """Is a watcher renewing its lease right now? None means cannot tell.
 
-    False here is what the watchdog acts on, so it must never be a guess: if
-    Redis cannot be reached the honest answer is "assume yes", because with no
-    Redis nothing could be queued to fix it anyway and a stream of relaunch
-    attempts would only fill the log.
+    Three answers rather than two, because the two callers want opposite
+    things from a Redis that will not answer. The watchdog must not act on a
+    guess - it would queue a relaunch a minute, forever, and none of them
+    could run anyway - so for it, unknown means leave it alone. A booting
+    worker wants the opposite: unknown means try, because the alternative is a
+    worker that came up next to a dead watcher and decided not to start one.
+    Trying is safe either way, since run() takes the lease and refuses to sit
+    beside a watcher that already holds it.
     """
     client = _redis()
     if client is None:
@@ -251,8 +263,9 @@ def watcher_alive() -> bool:
         return bool(held and time.time() - held[1] < LEASE_S)
     try:
         return client.get(LEASE_KEY) is not None
-    except Exception:  # noqa: BLE001
-        return True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("livestate: cannot read the lease (%s)", exc)
+        return None
 
 
 # --- what it should be doing, as opposed to what it is doing -----------------

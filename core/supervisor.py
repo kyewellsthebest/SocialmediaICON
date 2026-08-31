@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -67,6 +68,21 @@ AUDIO_WINDOW_S = 24.0
 #: pair is what keeps three streams under a fifth of one core.
 SENSE_WINDOW_S = 30.0
 SENSE_EVERY_S = 20.0
+#: How many streams may have their senses read at once.
+#:
+#: This loop used to read them one after another, which was invisible at three
+#: streams and broke the dashboard at ten: a sense read is about 7 seconds of
+#: ffmpeg per stream, so a pass over ten took most of a minute, the snapshot
+#: is only published when a pass ends, and the snapshot expires after thirty
+#: seconds. The page spent two thirds of every minute with nothing to read and
+#: said "RESTARTING", and a stream page 404ed because the channel it wanted
+#: was in a snapshot that had expired.
+#:
+#: Reading them together is what makes ten streams possible at all. The work
+#: is ffmpeg subprocesses rather than Python, so four at once cost four cores
+#: for about the wall time of one, and every path involved is per-channel -
+#: each reads its own buffer's segments and pipes to its own stdout.
+SENSE_PARALLEL = 4
 #: The width a moment is scored over. Not the clip length: scoring wants a
 #: consistent narrow window so two moments can be compared, and the clip wants
 #: to run as long as the moment does.
@@ -78,7 +94,13 @@ DORMANT_PEAK_DB = -25.0
 #: Mean per-pixel frame difference. A locked-off shot of a sleeping room is
 #: near zero; anyone moving in frame is an order of magnitude above it. A man
 #: sitting at a desk talking measured 0.0093 and a nightclub 0.118.
-DORMANT_MOTION = 0.004
+#: Per second, like everything core.watching reports. It was 0.004 per frame
+#: at a fixed 20fps, and when motion became a rate this was not brought with
+#: it - so an empty room measured 0.019 against a threshold of 0.004, nothing
+#: was ever still, and sleep detection was silently dead. 0.004 x 20 is the
+#: same calibration expressed in the new units, and it agrees with the
+#: stillness floor in core.watching, which asks the same question.
+DORMANT_MOTION = 0.08
 #: Nobody home is stillness plus nobody talking - not stillness plus silence.
 #: Requiring silence is why a streamer asleep with a game or music playing was
 #: watched all night: the silence never came, so the count never started. And
@@ -1043,27 +1065,81 @@ class Supervisor:
         """The part of a score that came from something happening."""
         return sum(v for k, v in why.items() if k in moments.EVENTS)
 
+    def read_all_senses(self, *, now: float) -> None:
+        """Listen to and look at every stream that is due, together.
+
+        Serially this was the thing that broke ten streams: seven seconds each
+        and nothing published until the whole pass ended. Together it is about
+        seven seconds for all of them, because the work is ffmpeg rather than
+        Python and every path is per-channel.
+
+        The stalest go first, so a pass that cannot finish - a box with fewer
+        cores than this asks for - starves the streams that were read most
+        recently rather than always the same ones at the end of the dict.
+        """
+        due = [
+            (watched.senses_at, channel, watched)
+            for channel, watched in list(self.watching.items())
+            if watched.buffer.running and now - watched.senses_at >= SENSE_EVERY_S
+        ]
+        if not due:
+            return
+        due.sort(key=lambda row: row[0])
+        batch = [row[2] for row in due[:SENSE_PARALLEL]]
+
+        def read(watched: Watched) -> None:
+            try:
+                watched.read_senses(self.work_dir / "senses", now=now)
+            except Exception as exc:  # noqa: BLE001 - a deaf tick is not a dead one
+                watched.senses_at = now
+                watched.heard = watched.seen = None
+                watched.senses = {"problems": [f"{type(exc).__name__}: {exc}"]}
+
+        if len(batch) == 1:
+            read(batch[0])
+            return
+        with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+            list(pool.map(read, batch))
+
+    def sense_lag(self) -> dict[str, Any]:
+        """How far behind the senses are, which is what says ten is too many.
+
+        Every stream is meant to be read every SENSE_EVERY_S. When more are
+        held than the box can read in that time the reads simply arrive later,
+        and nothing else says so - the page looks identical, the scores just
+        quietly describe a stream as it was a minute ago.
+        """
+        now = time.time()
+        ages = [
+            now - w.senses_at for w in self.watching.values() if w.senses_at
+        ]
+        if not ages:
+            return {"known": False}
+        worst = max(ages)
+        return {
+            "known": True,
+            "worst_s": round(worst, 1),
+            "mean_s": round(sum(ages) / len(ages), 1),
+            "target_s": SENSE_EVERY_S,
+            "keeping_up": worst <= SENSE_EVERY_S * 2.5,
+            "reading": min(len(self.watching), SENSE_PARALLEL),
+        }
+
     def tick(self, *, now: float | None = None) -> list[dict[str, Any]]:
         """One pass over every watched channel. Returns whatever was caught."""
         now = time.time() if now is None else now
         caught: list[dict[str, Any]] = []
+
+        # Before the per-channel work, and for every channel at once: this is
+        # the expensive thing the loop does, and doing it inline per channel is
+        # what made a pass take a minute.
+        self.read_all_senses(now=now)
 
         for channel, watched in list(self.watching.items()):
             if not watched.buffer.running:
                 self._note(f"{channel}: buffer stopped ({watched.buffer.failure()[:120]})")
                 self.release(channel)
                 continue
-
-            # Listening and looking are the expensive things in this loop, so
-            # they run on their own timer rather than every tick. The windows
-            # overlap, so a moment cannot fall between two reads.
-            if now - watched.senses_at >= SENSE_EVERY_S:
-                try:
-                    watched.read_senses(self.work_dir / "senses", now=now)
-                except Exception as exc:  # noqa: BLE001 - a deaf tick is not a dead one
-                    watched.senses_at = now
-                    watched.heard = watched.seen = None
-                    watched.senses = {"problems": [f"{type(exc).__name__}: {exc}"]}
 
             if now - watched.audio_at >= AUDIO_EVERY_S:
                 watched.audio_at = now
@@ -1682,6 +1758,7 @@ class Supervisor:
             "errors": self.errors[-6:],
             "health": self.health(),
             "yield": self._yield_quietly(),
+            "lag": self.sense_lag(),
         }
 
     def _yield_quietly(self) -> dict[str, Any]:
@@ -1701,6 +1778,20 @@ class Supervisor:
         now = time.time()
         up = now - self.began_at
         if self.watching:
+            lag = self.sense_lag()
+            if lag.get("known") and not lag.get("keeping_up"):
+                # Watching but falling behind: the scores describe streams as
+                # they were a minute ago and nothing else would ever say so.
+                return {
+                    "ok": False,
+                    "state": "falling behind",
+                    "detail": (
+                        f"{len(self.watching)} streams, but the oldest reading is "
+                        f"{lag['worst_s']:.0f}s old against a target of "
+                        f"{lag['target_s']:.0f}s. Fewer slots would be read more often."
+                    ),
+                    "up_s": round(up),
+                }
             return {"ok": True, "state": "watching",
                     "detail": f"{len(self.watching)} stream(s)", "up_s": round(up)}
         if up < STARTUP_GRACE_S and not self.last_good_poll:

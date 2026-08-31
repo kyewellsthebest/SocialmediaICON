@@ -21,6 +21,8 @@ from core.config import settings
 from core.supervisor import (
     DORMANT_READINGS,
     DORMANT_REST_S,
+    SENSE_EVERY_S,
+    SENSE_PARALLEL,
     Found,
     Supervisor,
     Watched,
@@ -452,7 +454,7 @@ class TestASleepingStreamerLosesTheSlot:
     slot produces no clips for hours while fourth place goes unwatched.
     """
 
-    def _asleep(self, motion=0.0005, mean_db=-57.9, peak_db=-40.2, speech=0.0):
+    def _asleep(self, motion=0.019, mean_db=-57.9, peak_db=-40.2, speech=0.0):
         watched = _watched(messages=_chatter())
         watched.audio = {"ok": True, "mean_db": mean_db, "peak_db": peak_db}
         watched.read_motion = lambda: motion
@@ -468,7 +470,7 @@ class TestASleepingStreamerLosesTheSlot:
 
     def test_a_quiet_room_someone_is_moving_in_is_not_asleep(self):
         """Reading, drawing, playing something quiet - all still a stream."""
-        assert self._asleep(motion=0.02).read_activity()["asleep_now"] is False
+        assert self._asleep(motion=0.4).read_activity()["asleep_now"] is False
 
     def test_a_still_shot_with_someone_talking_over_it_is_not_asleep(self):
         """A podcast on a locked-off camera is a stream, not an empty room."""
@@ -1307,9 +1309,23 @@ class TestItSaysWhenItIsBroken:
         sup = Supervisor()
         sup.began_at = time.time() - 3600
         sup.watching["one"] = _watched("one")
+        sup.watching["one"].senses_at = time.time()
         found = sup.health()
         assert found["ok"] is True
         assert found["state"] == "watching"
+
+    def test_watching_but_reading_them_too_slowly_is_a_fault(self):
+        """Ten streams on a box that can read four is not an outage - the page
+        looks identical and the scores quietly describe a stream as it was a
+        minute ago. Nothing else would ever say so."""
+        sup = Supervisor()
+        sup.began_at = time.time() - 3600
+        sup.watching["one"] = _watched("one")
+        sup.watching["one"].senses_at = time.time() - 300
+        found = sup.health()
+        assert found["ok"] is False
+        assert found["state"] == "falling behind"
+        assert "Fewer slots" in found["detail"]
 
     def test_the_status_the_page_reads_carries_it(self):
         assert "health" in Supervisor().status()
@@ -1412,3 +1428,152 @@ class TestTheChatCurveReachesTheChart:
         from core.supervisor import _trace
 
         assert _trace(self._curve([]))["counts"] == []
+
+
+class TestTheSensesAreReadTogether:
+    """Serially this is what broke ten streams: seven seconds of ffmpeg each,
+    nothing published until the whole pass ended, and a snapshot that expired
+    inside one normal pass. The page said "RESTARTING" for two thirds of every
+    minute and a stream page 404ed because its channel was in a snapshot that
+    had gone."""
+
+    def _sup(self, channels, *, stale=999.0):
+        sup = Supervisor()
+        now = time.time()
+        for i, c in enumerate(channels):
+            w = _watched(c)
+            w.senses_at = now - stale - i  # earlier index = fresher
+            sup.watching[c] = w
+        return sup
+
+    def _record(self, sup, monkeypatch):
+        import threading
+        seen, lock = [], threading.Lock()
+
+        def read(self, out_dir, *, now=None):
+            with lock:
+                seen.append(self.channel)
+            self.senses_at = now or time.time()
+
+        monkeypatch.setattr(Watched, "read_senses", read)
+        return seen
+
+    def test_it_reads_a_batch_at_once_not_one_at_a_time(self, monkeypatch):
+        sup = self._sup([f"c{i}" for i in range(10)])
+        seen = self._record(sup, monkeypatch)
+        sup.read_all_senses(now=time.time())
+        assert len(seen) == SENSE_PARALLEL, "a pass must be bounded, not all ten"
+
+    def test_the_stalest_go_first(self, monkeypatch):
+        """A box that cannot finish a pass has to starve the streams read most
+        recently, not always the same ones at the end of the dict."""
+        sup = self._sup(["fresh", "old", "oldest"])
+        now = time.time()
+        sup.watching["fresh"].senses_at = now - 30
+        sup.watching["old"].senses_at = now - 300
+        sup.watching["oldest"].senses_at = now - 900
+        seen = self._record(sup, monkeypatch)
+        sup.read_all_senses(now=now)
+        assert seen[:2] == ["oldest", "old"] or set(seen[:2]) == {"oldest", "old"}
+
+    def test_a_stream_read_recently_is_left_alone(self, monkeypatch):
+        sup = self._sup(["a"], stale=0.0)
+        seen = self._record(sup, monkeypatch)
+        sup.read_all_senses(now=time.time())
+        assert seen == []
+
+    def test_one_stream_throwing_does_not_stop_the_others(self, monkeypatch):
+        sup = self._sup(["bad", "good"])
+        done = []
+
+        def read(self, out_dir, *, now=None):
+            if self.channel == "bad":
+                raise RuntimeError("ffmpeg fell over")
+            done.append(self.channel)
+            self.senses_at = now or time.time()
+
+        monkeypatch.setattr(Watched, "read_senses", read)
+        sup.read_all_senses(now=time.time())
+        assert done == ["good"]
+        assert "ffmpeg fell over" in str(sup.watching["bad"].senses.get("problems"))
+
+    def test_a_deaf_read_still_moves_the_clock(self, monkeypatch):
+        """Otherwise it is due again next tick, forever, and starves the rest."""
+        sup = self._sup(["bad"])
+
+        def boom(self, out_dir, *, now=None):
+            raise RuntimeError("no")
+
+        monkeypatch.setattr(Watched, "read_senses", boom)
+        now = time.time()
+        sup.read_all_senses(now=now)
+        assert sup.watching["bad"].senses_at == now
+
+
+class TestItSaysWhenItCannotKeepUp:
+    def test_the_lag_travels_to_the_page(self):
+        sup = Supervisor()
+        sup.watching["a"] = _watched("a")
+        sup.watching["a"].senses_at = time.time() - 12
+        found = sup.status()["lag"]
+        assert found["known"] and found["keeping_up"] is True
+        assert found["target_s"] == SENSE_EVERY_S
+
+    def test_a_minute_old_reading_is_not_keeping_up(self):
+        sup = Supervisor()
+        sup.watching["a"] = _watched("a")
+        sup.watching["a"].senses_at = time.time() - 90
+        assert sup.sense_lag()["keeping_up"] is False
+
+    def test_nothing_read_yet_is_not_a_crash(self):
+        assert Supervisor().sense_lag() == {"known": False}
+
+
+class TestTheStillnessThresholdIsAnchoredToRealFootage:
+    """The numbers in the dormancy tests above were invented, and invented
+    numbers move with whatever units the code happens to use. When motion
+    became a rate per second, DORMANT_MOTION stayed a per-frame value: an
+    empty room measured 0.019 against a threshold of 0.004, nothing was ever
+    judged still, and sleep detection was dead with every test still green.
+
+    This one measures the fixtures, so the threshold has to sit between a room
+    with nobody in it and a room with something happening, whatever units
+    either side is written in."""
+
+    def _motion(self, src):
+        from core import watching
+
+        return watching.watch(src).average_motion
+
+    def test_an_empty_room_falls_under_the_threshold(self):
+        import synth_video as clips
+
+        from core.supervisor import DORMANT_MOTION
+
+        still = self._motion(clips.still_room())
+        assert still <= DORMANT_MOTION, (
+            f"an empty room reads {still:.4f} against a threshold of "
+            f"{DORMANT_MOTION} - nothing will ever be judged asleep"
+        )
+
+    def test_a_room_with_something_happening_does_not(self):
+        import synth_video as clips
+
+        from core.supervisor import DORMANT_MOTION
+
+        busy = self._motion(clips.nightclub())
+        assert busy > DORMANT_MOTION * 3, (
+            f"a nightclub reads {busy:.4f} against {DORMANT_MOTION} - too close "
+            "to call a stream asleep on"
+        )
+
+    def test_the_threshold_agrees_with_the_one_in_the_eye(self):
+        """core.watching asks the same question in its own stillness floor,
+        and two answers to "is anything moving" is one too many."""
+        import inspect
+
+        from core import watching
+        from core.supervisor import DORMANT_MOTION
+
+        floor = inspect.signature(watching._find_stillness).parameters["below"].default
+        assert floor == DORMANT_MOTION

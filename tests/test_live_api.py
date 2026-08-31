@@ -430,9 +430,28 @@ class TestItKeepsWatchingByItself:
         from worker.tasks import live_watch
 
         livestate.want(True)
-        livestate.publish({"running": True, "streams": []})
+        # The lease, not the snapshot: the snapshot is a reading and is allowed
+        # to go stale for a minute and a half while a pass runs, so a booting
+        # worker that consulted it would refuse to restart a watcher that had
+        # actually died - and would also refuse for ninety seconds after one
+        # that really is running published.
+        livestate.take_lease("the-live-one")
         monkeypatch.setattr(settings, "live_enabled", True)
         assert live_watch.ensure_running()["reason"] == "already running"
+
+    def test_a_stale_snapshot_does_not_stop_a_boot_resuming(self, monkeypatch):
+        """A watcher killed mid-pass leaves its last reading behind. That is a
+        reading, not a heartbeat, and treating it as one is how a crash goes
+        unnoticed until the snapshot expires."""
+        from worker.tasks import live_watch
+
+        livestate.want(True)
+        livestate.publish({"running": True, "streams": []})
+        monkeypatch.setattr(settings, "live_enabled", True)
+        queued = []
+        monkeypatch.setattr(live_watch, "relaunch", lambda why: queued.append(why) or True)
+        assert live_watch.ensure_running()["ok"] is True
+        assert queued
 
     def test_the_page_can_tell_restarting_from_stopped(self, client, monkeypatch):
         monkeypatch.setattr(settings, "live_enabled", True)
@@ -743,3 +762,45 @@ class TestItKeepsWatchingWithoutBeingAskedTo:
         assert forked == [True]
         assert "live" not in served
         assert "render" in served
+
+
+class TestUnknownIsNotAnAnswer:
+    """A Redis that will not answer means the two callers want opposite
+    things, and collapsing that into a boolean gets one of them wrong."""
+
+    def _mute(self, monkeypatch):
+        class _Dead:
+            def get(self, key):
+                raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(livestate, "_redis", lambda: _Dead())
+
+    def test_the_lease_says_it_cannot_tell(self, monkeypatch):
+        self._mute(monkeypatch)
+        assert livestate.watcher_alive() is None
+
+    def test_the_watchdog_leaves_it_alone_rather_than_guessing(self, monkeypatch):
+        """Otherwise it queues a relaunch a minute forever, and with Redis
+        unreachable not one of them could run."""
+        from worker.tasks import live_watch
+
+        self._mute(monkeypatch)
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(livestate, "wanted", lambda default=True: True)
+        queued = []
+        monkeypatch.setattr(live_watch, "relaunch", lambda why: queued.append(why) or True)
+        assert live_watch.watchdog()["ok"] is True
+        assert queued == []
+
+    def test_a_booting_worker_tries_anyway(self, monkeypatch):
+        """The opposite call: the alternative is a worker that comes up beside
+        a dead watcher and decides not to start one."""
+        from worker.tasks import live_watch
+
+        self._mute(monkeypatch)
+        monkeypatch.setattr(settings, "live_enabled", True)
+        monkeypatch.setattr(livestate, "wanted", lambda default=True: True)
+        queued = []
+        monkeypatch.setattr(live_watch, "relaunch", lambda why: queued.append(why) or True)
+        assert live_watch.ensure_running()["ok"] is True
+        assert queued

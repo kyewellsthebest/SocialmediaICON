@@ -105,6 +105,36 @@ class TestTheCostOfLooking:
         assert set(room.as_dict()) >= {"average_motion", "surges", "cuts", "flashes"}
 
 
+class TestACutIsAFrameNotARate:
+    """The gap this file had. Every other test asked "is the event found";
+    none asked "is a busy stream free of events it never had", and when motion
+    moved from per-frame to per-second units the cut threshold came along
+    unchanged. A nightclub reported fifty cuts in thirty seconds and a real
+    stream fifty-four in thirty-two, which put a scene_cuts score on a channel
+    that never cut once."""
+
+    def test_a_busy_stream_with_no_cuts_reports_no_cuts(self, club):
+        assert club.cuts == [], f"{len(club.cuts)} cuts invented from constant motion"
+
+    def test_a_still_room_reports_no_cuts(self, room):
+        assert room.cuts == []
+
+    def test_the_one_real_cut_is_still_found(self):
+        found = watching.watch(clips.hard_cut(at=15.0))
+        assert len(found.cuts) == 1
+        assert found.cuts[0] == pytest.approx(15.0, abs=0.5)
+
+    def test_the_test_is_per_frame_so_the_rate_cannot_move_it(self):
+        """Read the same clip at two rates. A cut is one frame differing from
+        the one before it, so the answer must not depend on how often the
+        frames are sampled - which is exactly what went wrong."""
+        src = clips.hard_cut(at=15.0)
+        slow = watching.watch(src, fps=20.0).cuts
+        fast = watching.watch(src, fps=None).cuts
+        assert len(slow) == len(fast) == 1
+        assert slow[0] == pytest.approx(fast[0], abs=0.5)
+
+
 class TestItReadsEveryFrame:
     """The default is the source's own rate, and the reading has to mean the
     same thing whatever that rate turns out to be."""

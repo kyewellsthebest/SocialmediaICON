@@ -129,6 +129,13 @@ def run(max_seconds: float | None = None) -> dict:
             # on top of a watcher that is merely having a bad minute.
             livestate.renew_lease(holder)
 
+            # Published before the work as well as after. A pass over ten
+            # streams is seconds of ffmpeg per stream, and publishing only on
+            # the way out left the page with nothing to read for most of every
+            # pass - which it reported as "RESTARTING", because from outside a
+            # watcher that is busy and a watcher that has died look identical.
+            livestate.publish(supervisor.status())
+
             caught += len(supervisor.tick())
 
             # The dashboard is served by a different process on a different
@@ -217,8 +224,11 @@ def watchdog() -> dict:
         return {"ok": False, "reason": "LIVE_ENABLED is not set on the worker"}
     if not livestate.wanted():
         return {"ok": False, "reason": "Stop was pressed; leaving it stopped"}
-    if livestate.watcher_alive():
-        return {"ok": True, "reason": "a watcher is alive"}
+    # `is not False` on purpose: unknown means leave it alone. A watchdog that
+    # acts on a guess queues a relaunch a minute forever, and with Redis
+    # unreachable none of them could run anyway.
+    if livestate.watcher_alive() is not False:
+        return {"ok": True, "reason": "a watcher is alive, or cannot be asked"}
 
     log.warning("live_watch: no watcher has ticked in %ss - starting one",
                 livestate.LEASE_S)
@@ -244,7 +254,14 @@ def ensure_running() -> dict:
         return {"ok": False, "reason": reason}
     if not livestate.wanted():
         return {"ok": False, "reason": "Stop was pressed; leaving it stopped"}
-    if livestate.read():
+    # The lease, not the snapshot. The snapshot is a *reading* and it is
+    # deliberately allowed to go stale for a minute and a half while a pass
+    # over ten streams runs; the lease is the answer to "is a watcher alive",
+    # and run() refuses to start a second one beside it regardless.
+    # `is True` on purpose, the opposite of the watchdog: unknown means try.
+    # The alternative is a worker that boots next to a dead watcher and decides
+    # not to start one. run() takes the lease, so trying is safe.
+    if livestate.watcher_alive() is True:
         return {"ok": False, "reason": "already running"}
     return {"ok": relaunch("on worker boot")}
 
