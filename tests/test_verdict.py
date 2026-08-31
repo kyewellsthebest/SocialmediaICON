@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import subprocess
 
+import httpx2 as httpx
+
 import pytest
 
 from core import verdict
@@ -190,3 +192,96 @@ class TestWhatItIsToldAboutTheMoment:
     def test_the_schema_demands_a_reason(self):
         assert "why" in verdict.SCHEMA["required"]
         assert "worth_it" in verdict.SCHEMA["required"]
+
+
+class TestItDoesNotSendParametersTheModelRejects:
+    """Every verdict failed for days, and the queue ranked in the teens
+    because of it.
+
+    look() sent `thinking: {"type": "adaptive"}` and `output_config.effort` on
+    every call. Both arrived with the 4.6 generation; the default verdict model
+    is claude-haiku-4-5, which is a 4.5 model and takes neither. A model that
+    rejects a parameter rejects the whole call, so every look 400'd before it
+    began. Every clip came back UNWATCHED with an API error stored on it - and
+    because an unwatched clip also scored zero on the verdict axis, a third of
+    the ranking went missing at the same time. One unsupported parameter, two
+    symptoms that looked nothing like each other.
+    """
+
+    def _reply(self):
+        import json
+
+        body = json.dumps({
+            "happening": "he drinks it and gags", "kind": "gross",
+            "worth_it": True, "confidence": 0.8, "why": "a real reaction",
+            "setting": "a kitchen",
+        })
+        return type("R", (), {
+            "content": [type("B", (), {"type": "text", "text": body})()],
+            "model": "stub",
+            "usage": type("U", (), {"input_tokens": 10, "output_tokens": 5})(),
+        })()
+
+    def _client(self, *, strict=True):
+        """Stands in for Haiku: 400s on anything from a later generation."""
+        import anthropic
+
+        seen: list[dict] = []
+        reply = self._reply()
+
+        class Client:
+            class messages:  # noqa: N801
+                @staticmethod
+                def create(**request):
+                    seen.append(request)
+                    late = "thinking" in request or "effort" in (
+                        request.get("output_config") or {})
+                    if strict and late:
+                        raise anthropic.BadRequestError(
+                            "adaptive thinking is not supported on this model",
+                            response=httpx.Response(
+                                400, request=httpx.Request("POST", "http://x")),
+                            body=None,
+                        )
+                    return reply
+
+        return Client(), seen
+
+    def test_a_45_model_is_not_asked_to_think_adaptively(self, clip, monkeypatch):
+        monkeypatch.setattr(settings, "verdict_model", "claude-haiku-4-5")
+        client, seen = self._client()
+        monkeypatch.setattr("core.llm.get_client", lambda: client)
+        found = verdict.look(clip, count=2)
+        assert found.watched is True, found.problems
+        assert "thinking" not in seen[0]
+        assert "effort" not in (seen[0].get("output_config") or {})
+
+    def test_a_46_model_still_is(self, clip, monkeypatch):
+        monkeypatch.setattr(settings, "verdict_model", "claude-opus-5")
+        monkeypatch.setattr(settings, "verdict_effort", "medium")
+        client, seen = self._client(strict=False)
+        monkeypatch.setattr("core.llm.get_client", lambda: client)
+        verdict.look(clip, count=2)
+        assert seen[0]["thinking"] == {"type": "adaptive"}
+        assert seen[0]["output_config"]["effort"] == "medium"
+
+    def test_a_model_that_refuses_anyway_is_asked_again_plainly(self, clip, monkeypatch):
+        """The guard above is a list of model names and lists go stale. A
+        rejected parameter must never again cost every verdict the bot forms."""
+        monkeypatch.setattr(settings, "verdict_model", "claude-opus-5")
+        client, seen = self._client(strict=True)
+        monkeypatch.setattr("core.llm.get_client", lambda: client)
+        found = verdict.look(clip, count=2)
+        assert found.watched is True, found.problems
+        assert len(seen) == 2, "it should have tried twice"
+        assert "thinking" in seen[0] and "thinking" not in seen[1]
+
+    def test_which_models_take_the_late_parameters(self):
+        from core import llm
+
+        assert llm.thinks_adaptively("claude-opus-5")
+        assert llm.thinks_adaptively("claude-sonnet-5")
+        assert llm.thinks_adaptively("claude-fable-5")
+        assert not llm.thinks_adaptively("claude-haiku-4-5")
+        assert not llm.thinks_adaptively("claude-sonnet-4-5")
+        assert not llm.thinks_adaptively("")

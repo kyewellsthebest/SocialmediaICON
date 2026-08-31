@@ -66,6 +66,31 @@ PRICES = {
 DEFAULT_PRICE = (2.00, 10.00, 0.20)
 
 
+def _ask(client, **request):  # noqa: ANN001, ANN201 - anthropic client/Message
+    """One request, retried plainly if the model would not take the trimmings.
+
+    A model that rejects a parameter rejects the whole call, so a look is worth
+    trying twice: once as asked, and once with everything optional stripped.
+    Without this a single unsupported parameter silently costs every verdict
+    the bot will ever form - which is exactly what happened, for days, because
+    the code sent 4.6-era parameters to a 4.5 model and had nowhere to fall
+    back to. The prompt demands strict JSON on its own, so the plain call still
+    answers; it just answers without structured output to guarantee the shape.
+    """
+    import anthropic
+
+    try:
+        return client.messages.create(**request)
+    except (TypeError, anthropic.BadRequestError) as exc:
+        log.warning(
+            "verdict: %s would not take the request (%s); asking it plainly",
+            request.get("model"), exc,
+        )
+        for optional in ("thinking", "output_config"):
+            request.pop(optional, None)
+        return client.messages.create(**request)
+
+
 def price_of(model: str, usage) -> float:  # noqa: ANN001 - anthropic Usage
     """What one call cost, in dollars, from what the API said it used."""
     key = next((k for k in PRICES if model.startswith(k)), "")
@@ -382,9 +407,26 @@ def look(
         "text": "Is anything actually happening here, and is it worth posting?",
     })
 
+    # Adaptive thinking and an effort level are 4.6-and-later parameters, and
+    # sending either to an older model is a 400 rather than something ignored.
+    # The default verdict model is claude-haiku-4-5, which takes neither: every
+    # look failed before it began, every clip came back UNWATCHED with an API
+    # error on it, and the queue then ranked in the teens because an unwatched
+    # clip scored zero for its verdict. One unsupported parameter, and nothing
+    # about the two symptoms said they were the same bug.
+    extra: dict[str, Any] = {}
+    output_config: dict[str, Any] = {
+        "format": {"type": "json_schema", "schema": SCHEMA},
+    }
+    if llm.thinks_adaptively(settings.verdict_model):
+        extra["thinking"] = {"type": "adaptive"}
+        if settings.verdict_effort:
+            output_config["effort"] = settings.verdict_effort
+
     try:
         client = llm.get_client()
-        response = client.messages.create(
+        response = _ask(
+            client,
             model=settings.verdict_model,
             max_tokens=2000,
             # Cached: this prompt is identical on every look and it is a
@@ -399,11 +441,8 @@ def look(
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{"role": "user", "content": content}],
-            thinking={"type": "adaptive"},
-            output_config={
-                "format": {"type": "json_schema", "schema": SCHEMA},
-                "effort": settings.verdict_effort,
-            },
+            output_config=output_config,
+            **extra,
         )
         payload = llm.extract_json(
             "".join(b.text for b in response.content if getattr(b, "type", None) == "text")

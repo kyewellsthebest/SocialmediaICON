@@ -245,6 +245,29 @@ def _response_text(response: Any) -> str:
     return "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
 
 
+#: Models that take `thinking: {"type": "adaptive"}` and `output_config.effort`.
+#:
+#: Both arrived with the 4.6 generation. Sending either to a model from before
+#: it is not ignored - it is a 400, and the whole call fails.
+#:
+#: This cost every verdict for days. verdict.look() sent adaptive thinking and
+#: an effort level to claude-haiku-4-5, which is a 4.5 model and takes
+#: neither, so every request was rejected before it began. Every clip came
+#: back UNWATCHED with an API error on it, and because an unwatched clip was
+#: also scored zero on the verdict axis, the whole queue then ranked in the
+#: teens. One unsupported parameter, two symptoms that looked unrelated.
+ADAPTIVE: tuple[str, ...] = (
+    "claude-fable-5", "claude-mythos-5",
+    "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+    "claude-sonnet-5", "claude-sonnet-4-6",
+)
+
+
+def thinks_adaptively(model: str) -> bool:
+    """Whether this model accepts adaptive thinking and an effort level."""
+    return any((model or "").startswith(name) for name in ADAPTIVE)
+
+
 def json_message(
     system: str, user: str, schema: dict[str, Any], max_tokens: int = 16000
 ) -> dict[str, Any]:
@@ -255,11 +278,12 @@ def json_message(
         "max_tokens": max_tokens,
         "system": system,
         "messages": [{"role": "user", "content": user}],
-        "thinking": {"type": "adaptive"},
     }
     output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": schema}}
-    if settings.anthropic_effort:
-        output_config["effort"] = settings.anthropic_effort
+    if thinks_adaptively(settings.anthropic_model):
+        base["thinking"] = {"type": "adaptive"}
+        if settings.anthropic_effort:
+            output_config["effort"] = settings.anthropic_effort
 
     try:
         response = client.messages.create(**base, output_config=output_config)
