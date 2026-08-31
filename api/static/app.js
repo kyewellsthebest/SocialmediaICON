@@ -298,6 +298,13 @@ function paintFunnel(f, looking = {}) {
   // the four answers is a missing environment variable on one of two Railway
   // services, which is invisible from everywhere else.
   if (looking.why) bits.push(`Nothing is watching clips right now: ${looking.why}.`);
+  // What the money actually buys, measured rather than guessed. The budget is
+  // set in dollars so this can be answered from real usage.
+  if (looking.per_look_usd) {
+    bits.push(`A look has been costing $${looking.per_look_usd} on `
+      + `${looking.model}, so $${looking.budget_usd} a day buys about `
+      + `${looking.looks_a_day} of them.`);
+  }
   $("#funnel-note").textContent = bits.join(" ");
 }
 
@@ -1048,6 +1055,13 @@ function clipCard(c) {
         : c.verdict?.watched ? "good" : "warning"}">${
         c.approved ? "kept" : c.verdict?.kind || (c.verdict?.watched ? "caught" : "unwatched")
       }</span>
+      ${!c.approved && !c.verdict?.watched && (c.verdict?.problems || []).length
+        // Why *this* clip went unwatched, on the card rather than a click
+        // away. A queue where every row says "unwatched" and none of them
+        // says why is a queue you cannot act on, and an unwatched clip is
+        // missing the only judgement here made by something that saw it.
+        ? `<span class="muted" title="${esc(c.verdict.problems.join("; "))}">${
+            esc(c.verdict.problems[0])}</span>` : ""}
       <span class="muted">${rank.carried_by
         ? esc(rank.carried_by)
         : (c.score ?? 0).toFixed(1)} · ${Math.round(c.duration_s || 0)}s</span>

@@ -2113,3 +2113,41 @@ class TestItSaysWhyNothingIsWatchingClips:
             "faces_at": [], "quotes": [], "channel": "x",
         })()
         assert sup.consider(candidate).watched is False
+
+
+class TestItSaysWhatTheMoneyBuys:
+    """The budget is set in dollars rather than in looks precisely so this can
+    be answered from real usage. An estimate is what let a cap of thirty looks
+    survive a redesign meant to clip everything, because nobody could see the
+    bill."""
+
+    def _sup(self, monkeypatch):
+        monkeypatch.setattr(settings, "verdict_enabled", True)
+        monkeypatch.setattr(settings, "anthropic_api_key", "sk-test")
+        monkeypatch.setattr(settings, "verdict_daily_usd", 2.50)
+        return Supervisor()
+
+    def test_it_prices_a_look_from_what_looks_have_cost(self, monkeypatch):
+        from core.verdict import Verdict
+
+        sup = self._sup(monkeypatch)
+        for _ in range(4):
+            sup.record_look(Verdict(watched=True, cost_usd=0.005))
+        found = sup.looking()
+        assert found["per_look_usd"] == pytest.approx(0.005, abs=1e-4)
+        assert found["looks_a_day"] == 500
+
+    def test_before_the_first_look_it_says_nothing_rather_than_zero(self, monkeypatch):
+        """A made-up number here is worse than none: it is the number the
+        budget would be set from."""
+        found = self._sup(monkeypatch).looking()
+        assert found["per_look_usd"] is None
+        assert found["looks_a_day"] is None
+
+    def test_a_free_look_does_not_divide_by_zero(self, monkeypatch):
+        from core.verdict import Verdict
+
+        sup = self._sup(monkeypatch)
+        sup.record_look(Verdict(watched=True, cost_usd=0.0))
+        found = sup.looking()
+        assert found["looks_a_day"] is None

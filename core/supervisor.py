@@ -2044,6 +2044,7 @@ class Supervisor:
         video, so this is not a detail.
         """
         spent = self.spent_today()
+        looks = int(self.spend.get("looks") or 0)
         budget = float(settings.verdict_daily_usd)
         day_done = (time.time() % 86400.0) / 86400.0
         allowed_now = budget * max(day_done, 0.02)
@@ -2072,6 +2073,13 @@ class Supervisor:
             "allowed_by_now_usd": round(allowed_now, 3),
             "looks": int(self.spend.get("looks") or 0),
             "model": settings.verdict_model,
+            # What a look actually costs, measured rather than estimated, and
+            # what the budget therefore buys in a day. The budget is set in
+            # dollars precisely so this can be answered from real usage: an
+            # estimate is what let a cap of thirty looks survive a redesign
+            # meant to clip everything, because nobody could see the bill.
+            "per_look_usd": round(spent / looks, 4) if looks else None,
+            "looks_a_day": int(budget / (spent / looks)) if looks and spent else None,
         }
 
     def record_look(self, judged) -> None:  # noqa: ANN001 - verdict.Verdict
