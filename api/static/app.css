@@ -32,6 +32,20 @@
   --lamp: rgba(168, 85, 18, .10);
   --shadow: 0 1px 2px rgba(25, 28, 30, .06), 0 8px 24px -12px rgba(25, 28, 30, .18);
 
+
+  /* Chart series. Five slots, in fixed order, assigned to a role and never
+     cycled: event, verdict, reaction, production, reach. Validated against
+     this surface rather than chosen by eye - worst adjacent pair 9.1 deltaE
+     under protanopia, 19.6 for normal vision, both clear of the floors. The
+     light steps fall under 3:1 against the cream surface, so every one of
+     them is directly labelled wherever it appears; none of them carries
+     identity on colour alone. */
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+  --grid: rgba(25, 28, 30, .10);
+  --grid-hard: rgba(25, 28, 30, .18);
+  --plate: rgba(25, 28, 30, .04);
+  --glow: rgba(168, 85, 18, .18);
+
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 
@@ -64,6 +78,12 @@
 
     --lamp: rgba(224, 139, 58, .13);
     --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 14px 34px -16px rgba(0, 0, 0, .7);
+
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+    --grid: rgba(233, 229, 220, .10);
+    --grid-hard: rgba(233, 229, 220, .20);
+    --plate: rgba(233, 229, 220, .04);
+    --glow: rgba(224, 139, 58, .22);
   }
 }
 
@@ -90,6 +110,12 @@
 
   --lamp: rgba(224, 139, 58, .13);
   --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 14px 34px -16px rgba(0, 0, 0, .7);
+
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+  --grid: rgba(233, 229, 220, .10);
+  --grid-hard: rgba(233, 229, 220, .20);
+  --plate: rgba(233, 229, 220, .04);
+  --glow: rgba(224, 139, 58, .22);
 }
 
 * { box-sizing: border-box; }
@@ -425,4 +451,75 @@ pre.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family
 @media (min-width: 640px) {
   .sheet { inset: 50% auto auto 50%; transform: translate(-50%, -50%);
            width: min(620px, 92vw); border-radius: var(--r); border: 1px solid var(--rule-hard); }
+}
+
+/* ---------- charts ----------
+   The frames carry the depth; the data stays flat. A bar drawn in perspective
+   is shorter at the back than the front for the same value, and a tilted pie
+   gives the near slice more area than the far one - the picture stops being
+   readable as a number. So: layered plates, an offset shadow plane and a
+   recessive grid around encodings that are strictly two-dimensional. */
+
+.card.plate {
+  position: relative;
+  background:
+    linear-gradient(180deg, var(--plate), transparent 42%),
+    var(--surface);
+  border-color: var(--rule-hard);
+}
+/* The second plane, a few pixels down and behind. Depth as a frame rather
+   than as a distortion of anything that encodes a value. */
+.card.plate::after {
+  content: "";
+  position: absolute;
+  inset: auto 8px -5px 8px;
+  height: 5px;
+  border: 1px solid var(--rule);
+  border-top: 0;
+  background: var(--sunken);
+  z-index: -1;
+}
+
+.vz { display: block; width: 100%; height: auto; overflow: visible; }
+.vz-pair {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.vz-pair .vz-gauge { flex: 0 0 34%; max-width: 132px; }
+.vz-pair .vz + .vz { flex: 1 1 auto; }
+
+.vz-ax {
+  font: 500 9.5px/1 var(--mono);
+  fill: var(--ink-3);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.vz-val {
+  font: 600 11px/1 var(--mono);
+  fill: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.vz-hero {
+  font: 600 27px/1 var(--sans);
+  fill: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Touch targets: the ticks are 3px wide because that is the honest width of
+   an instant, so the whole lane row takes the press instead. */
+.vz line, .vz circle { transition: opacity .12s ease; }
+.vz:hover line[stroke-width="3"] { opacity: .55; }
+.vz line[stroke-width="3"]:hover { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vz line, .vz circle { transition: none; }
+}
+
+/* One column on a phone: a radar beside a gauge at 375px leaves the radar
+   130px wide, which is smaller than its own axis labels. */
+@media (max-width: 460px) {
+  .vz-pair { flex-direction: column; gap: 0; }
+  .vz-pair .vz-gauge { flex: none; width: 100%; max-width: 200px; }
 }

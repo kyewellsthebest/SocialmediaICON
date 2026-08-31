@@ -456,6 +456,11 @@ class Watched:
                 "per_minute": round(sum(curve.counts) / max(curve.duration_s / 60.0, 1e-6), 1),
                 "bursts": bursts[-3:],
                 "clip_requests": curve.clip_requests()[-3:],
+                # The shape of the last few minutes, not just its peaks. A
+                # number for "messages a minute" cannot show a room going
+                # quiet and then all talking at once, which is the shape every
+                # clip has.
+                "trace": _trace(curve),
                 "mood": mood,
                 "recent": [
                     {"at_s": m.at_s, "user": m.user, "text": m.text} for m in held[-12:]
@@ -469,6 +474,34 @@ class Watched:
                 round(time.time() - self.last_catch_at) if self.last_catch_at else None
             ),
         }
+
+
+def _trace(curve, points: int = 90) -> dict[str, Any]:
+    """The chat curve, downsampled to something a chart can draw.
+
+    Buckets, not messages: `voices` beside `counts` is the difference between
+    a crowd reacting and one person spamming, and a line of one without the
+    other is the reading that gets a clip cut for nothing.
+    """
+    counts = list(curve.counts)
+    voices = list(curve.voices)
+    if not counts:
+        return {"bucket_s": curve.bucket_s, "counts": [], "voices": []}
+
+    take = max(1, len(counts) // points)
+    def fold(values: list[int]) -> list[int]:
+        return [
+            max(values[i : i + take] or [0])
+            for i in range(0, len(values), take)
+        ]
+
+    return {
+        # The seconds each drawn point covers, so the chart can label an axis
+        # without guessing what it is looking at.
+        "bucket_s": round(curve.bucket_s * take, 2),
+        "counts": fold(counts),
+        "voices": fold(voices) if len(voices) == len(counts) else [],
+    }
 
 
 @dataclass

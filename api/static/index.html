@@ -52,6 +52,12 @@
     <!-- No controls. It watches on its own; the top bar says how many. -->
     <section class="view" id="view-live">
       <div id="streams"></div>
+      <div class="card plate" id="yield" hidden>
+        <header><h3>What each stream is worth</h3>
+          <span class="label" id="yield-label"></span></header>
+        <div id="yield-body"></div>
+        <p class="muted" id="yield-note"></p>
+      </div>
       <div class="card" id="skipped" hidden>
         <header><h3>Streams it will not watch</h3><span class="label">and why</span></header>
         <pre class="raw" id="skipped-body"></pre>

@@ -1365,3 +1365,50 @@ class TestHowManyStreamsItTakes:
     def test_the_status_the_page_reads_carries_it(self, monkeypatch):
         monkeypatch.setattr(Supervisor, "recent_catches", lambda self, **k: [])
         assert "yield" in Supervisor().status()
+
+
+class TestTheChatCurveReachesTheChart:
+    """A number for "messages a minute" cannot show a room going quiet and
+    then all talking at once, which is the shape every clip has."""
+
+    def _curve(self, counts, voices=None):
+        from core.chat import Curve
+
+        return Curve(bucket_s=1.0, duration_s=float(len(counts)),
+                     counts=list(counts), voices=list(voices or []))
+
+    def test_it_downsamples_to_something_a_chart_can_draw(self):
+        from core.supervisor import _trace
+
+        found = _trace(self._curve(list(range(900))), points=90)
+        assert len(found["counts"]) <= 91
+        assert found["bucket_s"] == 10.0, "the axis has to say what a point covers"
+
+    def test_it_keeps_the_peak_of_each_fold_not_the_mean(self):
+        """A burst two seconds long inside a ten-second bucket is the whole
+        point of the chart; averaging it away leaves a flat line."""
+        from core.supervisor import _trace
+
+        counts = [1] * 40
+        counts[17] = 90
+        found = _trace(self._curve(counts), points=4)
+        assert max(found["counts"]) == 90
+
+    def test_voices_travel_beside_counts(self):
+        """One person sending forty messages and forty people sending one are
+        the same count and a completely different moment."""
+        from core.supervisor import _trace
+
+        found = _trace(self._curve([10] * 20, [1] * 20), points=20)
+        assert found["voices"] and len(found["voices"]) == len(found["counts"])
+
+    def test_a_mismatched_voices_series_is_dropped_rather_than_drawn_wrong(self):
+        from core.supervisor import _trace
+
+        found = _trace(self._curve([10] * 20, [1] * 3), points=20)
+        assert found["voices"] == []
+
+    def test_an_empty_curve_is_not_a_crash(self):
+        from core.supervisor import _trace
+
+        assert _trace(self._curve([]))["counts"] == []

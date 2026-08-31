@@ -76,11 +76,16 @@ const stat = (value, label, hot = false) =>
 
 const pill = (text, tone = "") => `<span class="pill" data-state="${tone}">${esc(text)}</span>`;
 
-function bars(rows) {
+/* `hues` colours each row by name rather than by position, so a bar chart
+   sitting under a radar of the same five parts is obviously the same five
+   things. Without it they are one amber column and the eye has to re-read the
+   labels to connect the two. */
+function bars(rows, hues = null) {
   const top = Math.max(...rows.map(([, v]) => v), 1);
-  return `<div class="bars">${rows.map(([name, v]) =>
+  return `<div class="bars">${rows.map(([name, v], i) =>
     `<div class="bar"><span class="label">${esc(name)}</span>
-      <span class="track"><span class="fill" style="width:${Math.round((v / top) * 100)}%"></span></span>
+      <span class="track"><span class="fill" style="width:${Math.round((v / top) * 100)}%${
+        hues ? `;background:${hueFor(name, i)}` : ""}"></span></span>
       <span class="n">${v.toFixed(1)}</span></div>`).join("")}</div>`;
 }
 
@@ -123,6 +128,8 @@ async function renderLive() {
 
   paintStreams(streams, { running, queued, resuming, stuck, hint: data.hint,
                           diagnosis: data.diagnosis, health: data.health });
+
+  paintYield(data.yield || {});
 
   // What it is holding, waiting for a slot. Worth showing: it is the whole
   // difference between a watcher and a chooser, and it is otherwise invisible.
@@ -204,6 +211,32 @@ function paintStreams(streams, status) {
     : "Nothing is being watched."))}</p>` +
     (status.diagnosis && status.diagnosis !== said
       ? `<p class="muted">${esc(status.diagnosis)}</p>` : "");
+}
+
+/* How many streams it takes to reach the day's number.
+
+   Ten slots are held to answer that, and a total on its own cannot: eleven
+   clips from ten streams and eleven from two are the same total and a
+   completely different bill. So this is per stream, zeroes included - a zero
+   is the row that says a slot could be given back. */
+function paintYield(report) {
+  const card = $("#yield");
+  const rows = report.per_stream || [];
+  card.hidden = !report.known || !rows.length;
+  if (card.hidden) return;
+
+  $("#yield-label").textContent =
+    `${report.clips_24h} in 24h \u00b7 target ${report.target}`;
+  // Ordered by what each produced, so the tail that produces nothing is
+  // together at the bottom rather than scattered through the list.
+  $("#yield-body").innerHTML = bars(rows.map((r) => [r.channel, r.clips]));
+  const need = report.streams_for_target;
+  $("#yield-note").textContent = need
+    ? `${report.streams_earning} of ${report.streams_watched} streams produced `
+      + `anything. At this rate ${need} streams reach ${report.target} a day, `
+      + `so the slot count can come down to that once a full day has run.`
+    : `Nothing caught in the last 24 hours yet, so there is no rate to read `
+      + `from. ${report.streams_watched} streams are being watched.`;
 }
 
 /* Attribute selectors are not a safe place to interpolate a channel name. */
@@ -293,6 +326,58 @@ function fillStreamCard(card, s) {
     stat((s.score ?? 0).toFixed(1), "score", (s.score || 0) > 0);
 }
 
+/* The five axes a stream is scored on, each already a ratio against its own
+   recent past. Normalised to 0..1 for the radar by the point at which each
+   one is decisive, so the shape means the same thing on every channel. */
+function streamAxes(s) {
+  const senses = s.senses || {}, heard = senses.heard || {}, seen = senses.seen || {};
+  const faces = senses.faces || {}, chat = s.chat || {};
+  const cap = (n, full) => Math.max(0, Math.min(1, (Number(n) || 0) / full));
+  return [
+    ["laughter", cap((heard.laughs || []).length, 4)],
+    ["voice", cap((heard.shouts || []).length, 3)],
+    ["faces", cap((faces.reactions || []).length, 5)],
+    ["motion", cap((seen.surges || []).length, 4)],
+    ["chat", cap((chat.bursts || []).length, 3)],
+  ];
+}
+
+function streamLanes(senses) {
+  const drawn = lanes(laneRows(senses), { span: senses.window_s || 30 });
+  if (!drawn) return "";
+  return `<div class="card plate">
+    <header><h3>What landed, and when</h3>
+      <span class="label">last ${Math.round(senses.window_s || 30)}s</span></header>
+    ${drawn}
+    <p class="muted">Two lanes lighting up in the same second is a moment.
+      One lane on its own is usually the camera.</p>
+  </div>`;
+}
+
+/* Chat as a shape rather than a rate. "188 messages a minute" cannot show a
+   room going quiet and then all talking at once, which is what a clip is.
+   Voices sits under counts on its own scale on purpose: one person sending
+   forty messages and forty people sending one are the same count and a
+   completely different moment. */
+function chatRidge(chat) {
+  const trace = chat.trace || {};
+  const bands = [
+    { label: "messages", hue: "var(--s1)", values: trace.counts || [] },
+    { label: "distinct voices", hue: "var(--s3)", values: trace.voices || [] },
+  ];
+  const span = (trace.bucket_s || 0) * Math.max((trace.counts || []).length - 1, 0);
+  bands.forEach((b) => { b.span_s = span; });
+  const drawn = ridge(bands);
+  if (!drawn) return "";
+  return `<div class="card plate">
+    <header><h3>Chat over time</h3>
+      <span class="label">${Math.round(chat.per_minute || 0)}/min now</span></header>
+    ${drawn}
+    <p class="muted">Each band against its own peak - messages and people are
+      not the same unit, and one scale for both would be a lie.</p>
+  </div>`;
+}
+
 /* ---------- one stream, everything ---------- */
 
 async function renderStream() {
@@ -337,6 +422,23 @@ async function renderStream() {
     || `<div class="empty">No chat yet.</div>`;
 
   box.innerHTML = `
+    <div class="card plate">
+      <header><h3>Why it is scoring</h3>
+        <span class="label">${(s.score ?? 0).toFixed(1)} total</span></header>
+      <div class="vz-pair">
+        ${gauge(Math.min(100, (s.score ?? 0) * 2), "score")}
+        ${radar(streamAxes(s))}
+      </div>
+      ${why.length ? bars(why) : `<p class="empty-note">Nothing is standing out right now.</p>`}
+      <p class="muted">Every axis is a ratio against this channel's own recent
+        past, not a fixed threshold - a nightclub and a bedroom read the same
+        when nothing is happening in either.</p>
+    </div>
+
+    ${streamLanes(senses)}
+
+    ${chatRidge(chat)}
+
     <div class="card">
       <header><h3>What it just heard and saw</h3>
         <span class="label">${senses.window_s ? `last ${Math.round(senses.window_s)}s` : "\u2014"}</span></header>
@@ -393,14 +495,14 @@ async function renderStream() {
     </div>
 
     <div class="card">
-      <header><h3>Why it is scoring</h3><span class="label">${(s.score ?? 0).toFixed(1)} total</span></header>
-      ${why.length ? bars(why) : `<p class="empty-note">Nothing is standing out right now.</p>`}
+      <header><h3>What chat feels</h3>
+        <span class="label">${mood.dominant ? esc(mood.dominant) : "nothing in particular"}</span></header>
       ${mood.dominant
-        ? `<p class="muted">Chat reads <b>${esc(mood.dominant)}</b> —
-             ${Math.round((mood.confidence || 0) * 100)}% agreement over
-             ${mood.emotive_lines || 0} lines.</p>
-           ${counts.length ? bars(counts) : ""}`
-        : `<p class="muted">Chat is not reading as any particular feeling.</p>`}
+        ? `${counts.length ? bars(counts) : ""}
+           <p class="muted">${Math.round((mood.confidence || 0) * 100)}% agreement over
+             ${mood.emotive_lines || 0} lines. Chat can agree with what was
+             heard and seen; on its own it decides nothing.</p>`
+        : `<p class="empty-note">Chat is not reading as any particular feeling.</p>`}
     </div>
 
     <div class="card">
@@ -488,6 +590,181 @@ function fitBars(values, most) {
     Math.max(...values.slice(Math.floor(i * per), Math.max(Math.floor((i + 1) * per), Math.floor(i * per) + 1))));
 }
 
+/* ---------- charts ----------
+
+   Inline SVG, no library. Every one of these is read on a phone in a dark
+   room, so they are drawn against tokens rather than fixed colours and the
+   marks are thin, the grid recessive, and every series directly labelled.
+
+   On depth: the frames here are dimensional - layered plates, an offset
+   shadow plane, a scanline grid - and the *encodings* are not. A bar drawn in
+   perspective is shorter at the back than the front for the same value, and a
+   pie tilted into 3D gives the near slice a bigger area than the far one; the
+   picture stops being readable as a number. So the chrome carries the depth
+   and the data stays flat and honest. */
+
+const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5"];
+//: Fixed, never cycled. The colour follows the part, not its rank, so
+//: filtering or reordering never repaints the survivors.
+const PART_HUE = {
+  event: "--s1", verdict: "--s2", reaction: "--s3",
+  production: "--s4", reach: "--s5",
+};
+const hueFor = (name, i) => `var(${PART_HUE[name] || SERIES[i % SERIES.length]})`;
+
+let vizSeq = 0;
+const vizId = () => `v${++vizSeq}`;
+
+/* A radar over a small fixed set of 0..1 axes. The right form here because
+   the five parts are an identity - a shape you learn to recognise - rather
+   than five magnitudes to rank against each other, which the bars underneath
+   already do better. */
+function radar(entries, { size = 260, rings = 4 } = {}) {
+  const axes = entries.filter(([, v]) => Number.isFinite(v));
+  if (axes.length < 3) return "";
+  // A gutter each side for the axis labels. They sit outside the outer ring
+  // and are anchored outward, so without it the widest one - "production" -
+  // runs off the card rather than being clipped by the svg, which has to keep
+  // overflow visible for the vertex dots.
+  const pad = 52;
+  const cx = size / 2, cy = size / 2 + 6, r = size * 0.31;
+  const at = (i, k) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / axes.length;
+    return [cx + Math.cos(a) * r * k, cy + Math.sin(a) * r * k];
+  };
+  const poly = (k) => axes.map((_, i) => at(i, k).join(",")).join(" ");
+  const shape = axes.map(([, v], i) => at(i, Math.max(0.04, Math.min(1, v))).join(",")).join(" ");
+  const id = vizId();
+
+  const web = Array.from({ length: rings }, (_, i) =>
+    `<polygon points="${poly((i + 1) / rings)}" fill="none"
+       stroke="var(${i === rings - 1 ? "--grid-hard" : "--grid"})" stroke-width="1"/>`).join("");
+  const spokes = axes.map((_, i) =>
+    `<line x1="${cx}" y1="${cy}" x2="${at(i, 1)[0]}" y2="${at(i, 1)[1]}"
+       stroke="var(--grid)" stroke-width="1"/>`).join("");
+  const labels = axes.map(([k, v], i) => {
+    const [x, y] = at(i, 1.26);
+    const anchor = x < cx - 4 ? "end" : x > cx + 4 ? "start" : "middle";
+    return `<text x="${x.toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="${anchor}"
+       class="vz-ax">${esc(k)}</text>
+      <text x="${x.toFixed(1)}" y="${(y + 15).toFixed(1)}" text-anchor="${anchor}"
+       class="vz-val">${Math.round(v * 100)}</text>`;
+  }).join("");
+  const dots = axes.map(([k, v], i) => {
+    const [x, y] = at(i, Math.max(0.04, Math.min(1, v)));
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5"
+       fill="${hueFor(k, i)}" stroke="var(--surface)" stroke-width="2">
+       <title>${esc(k)}: ${Math.round(v * 100)} of 100</title></circle>`;
+  }).join("");
+
+  // Trimmed to what is actually drawn. The polygon only fills the middle of a
+  // square box, and an svg that scales to the container width turns that
+  // empty band into a visible hole between this and the bars underneath.
+  const boxTop = cy - r * 1.26 - 14, boxBottom = cy + r * 1.26 + 22;
+  return `<svg class="vz" viewBox="${-pad} ${boxTop.toFixed(0)} ${size + pad * 2} ${
+      (boxBottom - boxTop).toFixed(0)}" role="img"
+      aria-label="${esc(axes.map(([k, v]) => `${k} ${Math.round(v * 100)}`).join(", "))}">
+    <defs>
+      <radialGradient id="${id}g" cx="50%" cy="50%">
+        <stop offset="0%" stop-color="var(--accent)" stop-opacity=".34"/>
+        <stop offset="100%" stop-color="var(--accent)" stop-opacity=".07"/>
+      </radialGradient>
+    </defs>
+    <polygon points="${poly(1)}" fill="var(--plate)" transform="translate(0,7)"/>
+    ${web}${spokes}
+    <polygon points="${shape}" fill="url(#${id}g)" stroke="var(--accent)"
+      stroke-width="2" stroke-linejoin="round"/>
+    ${dots}${labels}
+  </svg>`;
+}
+
+/* One number against 100, as an arc. A meter rather than a one-bar chart,
+   because a single ratio against a limit is what it is. */
+function gauge(value, label) {
+  const v = Math.max(0, Math.min(100, Number(value) || 0));
+  // A semicircular track, so the arc length is pi*r rather than 2*pi*r.
+  const r = 46, c = Math.PI * r;
+  const lit = (v / 100) * c;
+  return `<svg class="vz vz-gauge" viewBox="0 0 120 74" role="img"
+      aria-label="${esc(label)}: ${Math.round(v)} of 100">
+    <path d="M14 62 A46 46 0 0 1 106 62" fill="none" stroke="var(--grid)"
+      stroke-width="9" stroke-linecap="round"/>
+    <path d="M14 62 A46 46 0 0 1 106 62" fill="none" stroke="var(--accent)"
+      stroke-width="9" stroke-linecap="round"
+      stroke-dasharray="${lit.toFixed(1)} ${(c - lit).toFixed(1)}"/>
+    <text x="60" y="54" text-anchor="middle" class="vz-hero">${Math.round(v)}</text>
+    <text x="60" y="70" text-anchor="middle" class="vz-ax">${esc(label)}</text>
+  </svg>`;
+}
+
+/* A ridgeline: several series over one shared time axis, each in its own
+   band. One axis, never two scales in a frame - each band is normalised to
+   its own peak and says so, because "chat messages" and "distinct people"
+   are not the same unit and drawing them on one scale would be a lie. */
+function ridge(bands, { width = 320, band = 44, unit = "s" } = {}) {
+  const rows = bands.filter((b) => (b.values || []).length > 1);
+  if (!rows.length) return "";
+  const height = rows.length * band + 16;
+  const body = rows.map((row, r) => {
+    const vs = row.values;
+    const top = r * band;
+    const hi = Math.max(...vs, 1);
+    const x = (i) => (i / (vs.length - 1)) * width;
+    const y = (v) => top + band - 6 - (v / hi) * (band - 12);
+    const line = vs.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+    const hue = row.hue || "var(--accent)";
+    return `<g>
+      <line x1="0" y1="${top + band - 6}" x2="${width}" y2="${top + band - 6}"
+        stroke="var(--grid)" stroke-width="1"/>
+      <polygon points="0,${top + band - 6} ${line} ${width},${top + band - 6}"
+        fill="${hue}" fill-opacity=".16"/>
+      <polyline points="${line}" fill="none" stroke="${hue}" stroke-width="2"
+        stroke-linejoin="round"/>
+      <text x="0" y="${top + 11}" class="vz-ax">${esc(row.label)}</text>
+      <text x="${width}" y="${top + 11}" text-anchor="end" class="vz-val">${
+        row.peak ?? `peak ${Math.round(hi)}`}</text>
+    </g>`;
+  }).join("");
+  const span = rows[0].span_s;
+  return `<svg class="vz" viewBox="0 -2 ${width} ${height}" role="img"
+      aria-label="${esc(rows.map((r) => r.label).join(", "))} over time">
+    ${body}
+    ${span ? `<text x="0" y="${height - 1}" class="vz-ax">-${Math.round(span)}${unit}</text>
+      <text x="${width}" y="${height - 1}" text-anchor="end" class="vz-ax">now</text>` : ""}
+  </svg>`;
+}
+
+/* What happened, and when. One lane per kind of evidence, ticks on a shared
+   time axis - the honest form for point events, and the one that shows the
+   thing that actually matters: whether two kinds of evidence agree on a
+   moment or each fired somewhere else. */
+function lanes(rows, { width = 320, lane = 26, span = 30 } = {}) {
+  const kept = rows.filter((r) => (r.at || []).length);
+  if (!kept.length) return "";
+  const height = kept.length * lane + 14;
+  const x = (t) => Math.max(2, Math.min(width - 2, (t / Math.max(span, 0.001)) * width));
+  const body = kept.map((row, i) => {
+    const top = i * lane;
+    const hue = row.hue || "var(--accent)";
+    const ticks = row.at.map((t) =>
+      `<line x1="${x(t).toFixed(1)}" y1="${top + 8}" x2="${x(t).toFixed(1)}" y2="${top + 20}"
+         stroke="${hue}" stroke-width="3" stroke-linecap="round">
+         <title>${esc(row.label)} at ${Number(t).toFixed(1)}s</title></line>`).join("");
+    return `<g>
+      <line x1="0" y1="${top + 20}" x2="${width}" y2="${top + 20}"
+        stroke="var(--grid)" stroke-width="1"/>
+      <text x="0" y="${top + 6}" class="vz-ax">${esc(row.label)}</text>
+      <text x="${width}" y="${top + 6}" text-anchor="end" class="vz-val">${row.at.length}</text>
+      ${ticks}</g>`;
+  }).join("");
+  return `<svg class="vz" viewBox="0 -2 ${width} ${height}" role="img"
+      aria-label="${esc(kept.map((r) => `${r.at.length} ${r.label}`).join(", "))}">
+    ${body}
+    <text x="0" y="${height - 1}" class="vz-ax">0s</text>
+    <text x="${width}" y="${height - 1}" text-anchor="end" class="vz-ax">${Math.round(span)}s</text>
+  </svg>`;
+}
+
 /* ---------- clips ---------- */
 
 async function renderClips() {
@@ -547,6 +824,45 @@ function clipCard(c) {
   </div>`;
 }
 
+/* The evidence, as lanes on one time axis.
+
+   The single most useful thing this can show is *agreement*: two kinds of
+   evidence landing on the same second is what separates a moment from a
+   coincidence, and a table of counts cannot show it at all. The times are in
+   sense-window seconds, which is what they were measured in, so the axis says
+   so rather than pretending they are clip seconds. */
+function laneRows(senses) {
+  const heard = senses.heard || {}, seen = senses.seen || {}, faces = senses.faces || {};
+  const at = (rows, key = "at_s") => (rows || []).map(
+    (r) => (typeof r === "number" ? r : r[key])).filter(Number.isFinite);
+  return [
+    { label: "laughter", hue: "var(--s1)", at: at(heard.laughs) },
+    { label: "raised voice", hue: "var(--s2)", at: at(heard.shouts) },
+    { label: "faces changed", hue: "var(--s3)", at: at(faces.reactions) },
+    { label: "motion surge", hue: "var(--s4)", at: at(seen.surges) },
+    { label: "shot cut", hue: "var(--s5)", at: at(seen.cuts) },
+  ];
+}
+
+function clipLanes(c) {
+  const senses = c.evidence || {};
+  const rows = laneRows(senses);
+  const span = senses.window_s || 30;
+  const drawn = lanes(rows, { span });
+  if (!drawn) return "";
+  const hits = rows.filter((r) => r.at.length).length;
+  return `<div class="card plate">
+    <header><h3>What landed, and when</h3>
+      <span class="label">${Math.round(span)}s window</span></header>
+    ${drawn}
+    <p class="muted">${hits > 1
+      ? `${hits} kinds of evidence in the same window. Agreement between them is
+         what the ranking rewards - one enormous signal on its own is usually a
+         camera moving, not a moment.`
+      : "Only one kind of evidence fired here, which is the weakest a clip can be."}</p>
+  </div>`;
+}
+
 /* The inspect sheet: everything behind the decision, on top of the clip
    rather than beside it. The card is for judging the video; this is for
    arguing with the reason it was chosen. */
@@ -585,18 +901,26 @@ function showInspect(id) {
           }. Clips cut before the check existed all read this way.</p>`}
     </div>
     ${Object.keys(rank.parts || {}).length
-      ? `<div><p class="label" style="margin-bottom:6px">How it ranks, part by part</p>
-           ${bars(Object.entries(rank.parts).map(([k, v]) => [k, v * 100]))}
-           <p class="muted">${c.rank_score?.toFixed(0)} out of 100.
+      ? `<div class="card plate">
+           <header><h3>How it ranks</h3>
+             <span class="label">${rank.best_part ? esc(rank.best_part) + " carried it" : ""}</span>
+           </header>
+           <div class="vz-pair">
+             ${gauge(c.rank_score ?? 0, "rank")}
+             ${radar(Object.entries(rank.parts))}
+           </div>
+           ${bars(Object.entries(rank.parts).map(([k, v]) => [k, v * 100]), true)}
+           <p class="muted">Each part out of 100, weighted into the score.
              ${rank.detail?.rejected ? esc(rank.detail.rejected) : ""}</p></div>` : ""}
+    ${clipLanes(c)}
     <div class="stats">
-      ${stat((c.rank_score ?? c.score ?? 0).toFixed(0), "rank")}
       ${stat(eventScore(c.why).toFixed(1), "from events", eventScore(c.why) <= 0)}
       ${stat(mood.background ? "background" : mood.dominant || "—", "mood",
              !!mood.background)}
       ${stat(`${mood.lift ?? "—"}\u00d7`, "vs usual", (mood.lift ?? 9) < 1.35)}
       ${stat(Number(c.peak_viewers || 0).toLocaleString(), "watching")}
       ${stat(`${Math.round(c.duration_s || 0)}s`, "length")}
+      ${stat((seenBy.faces || []).length, "faces read")}
     </div>
     <div><p class="label" style="margin-bottom:6px">Why it was cut</p>
       ${why.length ? bars(why) : `<p class="empty-note">No breakdown recorded.</p>`}
