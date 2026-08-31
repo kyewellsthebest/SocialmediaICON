@@ -97,6 +97,33 @@ def nobody() -> Path:
 
 
 @functools.cache
+def desk_stream(share: float = 0.20) -> Path:
+    """A desk stream with the facecam at `share` of frame height.
+
+    The fixture that exists because screen_share() uses a big one. A real
+    facecam is commonly 0.15 to 0.30 of frame height, and at 640x360 - the
+    size the continuous sense pass looks at - the detector could not see
+    anything under about 0.32. Every desk stream below that was framed as
+    though it had no webcam, which is most of them.
+    """
+    import cv2
+
+    def frame(i, c):
+        c[:] = (28, 28, 30)
+        for row in range(6):
+            y = 90 + row * 55
+            cv2.rectangle(c, (60, y), (60 + 380 + (row * 37) % 180, y + 16),
+                          (170, 170, 175), -1)
+        for bar in range(5):
+            h = 40 + int(60 * abs(((i / FPS) + bar) % 4 - 2))
+            cv2.rectangle(c, (520 + bar * 46, 430 - h), (556 + bar * 46, 430),
+                          (90, 150, 220), -1)
+        return _place(c, share, 0.83, 0.24)
+
+    return _build(f"desk{int(share * 100)}", frame, seconds=12.0)
+
+
+@functools.cache
 def screen_share() -> Path:
     """A computer screen with a small webcam in the corner.
 

@@ -518,3 +518,60 @@ class TestTheClipKeepsItsPicture:
         out = tmp_path / "silent_out.mp4"
         reframe.to_portrait(src, out, work_dir=tmp_path, layout="follow")
         assert "video" in self._streams(out)
+
+
+class TestItFindsAFacecamAtTheSizeRealOnesAre:
+    """A stream of a computer screen came out followed rather than stacked,
+    and the reason was resolution, not the model.
+
+    The continuous sense pass looks at 640x360, which is sized for its own
+    job: reading an expression off a subject who fills a good part of the
+    frame, on three streams every twenty seconds, where the cost is already
+    most of a core. find_webcam borrowed that size for a completely different
+    question - "is there a person in a box in the corner" - and a box in a
+    corner is exactly what 640 wide cannot resolve.
+
+    Measured, best YuNet score on a facecam at a share of frame height:
+
+        share   640x360   1280x720
+         0.32     0.729      0.913
+         0.26     0.615      0.912    <- under MIN_SCORE at 640, found at 1280
+         0.20     none       0.888
+         0.16     none       0.702
+
+    A real facecam is commonly 0.15 to 0.30 of frame height. The whole band
+    was invisible. The layout pass runs once per clip, so it can afford the
+    pixels the sense pass cannot.
+    """
+
+    def test_the_layout_pass_looks_closer_than_the_sense_pass(self):
+        from core import faces as facelib
+
+        assert facelib.LOOK_W > facelib.WIDTH
+        assert facelib.LOOK_MIN_FACE < facelib.MIN_FACE
+
+    def test_a_facecam_the_size_real_ones_are_is_found(self):
+        import synth_faces as people
+
+        for share in (0.30, 0.24, 0.18):
+            cam = reframe.find_webcam(people.desk_stream(share))
+            assert cam is not None, f"a facecam at {share} of frame height was missed"
+            assert cam.x + cam.w / 2 > 0.6, "and it is on the right"
+
+    def test_a_desk_stream_still_reports_stacked_end_to_end(self, tmp_path):
+        import synth_faces as people
+
+        report: dict = {}
+        reframe.to_portrait(people.desk_stream(0.20), tmp_path / "a.mp4",
+                            work_dir=tmp_path, report=report)
+        assert report["layout"] == "stacked"
+
+    def test_looking_closer_does_not_stack_everything(self):
+        """The guards that stop an ordinary shot being stacked have to still
+        hold at the higher resolution, or every clip gets a webcam strip."""
+        import synth_faces as people
+
+        for name, src in (("somebody filmed", people.one_person()),
+                          ("two on a couch", people.two_people()),
+                          ("an empty room", people.nobody())):
+            assert reframe.find_webcam(src) is None, name

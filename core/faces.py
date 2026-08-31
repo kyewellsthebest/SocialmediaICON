@@ -62,6 +62,37 @@ log = logging.getLogger(__name__)
 #: a third of the time, at 640x360 always. The cost of that is real and is the
 #: reason FPS below is what it is.
 WIDTH, HEIGHT = 640, 360
+#: ...and the size the *layout* pass looks at, which is a different job.
+#:
+#: 640x360 is sized for the continuous one: reading expressions off three
+#: streams every twenty seconds, where the subject fills a good part of the
+#: frame and the cost is most of a core already. Deciding whether a stream is
+#: a desk stream is not that job. It runs once per clip, and what it is
+#: looking for is deliberately small - a webcam box in a corner - so it is the
+#: one case where 640 wide is not enough.
+#:
+#: Measured, on a facecam at a share of frame height, best YuNet score:
+#:
+#:     share   640x360   1280x720
+#:      0.32     0.729      0.913
+#:      0.26     0.615      0.912      <- under MIN_SCORE at 640, found at 1280
+#:      0.20     none       0.888
+#:      0.16     none       0.702
+#:
+#: A real facecam is commonly 0.15 to 0.30 of frame height, which is exactly
+#: the band 640 cannot see. Every desk stream in that band was framed as
+#: though it had no webcam at all - followed, landing between the screen and
+#: the person and showing neither.
+LOOK_W, LOOK_H = 1280, 720
+#: ...and the smallest face that pass will accept, which also has to be its
+#: own number. MIN_FACE is 4% of frame height, sized for the job of reading an
+#: expression - below that there are not enough pixels of face to read. The
+#: layout pass is not reading anything, it is answering "is there a person in
+#: a box in the corner", and the answer is worth having at sizes far too small
+#: to read. With the resolution raised and this left at 4%, a facecam at 0.16
+#: of frame height was found by the model at 0.70 confidence and then thrown
+#: away for being small.
+LOOK_MIN_FACE = 0.02
 #: How often the cascade is run. Six a second: an expression takes about a
 #: third of a second to form, so a box is never more than a sixth of a second
 #: stale, and the cost here is not the decode - it is the detector, and it is
@@ -210,12 +241,14 @@ def detector():  # noqa: ANN201 - cv2.FaceDetectorYN or CascadeClassifier
     return _cascade
 
 
-def find(frame, width: int = WIDTH, height: int = HEIGHT) -> list[Face]:  # noqa: ANN001
+def find(  # noqa: ANN001
+    frame, width: int = WIDTH, height: int = HEIGHT, min_face: float = MIN_FACE
+) -> list[Face]:
     """Faces in one greyscale frame, in fractions of the frame."""
     import cv2
 
     found = detector()
-    least = int(height * MIN_FACE)
+    least = int(height * min_face)
 
     if not isinstance(found, cv2.CascadeClassifier):
         # YuNet wants three channels and its own idea of the frame size.
@@ -251,7 +284,13 @@ def source_fps(src: Path | str) -> float:
     return min(declared, MAX_FPS) if declared > 0.0 else FPS
 
 
-def stream(src: Path | str, *, fps: float, seconds: float | None = None) -> Iterator[Any]:
+def stream(
+    src: Path | str,
+    *,
+    fps: float,
+    seconds: float | None = None,
+    size: tuple[int, int] = (WIDTH, HEIGHT),
+) -> Iterator[Any]:
     """Greyscale frames one at a time, never all at once.
 
     30 seconds of 640x360 at 60fps is 414MB held, and three streams of that is
@@ -263,12 +302,13 @@ def stream(src: Path | str, *, fps: float, seconds: float | None = None) -> Iter
     command = ["ffmpeg", "-v", "error"]
     if seconds:
         command += ["-t", f"{seconds:.2f}"]
+    width, height = size
     command += [
         "-i", str(src),
-        "-vf", f"fps={fps},scale={WIDTH}:{HEIGHT},format=gray",
+        "-vf", f"fps={fps},scale={width}:{height},format=gray",
         "-f", "rawvideo", "-",
     ]
-    stride = WIDTH * HEIGHT
+    stride = width * height
     proc = subprocess.Popen(  # noqa: S603
         command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
@@ -279,7 +319,7 @@ def stream(src: Path | str, *, fps: float, seconds: float | None = None) -> Iter
             if len(raw) < stride:
                 break
             seen += 1
-            yield np.frombuffer(raw, dtype=np.uint8).reshape(HEIGHT, WIDTH)
+            yield np.frombuffer(raw, dtype=np.uint8).reshape(height, width)
     finally:
         # A caller that stops early leaves ffmpeg writing into a pipe nobody
         # reads, which blocks it forever.
@@ -305,11 +345,12 @@ def frames(src: Path | str, *, fps: float = FPS, seconds: float | None = None): 
     return np.stack(list(stream(src, fps=fps, seconds=seconds)))
 
 
-def _box(face: Face) -> tuple[int, int, int, int]:
+def _box(face: Face, size: tuple[int, int] = (WIDTH, HEIGHT)) -> tuple[int, int, int, int]:
     """A face in pixels, clamped inside the frame and never empty."""
-    x0, y0 = max(0, int(face.x * WIDTH)), max(0, int(face.y * HEIGHT))
-    x1 = min(WIDTH, max(int((face.x + face.w) * WIDTH), x0 + 1))
-    y1 = min(HEIGHT, max(int((face.y + face.h) * HEIGHT), y0 + 1))
+    width, height = size
+    x0, y0 = max(0, int(face.x * width)), max(0, int(face.y * height))
+    x1 = min(width, max(int((face.x + face.w) * width), x0 + 1))
+    y1 = min(height, max(int((face.y + face.h) * height), y0 + 1))
     return x0, y0, x1, y1
 
 
@@ -319,6 +360,8 @@ def watch(
     fps: float | None = None,
     detect_fps: float = DETECT_FPS,
     seconds: float | None = None,
+    size: tuple[int, int] = (WIDTH, HEIGHT),
+    min_face: float = MIN_FACE,
 ) -> Watching:
     """Find the people, then watch their faces - every frame of them.
 
@@ -341,15 +384,15 @@ def watch(
     carried: list[Face] = []
     previous = None
 
-    for i, shot in enumerate(stream(src, fps=fps, seconds=seconds)):
+    for i, shot in enumerate(stream(src, fps=fps, seconds=seconds, size=size)):
         if i % every == 0:
-            carried = find(shot)
+            carried = find(shot, *size, min_face)
         per_frame.append(carried)
 
         if previous is None or not carried:
             change.append(0.0)
         else:
-            x0, y0, x1, y1 = _box(max(carried, key=lambda f: f.area))
+            x0, y0, x1, y1 = _box(max(carried, key=lambda f: f.area), size)
             before = previous[y0:y1, x0:x1].astype(np.int16)
             after = shot[y0:y1, x0:x1].astype(np.int16)
             change.append(float(np.abs(after - before).mean()) / 255.0)

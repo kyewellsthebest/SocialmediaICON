@@ -435,7 +435,13 @@ def find_webcam(src: Path | str) -> Webcam | None:
     except Exception:  # noqa: BLE001 - no OpenCV is not a crash
         return None
     try:
-        watched = facelib.watch(src, fps=facelib.DETECT_FPS)
+        # Looked at twice the width the continuous sense uses. This runs once
+        # per clip and what it is hunting is deliberately small, so it is the
+        # one place worth the pixels - see faces.LOOK_W.
+        watched = facelib.watch(
+            src, fps=facelib.DETECT_FPS,
+            size=(facelib.LOOK_W, facelib.LOOK_H), min_face=facelib.LOOK_MIN_FACE,
+        )
     except Exception as exc:  # noqa: BLE001 - a blind guess is no layout
         log.debug("reframe: could not look for a webcam (%s)", exc)
         return None
