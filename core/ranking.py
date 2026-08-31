@@ -107,6 +107,27 @@ WEIGHTS: dict[str, float] = {
 #: absence should still cost - but a discount, not a hole.
 UNWATCHED_KEEPS = 0.9
 
+#: The least reaction a clip can have and still be a clip, when nothing
+#: watched it.
+#:
+#: Reaction is not only chat speed. It is chat speeding up, chat asking for a
+#: clip, the mood swinging off the channel's own baseline, *and* the streamer
+#: audibly reacting. Zero on all four at once is not a quiet room - it is a
+#: moment where nothing and nobody responded to whatever the sensors thought
+#: they saw.
+#:
+#: Chat is still not allowed to nominate a moment; that rule is about chat
+#: being an opinion rather than evidence, and it stands. This is the other
+#: direction, and it is not the same claim: a total absence of response, from
+#: the room and from the person, is evidence *against* something having
+#: happened. A clip that was cut on motion, that nothing watched, and that
+#: nobody reacted to, has nothing behind it but a sensor - and a phone carried
+#: down a street trips that sensor all evening.
+#:
+#: Only applied when nothing watched the clip. A model that saw the video and
+#: said it was worth posting outranks a silent chat, every time.
+REACTION_FLOOR = 0.05
+
 #: Viewers at which reach counts as full marks. Logarithmic below it, because
 #: the step from 1k to 10k matters far more than 40k to 50k.
 REACH_FULL = 50_000
@@ -414,5 +435,14 @@ def rank(record: dict[str, Any]) -> Rank:
         # generous audience floats to the top of a list of nothing.
         score = 0.0
         detail["rejected"] = "nothing was heard or seen"
+    elif not judged.get("watched") and parts["reaction"] < REACTION_FLOOR:
+        # Nothing watched it and nothing responded to it. See REACTION_FLOOR:
+        # chat did not speed up, nobody asked for a clip, the mood did not
+        # move, and the streamer did not react out loud. All that is left is a
+        # sensor reading, and this is the clip that keeps arriving - somebody
+        # talking about something that happened elsewhere, with no moment in
+        # it and no ending.
+        score = 0.0
+        detail["rejected"] = "nobody reacted, and nothing watched it"
 
     return Rank(score=round(score, 2), parts=parts, detail=detail)

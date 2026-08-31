@@ -379,3 +379,69 @@ class TestARankCanBeRecomputedFromWhatWasStored:
 
     def test_a_row_with_nothing_on_it_is_not_a_crash(self):
         assert ranking.rank(ranking.from_stored(type("Row", (), {})())).score == 0.0
+
+
+class TestAClipNobodyRespondedToIsNotAClip:
+    """The clip that keeps arriving: the streamer talking about something that
+    happened somewhere else. No moment in it, no ending, no reaction - and the
+    bot's own reaction axis reading exactly zero while it kept the clip anyway.
+
+    Reaction is not only chat speed. It is chat speeding up, chat asking for a
+    clip, the mood swinging off the channel's own baseline, and the streamer
+    reacting out loud. Zero on all four at once is not a quiet room; it is a
+    moment nothing and nobody responded to.
+    """
+
+    def _flat(self, **patch):
+        """Nothing reacted: chat steady, mood flat, nobody said anything."""
+        flat = {
+            "mood": {"dominant": None, "lift": 0.0, "confidence": 0.0,
+                     "background": False, "emotive_lines": 0},
+            "chat": {"burst_ratio": 1.0, "clip_requests": 0, "per_minute": 90},
+            "said": {"reactions": []},
+        }
+        return flat | patch
+
+    def test_it_is_rejected_when_nothing_watched_it(self):
+        record = clip(verdict={"watched": False}, **self._flat())
+        found = ranking.rank(record)
+        assert found.parts["reaction"] < ranking.REACTION_FLOOR
+        assert found.score == 0.0
+        assert "reacted" in found.detail["rejected"]
+
+    def test_the_event_being_loud_does_not_save_it(self):
+        """Sensors are what cut it in the first place. Letting them also keep
+        it is the loop that produced the clip."""
+        record = clip(
+            verdict={"watched": False},
+            seen={"surges": [{"size": 9.0}], "cuts": [1, 2, 3], "still_s": 0.0,
+                  "duration_s": 38},
+            **self._flat(),
+        )
+        assert ranking.rank(record).score == 0.0
+
+    def test_a_model_that_watched_it_overrules_a_silent_chat(self):
+        """The only judgement here formed by something that saw the video."""
+        record = clip(
+            verdict={"watched": True, "worth_it": True, "confidence": 0.86,
+                     "kind": "funny"},
+            **self._flat(),
+        )
+        assert ranking.rank(record).score > 0.0
+
+    def test_any_real_response_is_enough(self):
+        """A veto, not a second threshold to clear. Chat still cannot nominate
+        a moment - this only stops a clip that nothing responded to at all."""
+        for what, patch in (
+            ("chat sped up", {"chat": {"burst_ratio": 2.4, "clip_requests": 0,
+                                       "per_minute": 90}}),
+            ("someone asked for a clip", {"chat": {"burst_ratio": 1.0,
+                                                   "clip_requests": 2,
+                                                   "per_minute": 90}}),
+            ("the mood moved", {"mood": {"dominant": "funny", "lift": 3.0,
+                                         "confidence": 0.8, "background": False,
+                                         "emotive_lines": 40}}),
+            ("he reacted out loud", {"said": {"reactions": [[12.0, 1.0]]}}),
+        ):
+            record = clip(verdict={"watched": False}, **self._flat(**patch))
+            assert ranking.rank(record).score > 0.0, what

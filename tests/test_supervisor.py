@@ -1982,11 +1982,15 @@ class TestAClipTooWeakToKeepIsNotKept:
         assert any(row["stage"] == "ranked too low" for row in stages), stages
 
     def test_a_clip_over_the_floor_is_kept(self, monkeypatch):
+        # Chat bursting at the moment, not just ticking over. A clip with a
+        # laugh, a surge and a completely flat chat is rejected outright now,
+        # and rightly - see TestAClipNobodyRespondedToIsNotAClip.
         sup = self._sup(monkeypatch)
         _, record = self._finish(
             sup,
             heard=_laughing_at(285.0),
             seen=Seen(surges=[(15.0, 4.2)], cuts=[14.0, 16.0]),
+            messages=_chatter(burst_at=285.0),
         )
         assert record is not None
         assert record["rank_score"] >= settings.live_keep_rank
