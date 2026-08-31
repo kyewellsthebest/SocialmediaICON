@@ -147,7 +147,7 @@ async function renderLive() {
   paintStreams(streams, { running, queued, resuming, stuck, hint: data.hint,
                           diagnosis: data.diagnosis, health: data.health });
 
-  paintFunnel(data.funnel || {});
+  paintFunnel(data.funnel || {}, data.looking || {});
   paintRoster(data.roster || {});
   paintYield(data.yield || {});
 
@@ -236,7 +236,7 @@ function paintStreams(streams, status) {
 /* One clip in a day is either "it looked at four thousand moments and only
    one was any good" or "it only ever looked at six", and those need opposite
    fixes. This is the arithmetic behind whichever it is. */
-function paintFunnel(f) {
+function paintFunnel(f, looking = {}) {
   const card = $("#funnel");
   card.hidden = !f.scored;
   if (card.hidden) return;
@@ -293,6 +293,11 @@ function paintFunnel(f) {
   if (f.declined) {
     bits.push(`${f.declined} were watched and turned down on their merits.`);
   }
+  // Why nothing is being watched, when nothing is. Six hours of clips came
+  // out UNWATCHED and the page could only say so, not say why - and one of
+  // the four answers is a missing environment variable on one of two Railway
+  // services, which is invisible from everywhere else.
+  if (looking.why) bits.push(`Nothing is watching clips right now: ${looking.why}.`);
   $("#funnel-note").textContent = bits.join(" ");
 }
 

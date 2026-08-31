@@ -1882,6 +1882,7 @@ class Supervisor:
             "declined": self.declined[-6:],
             "looked_today": int(self.spend.get("looks") or 0),
             "look_budget_usd": settings.verdict_daily_usd,
+            "looking": self.looking(),
             "errors": self.errors[-6:],
             "health": self.health(),
             "yield": self._yield_quietly(),
@@ -2031,6 +2032,47 @@ class Supervisor:
         if self.spend.get("day") != day:
             self.spend = {"day": day, "usd": 0.0, "looks": 0}
         return float(self.spend.get("usd") or 0.0)
+
+    def looking(self) -> dict[str, Any]:
+        """Whether a model can watch a clip right now, and if not, why not.
+
+        Every clip in a six-hour run came out UNWATCHED and the page could
+        only say so, not say why - and "why" has four completely different
+        answers, one of which is a missing environment variable on one of two
+        Railway services and is invisible from everywhere else. A clip nothing
+        watched loses the only judgement here formed by something that saw the
+        video, so this is not a detail.
+        """
+        spent = self.spent_today()
+        budget = float(settings.verdict_daily_usd)
+        day_done = (time.time() % 86400.0) / 86400.0
+        allowed_now = budget * max(day_done, 0.02)
+        why = ""
+        if not settings.verdict_enabled:
+            why = "looking is switched off (VERDICT_ENABLED)"
+        elif not settings.anthropic_api_key:
+            why = (
+                "no ANTHROPIC_API_KEY on this service - nothing can watch a "
+                "clip, so every one of them is kept unwatched"
+            )
+        elif spent >= budget:
+            why = f"the day's ${budget:.2f} is spent"
+        elif spent > allowed_now:
+            why = (
+                f"${spent:.2f} of ${budget:.2f} spent {day_done * 100:.0f}% "
+                "through the day - pacing so the evening gets its share"
+            )
+        return {
+            "can": not why,
+            "why": why,
+            "enabled": bool(settings.verdict_enabled),
+            "has_key": bool(settings.anthropic_api_key),
+            "spent_usd": round(spent, 3),
+            "budget_usd": budget,
+            "allowed_by_now_usd": round(allowed_now, 3),
+            "looks": int(self.spend.get("looks") or 0),
+            "model": settings.verdict_model,
+        }
 
     def record_look(self, judged) -> None:  # noqa: ANN001 - verdict.Verdict
         """Add what a look cost to the day's running total."""

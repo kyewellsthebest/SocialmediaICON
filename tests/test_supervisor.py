@@ -2052,3 +2052,64 @@ class TestThePageShowsTheBarThatActuallyApplies:
             gate = (settings.live_min_score if len(agreed) >= 2
                     else settings.live_lone_signal_score)
             assert watched.bar_now() == gate, why
+
+
+class TestItSaysWhyNothingIsWatchingClips:
+    """Every clip in a six-hour run came out UNWATCHED and the page could only
+    say so, not say why - and "why" has four completely different answers, one
+    of which is a missing environment variable on one of two Railway services
+    and is invisible from everywhere else.
+
+    A clip nothing watched loses the only judgement here formed by something
+    that saw the video, so this is not a detail."""
+
+    def _sup(self, monkeypatch, **cfg):
+        monkeypatch.setattr(settings, "verdict_enabled", True)
+        monkeypatch.setattr(settings, "anthropic_api_key", "sk-test")
+        monkeypatch.setattr(settings, "verdict_daily_usd", 2.40)
+        for name, value in cfg.items():
+            monkeypatch.setattr(settings, name, value)
+        return Supervisor()
+
+    def test_a_missing_key_is_named(self, monkeypatch):
+        found = self._sup(monkeypatch, anthropic_api_key=None).looking()
+        assert found["can"] is False
+        assert "ANTHROPIC_API_KEY" in found["why"]
+
+    def test_being_switched_off_is_not_the_same_as_being_broken(self, monkeypatch):
+        found = self._sup(monkeypatch, verdict_enabled=False).looking()
+        assert found["can"] is False
+        assert "switched off" in found["why"]
+
+    def test_a_spent_budget_says_so(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        sup.spent_today()
+        sup.spend["usd"] = 2.40
+        found = sup.looking()
+        assert found["can"] is False
+        assert "spent" in found["why"]
+
+    def test_nothing_wrong_reads_as_nothing_wrong(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        sup.spent_today()
+        sup.spend["usd"] = 0.0
+        found = sup.looking()
+        assert found["can"] is True
+        assert found["why"] == ""
+
+    def test_it_reaches_the_page(self, monkeypatch):
+        sup = self._sup(monkeypatch, anthropic_api_key=None)
+        assert sup.status()["looking"]["can"] is False
+
+    def test_the_reason_matches_what_consider_would_do(self, monkeypatch):
+        """A page that explains a refusal the code would not make is worse
+        than one that says nothing."""
+        sup = self._sup(monkeypatch)
+        sup.spent_today()
+        sup.spend["usd"] = 2.40
+        assert sup.looking()["can"] is False
+        candidate = type("C", (), {
+            "raw": Path("/nonexistent.mp4"), "senses": {}, "about": "", "said": None,
+            "faces_at": [], "quotes": [], "channel": "x",
+        })()
+        assert sup.consider(candidate).watched is False
