@@ -541,6 +541,10 @@ class TestTheSlotGoesToTheNextStreamDown:
     """First, third and fourth - until second wakes up."""
 
     def _sup(self, monkeypatch, listing):
+        # Pinned, because what is under test is the swap and not the slot
+        # count: with five channels and ten slots there is nothing to swap.
+        monkeypatch.setattr(settings, "live_slots", 3)
+        monkeypatch.setattr(settings, "live_drop_rank", 6)
         sup = Supervisor()
         monkeypatch.setattr("core.roster.fetch_kick_live", lambda **k: listing)
         # No chat sockets in a unit test: the ranking falls back to viewers,
@@ -1309,3 +1313,55 @@ class TestItSaysWhenItIsBroken:
 
     def test_the_status_the_page_reads_carries_it(self):
         assert "health" in Supervisor().status()
+
+
+class TestHowManyStreamsItTakes:
+    """Ten slots exist to answer a question - how many streams does it take
+    to reach ten clips a day - and "eleven clips" does not answer it."""
+
+    def _sup(self, monkeypatch, rows, watching=("a", "b", "c")):
+        sup = Supervisor()
+        for channel in watching:
+            sup.watching[channel] = _watched(channel)
+        monkeypatch.setattr(Supervisor, "recent_catches", lambda self, **k: rows)
+        return sup
+
+    def _catch(self, channel):
+        return type("Row", (), {"channel": channel, "created_at": None})()
+
+    def test_it_says_which_streams_the_clips_came_from(self, monkeypatch):
+        rows = [self._catch("a"), self._catch("a"), self._catch("b")]
+        found = self._sup(monkeypatch, rows).yield_report()
+        assert found["clips_24h"] == 3
+        assert found["per_stream"][0] == {"channel": "a", "clips": 2}
+
+    def test_a_stream_that_produced_nothing_is_still_a_row(self, monkeypatch):
+        """A zero is the most useful row in the table - it is the one that
+        says the slot could be given back."""
+        found = self._sup(monkeypatch, [self._catch("a")]).yield_report()
+        assert {"channel": "c", "clips": 0} in found["per_stream"]
+        assert found["streams_earning"] == 1
+        assert found["streams_watched"] == 3
+
+    def test_it_extrapolates_how_many_streams_the_target_needs(self, monkeypatch):
+        """Three streams, three clips, target ten: it takes ten streams."""
+        monkeypatch.setattr(settings, "live_clips_per_day", 10)
+        rows = [self._catch("a"), self._catch("b"), self._catch("c")]
+        found = self._sup(monkeypatch, rows).yield_report()
+        assert found["streams_for_target"] == 10.0
+
+    def test_no_clips_yet_is_not_a_division_by_zero(self, monkeypatch):
+        found = self._sup(monkeypatch, []).yield_report()
+        assert found["streams_for_target"] is None
+
+    def test_a_dead_database_does_not_take_the_status_down(self, monkeypatch):
+        def boom(self, **k):
+            raise RuntimeError("no postgres")
+
+        monkeypatch.setattr(Supervisor, "recent_catches", boom)
+        found = Supervisor().status()
+        assert found["yield"]["known"] is False
+
+    def test_the_status_the_page_reads_carries_it(self, monkeypatch):
+        monkeypatch.setattr(Supervisor, "recent_catches", lambda self, **k: [])
+        assert "yield" in Supervisor().status()

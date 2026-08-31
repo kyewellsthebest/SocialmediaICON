@@ -146,3 +146,109 @@ def test_x_at_clamps_a_crop_that_would_run_off_the_edge():
     path = reframe.Path_(points=[(0.0, 0.0), (10.0, 1.0)], source_w=1920, source_h=1080)
     assert path.x_at(0.0) == 0.0
     assert path.x_at(10.0) == pytest.approx(1920 - 606)
+
+
+class TestTheCropMovesEveryFrameRatherThanTenTimesASecond:
+    """The path was always smooth. The delivery of it was a staircase.
+
+    sendcmd fired ten times a second, so on a 60fps clip the crop held
+    perfectly still for six frames and then jumped - measured on real 1080p60,
+    up to 34.6 pixels in a single frame, with the crop frozen on 87% of
+    frames. That snap is what "jittery" looks like, and no amount of
+    smoothing the path could have fixed it.
+    """
+
+    def _pan(self) -> reframe.Path_:
+        """A subject walking steadily across frame, at 1920x1080."""
+        rows = [blob(0.2 + 0.6 * i / 200) for i in range(200)]
+        fine = self._fine(rows)
+        crop = reframe.Path_(points=[], source_w=1920, source_h=1080).crop_w
+        half = crop / 2 / 1920
+        step = 1.0 / reframe.PATH_FPS
+        walked = reframe._follow(fine, step=step, bounds=(half, 1.0 - half))
+        return reframe.Path_(
+            points=[(i * step, v) for i, v in enumerate(walked)],
+            source_w=1920, source_h=1080,
+        )
+
+    def _fine(self, rows):
+        raw, last = [], 0.5
+        for columns in rows:
+            last = reframe._focus_centre(columns, last)
+            raw.append(last)
+        despiked = reframe._median_filter(
+            raw, max(1, int(reframe.MEDIAN_S * reframe.PROBE_FPS)) | 1
+        )
+        w = max(1, int(reframe.SMOOTH_S * reframe.PROBE_FPS))
+        smoothed = [
+            sum(despiked[max(0, i - w + 1): i + 1]) / len(despiked[max(0, i - w + 1): i + 1])
+            for i in range(len(despiked))
+        ]
+        probe_step = 1.0 / reframe.PROBE_FPS
+        coarse = [(i * probe_step, v) for i, v in enumerate(smoothed)]
+        end = coarse[-1][0]
+        step = 1.0 / reframe.PATH_FPS
+        return [reframe._sample(coarse, i * step) for i in range(int(end * reframe.PATH_FPS) + 1)]
+
+    def _frames(self, path, sendcmd_hz, out_fps=60.0):
+        """Crop x on each output frame. A command at k/hz holds until the
+        next one, which is the staircase ffmpeg actually applies."""
+        end = path.points[-1][0]
+        return [
+            path.x_at(int((i / out_fps) * sendcmd_hz + 1e-9) / sendcmd_hz)
+            for i in range(int(end * out_fps))
+        ]
+
+    def _jerk(self, xs):
+        d1 = [b - a for a, b in zip(xs, xs[1:], strict=False)]
+        d2 = [abs(b - a) for a, b in zip(d1, d1[1:], strict=False)]
+        return sum(d2) / len(d2), max(d2)
+
+    def test_the_commands_are_written_at_frame_rate(self):
+        assert reframe.PATH_FPS >= 60.0
+        path = self._pan()
+        assert len(path.points) > 60 * 10, "the path itself has to be dense too"
+
+    def test_no_single_frame_jumps_more_than_a_pixel(self):
+        """34.6 pixels in one frame was the old worst case."""
+        _, worst = self._jerk(self._frames(self._pan(), reframe.PATH_FPS))
+        assert worst < 1.0, f"worst single-frame jump is {worst:.2f}px"
+
+    def test_it_is_at_least_ten_times_smoother_than_it_was(self):
+        path = self._pan()
+        was, _ = self._jerk(self._frames(path, 10.0))
+        now, _ = self._jerk(self._frames(path, reframe.PATH_FPS))
+        assert now * 10 < was, f"only {was / max(now, 1e-9):.1f}x smoother"
+
+    def test_the_acceleration_cap_actually_binds_at_frame_rate(self):
+        """Following at the measurement rate and interpolating afterwards let
+        the crop teleport between capped positions. Following at frame rate is
+        what makes the cap mean anything."""
+        path = self._pan()
+        allowed = reframe.MAX_ACCEL_PER_S2 / reframe.PATH_FPS / reframe.PATH_FPS * 1920
+        xs = [v * 1920 for _, v in path.points]
+        _, worst = self._jerk(xs)
+        assert worst <= allowed * 1.5, f"{worst:.3f}px against a cap of {allowed:.3f}px"
+
+    def test_the_crop_decelerates_into_the_frame_edge(self):
+        """A centre outside the legal range used to be clipped after the fact,
+        which bypassed every limit and stopped the crop dead."""
+        step = 1.0 / reframe.PATH_FPS
+        hard_left = [0.0] * int(reframe.PATH_FPS * 4)
+        walked = reframe._follow(hard_left, step=step, bounds=(0.3, 0.7))
+        assert min(walked) >= 0.3 - 1e-9, "the follower left the legal range"
+        d1 = [b - a for a, b in zip(walked, walked[1:], strict=False)]
+        d2 = [abs(b - a) for a, b in zip(d1, d1[1:], strict=False)]
+        cap = reframe.MAX_ACCEL_PER_S2 / reframe.PATH_FPS / reframe.PATH_FPS
+        assert max(d2) <= cap * 1.5, "it hit the wall instead of easing into it"
+
+    def test_interpolation_between_knots_is_smooth_in_velocity_too(self):
+        """Linear interpolation is continuous in position and not in speed,
+        and a corner in the speed is as visible as a corner in the position."""
+        points = [(0.0, 0.2), (1.0, 0.8), (2.0, 0.2)]
+        xs = [reframe._sample(points, i / 240.0) for i in range(480)]
+        d1 = [b - a for a, b in zip(xs, xs[1:], strict=False)]
+        d2 = [abs(b - a) for a, b in zip(d1, d1[1:], strict=False)]
+        # At the turn the speed reverses; smoothstep brings it to zero first.
+        assert abs(d1[239]) < abs(d1[120]) / 5, "it turned without slowing down"
+        assert max(d2) < 0.002

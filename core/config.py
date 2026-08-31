@@ -242,16 +242,33 @@ class Settings(BaseSettings):
 
     # --- live capture -------------------------------------------------
     #
-    # How many streams to hold at once. Three rather than ten: each buffer is
-    # a continuous download, and the clips that get posted have to be 1080p,
-    # which means the buffer itself has to hold 1080p. Ten of those is 900GB
-    # a day; three is 275GB, and three of the biggest channels produce far
-    # more clippable material than ten posts a day can use anyway.
+    # How many streams to hold at once. Ten, and the cost of that is real and
+    # worth knowing before the bill arrives rather than after.
+    #
+    # Each buffer is a continuous 1080p download, because the clips that ship
+    # are 1080p and detail that was never downloaded cannot be recovered
+    # later. At roughly 8Mbps that is 86GB a day per stream - 860GB a day at
+    # ten, against 260GB at three. It is inbound traffic, which Railway does
+    # not bill, so this is throughput rather than money: ten streams is a
+    # sustained 80Mbps.
+    #
+    # The CPU is the harder number. Reading the senses on one stream costs
+    # about 7 seconds per 30-second window, and every stream is read every 20
+    # seconds, so ten streams is around 3.5 cores continuously against 1 for
+    # three. Disk is not a problem: the buffer is a rolling five minutes, so
+    # ten streams hold about 3GB between them.
+    #
+    # Ten is here because the question being asked of it is "how many streams
+    # does it take to reach ten clips a day", and that is not answerable from
+    # three. The Live page reports what each stream actually yields, so the
+    # number can come down once the answer is in.
     live_enabled: bool = False
-    live_slots: int = 3
+    live_slots: int = 10
     #: Rank a stream must fall past before it is dropped, so two channels
     #: trading places around the cutoff do not cause a reconnect each time.
-    live_drop_rank: int = 6
+    #: Held well clear of the slot count: with ten slots the churn around the
+    #: cutoff is ten times more likely to happen at all.
+    live_drop_rank: int = 16
     live_window_s: float = 300.0
     live_segment_s: float = 4.0
     #: The clip that ships. Buffering below this caps what can ever be posted,

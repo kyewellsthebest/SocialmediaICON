@@ -90,10 +90,12 @@ DORMANT_SPEECH = 0.10
 DORMANT_STILL_WEIGHT = 1
 DORMANT_SILENT_WEIGHT = 2
 #: How far down the listing to keep a chat socket open. Chat is a websocket
-#: and costs no video bandwidth at all, so the streams *below* the three being
+#: and costs no video bandwidth at all, so the streams *below* the ones being
 #: buffered can still be measured - which is the only way the ranking can know
-#: that the ninth-biggest stream is the liveliest one on Kick.
-PROBE_DEPTH = 8
+#: that the fifteenth-biggest stream is the liveliest one on Kick. Kept well
+#: past the slot count for that reason: probing only what is already watched
+#: would make the ranking a list of what it happened to pick first.
+PROBE_DEPTH = 20
 PROBE_WINDOW_S = 120.0
 #: A probe that has only just connected has seen almost nothing, and reporting
 #: that as a rate would demote a stream for the crime of being new to us.
@@ -1476,6 +1478,52 @@ class Supervisor:
             db.expunge_all()
             return rows
 
+    def yield_report(self, *, now: float | None = None) -> dict[str, Any]:
+        """How many clips each watched stream actually produced today.
+
+        The reason for holding ten streams rather than three is a question -
+        how many does it take to reach ten clips a day - and a number that
+        only says "eleven clips" cannot answer it. This says which streams
+        they came from, so the slot count can come down to whatever turns out
+        to be enough.
+        """
+        now = time.time() if now is None else now
+        try:
+            recent = self.recent_catches(
+                since=datetime.fromtimestamp(now, UTC) - timedelta(days=1)
+            )
+        except Exception as exc:  # noqa: BLE001 - a status read must not throw
+            return {"known": False, "why": f"{type(exc).__name__}: {exc}"}
+
+        per: dict[str, int] = {}
+        for row in recent:
+            channel = getattr(row, "channel", "") or "unknown"
+            per[channel] = per.get(channel, 0) + 1
+
+        watched = list(self.watching)
+        # Every stream currently held, including the ones that produced
+        # nothing - a zero is the most useful row in this table.
+        rows = sorted(
+            ({"channel": c, "clips": per.get(c, 0)} for c in set(watched) | set(per)),
+            key=lambda r: (-r["clips"], r["channel"]),
+        )
+        earning = sum(1 for r in rows if r["clips"] > 0 and r["channel"] in watched)
+        total = len(recent)
+        return {
+            "known": True,
+            "clips_24h": total,
+            "streams_watched": len(watched),
+            "streams_earning": earning,
+            "target": settings.live_clips_per_day,
+            # The answer to the question, once there is enough of a day to
+            # answer it: at this rate, how many streams for the target.
+            "streams_for_target": (
+                round(len(watched) * settings.live_clips_per_day / total, 1)
+                if total else None
+            ),
+            "per_stream": rows[:20],
+        }
+
     def publish_clip(self, path: Path) -> str | None:
         """Put the clip somewhere the web service can actually read it.
 
@@ -1600,7 +1648,14 @@ class Supervisor:
             "look_budget": settings.verdict_per_day,
             "errors": self.errors[-6:],
             "health": self.health(),
+            "yield": self._yield_quietly(),
         }
+
+    def _yield_quietly(self) -> dict[str, Any]:
+        try:
+            return self.yield_report()
+        except Exception as exc:  # noqa: BLE001 - a status read must never throw
+            return {"known": False, "why": f"{type(exc).__name__}: {exc}"}
 
     def health(self) -> dict[str, Any]:
         """Is this actually working, in one line the page can shout.
