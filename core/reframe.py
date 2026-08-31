@@ -376,9 +376,25 @@ def sendcmd_file(path: Path_, dest: Path | str, *, rate_hz: float = PATH_FPS) ->
 CAM_SHARE = 1.0 / 3.0
 #: A face bigger than this is the shot, not an overlay on one.
 CAM_MAX_H = 0.34
-#: ...and one this far from the middle is in a corner, which is where an
+#: ...and this far from the middle on its longest axis, which is where an
 #: overlay lives and where a person being filmed does not.
-CAM_EDGE = 0.20
+#:
+#: Measured across every case to hand, as distance from centre on whichever
+#: axis is further out:
+#:
+#:     two people on a couch   0.22   not a desk stream
+#:     Ninja, cam bottom-left  0.33   desk stream
+#:     a Lego streamer         0.32   desk stream
+#:     a screen with a cam     0.37   desk stream
+#:
+#: This is geometry, and geometry is a proxy. The real difference between a
+#: captured screen and a camera pointed at a room is that screen pixels are
+#: *identical* between frames and camera pixels never are, because of sensor
+#: noise - and that would separate them without depending on where anybody is
+#: sitting. It needs real footage of both to calibrate and there is none here,
+#: so this is what there is, and a channel that gets it wrong can say so: a
+#: webcam box handed to to_portrait beats anything found by looking.
+CAM_CORNER = 0.28
 #: How much of the clip a face has to be found in before it is furniture
 #: rather than somebody walking past.
 CAM_STEADY = 0.55
@@ -438,7 +454,7 @@ def find_webcam(src: Path | str) -> Webcam | None:
 
     if h > CAM_MAX_H:
         return None
-    if abs(cx - 0.5) < CAM_EDGE and abs(cy - 0.5) < CAM_EDGE:
+    if max(abs(cx - 0.5), abs(cy - 0.5)) < CAM_CORNER:
         return None
     return Webcam(x=x, y=y, w=w, h=h, seen=steady)
 

@@ -319,3 +319,67 @@ class TestARuleChangeTakesEffectToday:
         that rule is gone - which for "no gaming" meant LosPollosTV, an It
         Takes Two co-op and a GTA channel, all of them wanted."""
         assert re.search(r":v\d+:", profile.KEY), profile.KEY
+
+
+class TestTheEnglishFilterDoesNotRefuseEnglish:
+    """An English-speaking streamer was being turned away by the English
+    filter. "gg", "op", "sun", "mast" and "brother" were all on the romanised
+    Hindi list, so an ordinary Kick chat - bro, gg, op, brother - scored 92
+    markers against a threshold of 22."""
+
+    ENGLISH = [
+        "bro what", "gg", "LOOOL", "gg ez", "bro is cooked", "op",
+        "no way bro", "gg", "brother what are you doing", "sun is in his eyes",
+        "gg wp", "bro", "that's op", "gg", "brother please", "bro no",
+        "op weapon", "gg", "sun out guns out", "bro stop", "gg", "bro",
+    ] * 6
+    HINDI = [
+        "bhai kya kar raha hai", "yaar ye kya hai", "nahi bhai", "acha",
+        "bahut mast", "chalo dekho", "kitna paisa", "aap kaise ho",
+        "matlab kya", "arre bhai", "tum kahan ho", "thoda ruko", "abhi karo",
+        "mera bhai", "haan bhai", "pagal hai kya", "dost", "jaldi karo",
+    ] * 8
+
+    def test_an_ordinary_english_chat_is_kept(self):
+        assert profile.from_chat("x", self.ENGLISH) is None
+
+    @pytest.mark.parametrize("word", ["gg", "op", "sun", "mast", "brother",
+                                      "bro", "ez", "clip", "cooked", "goat"])
+    def test_no_marker_is_a_word_english_chat_uses(self, word):
+        """These are the ones that caused it. Each was either on the list or
+        one letter from it, and each is ordinary English chat vocabulary."""
+        assert not profile.ROMANISED.search(word), (
+            f"{word!r} is on the Hindi list and is English chat vocabulary"
+        )
+
+    @pytest.mark.parametrize("word", ["hai", "kar"])
+    def test_a_marker_may_collide_only_if_it_cannot_decide_alone(self, word):
+        """"hai" and "kar" are not English words, but they are three letters
+        and they turn up in chat noise. They stay because no single marker
+        decides anything: several different ones are needed."""
+        assert profile.ROMANISED.search(word)
+        assert profile.from_chat("x", [word] * 200) is None
+
+    def test_a_hindi_chat_is_still_refused(self):
+        found = profile.from_chat("x", self.HINDI)
+        assert found is not None and found.eligible is False
+        assert "romanised Hindi" in found.reason
+
+    def test_the_reason_names_the_words_it_found(self):
+        """A refusal nobody can check is a refusal nobody can argue with."""
+        found = profile.from_chat("x", self.HINDI)
+        assert "bhai" in found.reason
+
+    def test_one_word_repeated_is_not_a_language(self):
+        """"bhai" forty times is one person, or one borrowing. Language shows
+        up as vocabulary, not as repetition."""
+        assert profile.from_chat("x", ["bhai"] * 200) is None
+
+    def test_a_few_borrowings_in_an_english_chat_are_not_a_language_either(self):
+        assert profile.from_chat("x", self.ENGLISH[:60] + ["bhai", "yaar"] * 3) is None
+
+    def test_it_takes_several_different_markers(self):
+        assert profile.ROMANISED_KINDS >= 4
+        few = ["bhai kya", "kya bhai"] * 60
+        assert len(profile.romanised_kinds(few)) < profile.ROMANISED_KINDS
+        assert profile.from_chat("x", few) is None

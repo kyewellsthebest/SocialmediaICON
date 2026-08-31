@@ -55,7 +55,11 @@ log = logging.getLogger(__name__)
 #: them was gone.
 #:
 #: v2: gaming is fine; competitive events are not.
-KEY = "clipengine:profile:v2:{channel}"
+#: v3: the romanised-Hindi list no longer contains English words. An ordinary
+#:     English chat - bro, gg, op, brother, sun - scored 92 markers against a
+#:     threshold of 22 and was refused, so every channel turned away by that
+#:     has a wrong answer cached and has to be asked again.
+KEY = "clipengine:profile:v3:{channel}"
 #: A week. Long enough that the bill is a rounding error, short enough that a
 #: streamer who changes what they do is noticed within one.
 TTL_S = 7 * 24 * 3600
@@ -104,15 +108,37 @@ FOREIGN_SCRIPT = re.compile(
 )
 
 #: Romanised Hindi and Urdu do not trip the script test - "bhai kya kar raha
-#: hai" is all Latin letters. These are the words that carry the register, and
-#: they are common enough that a handful in one minute of chat is decisive.
+#: hai" is all Latin letters. These are the words that carry the register.
+#:
+#: Every one of them has to be a word an English chat does not use, and that
+#: is a harder list than it looks. The first version contained "gg", "op",
+#: "sun", "mast" and "brother", and an ordinary English Kick chat - bro, gg,
+#: op, brother, sun - scored 92 markers against a threshold of 22 and was
+#: refused as Hindi. An English-speaking streamer was being turned away by the
+#: English filter.
+#:
+#: Gone with them: "bol", "sahi", "mast", "sun". "hai" and "kar" stayed - they
+#: are not English words, and "bhai kya kar raha hai" loses most of itself
+#: without them - which is safe because no single marker decides anything any
+#: more. That is what the rule below is for.
 ROMANISED = re.compile(
     r"\b(bhai|bhaiya|kya|kyu|kyun|hai|hain|nahi|nahin|haan|acha|accha|yaar|"
-    r"bro?ther|mera|tera|aap|tum|karo|karna|kar|raha|rahe|rhe|matlab|paisa|"
-    r"bahut|bohot|thoda|zyada|abhi|chalo|dekho|sun|bol|bolo|jaldi|"
-    r"kaise|kahan|kaun|kitna|sahi|galat|mast|jhakaas|op|gg)\b",
+    r"mera|tera|aap|tum|kar|karo|karna|raha|rahe|rhe|matlab|paisa|"
+    r"bahut|bohot|thoda|zyada|abhi|chalo|dekho|bolo|jaldi|"
+    r"kaise|kahan|kaun|kitna|galat|jhakaas|bakchodi|bhosdi|chutiya|"
+    r"kitne|sabse|dost|pagal|majaa|maza|dekh|suno|arre|arey)\b",
     re.IGNORECASE,
 )
+#: How many *different* markers have to appear before a chat counts as Hindi.
+#:
+#: Different, not many. One word repeated is one person, or one borrowing, or
+#: one emote - "bhai" forty times is a single fact stated forty times. Language
+#: shows up as vocabulary: several unrelated words from the same register in
+#: the same chat is a thing that does not happen by accident. Four, because
+#: "bhai kya raha yaar" is four and is unmistakably Hindi - and because with
+#: no English word left on the list, this is a second lock rather than the
+#: only one.
+ROMANISED_KINDS = 4
 
 
 class ProfileError(RuntimeError):
@@ -169,6 +195,11 @@ def foreign_share(text: str) -> float:
 def romanised_hits(lines: list[str]) -> int:
     """Hindi and Urdu written in Latin letters, which the script test misses."""
     return sum(len(set(ROMANISED.findall(line))) for line in lines)
+
+
+def romanised_kinds(lines: list[str]) -> set[str]:
+    """Which distinct markers appeared, which is the part that means anything."""
+    return {m.lower() for line in lines for m in ROMANISED.findall(line)}
 
 
 def event_marker(*texts: str) -> str:
@@ -244,11 +275,18 @@ def from_chat(channel: str, lines: list[str]) -> Profile | None:
             decided_by="chat script",
         )
 
+    kinds = romanised_kinds(lines)
     hits = romanised_hits(lines)
-    if hits >= max(12, len(lines) // 6):
+    # Both: several different words from the register, *and* enough of them to
+    # be the chat rather than one person in it.
+    if len(kinds) >= ROMANISED_KINDS and hits >= max(12, len(lines) // 6):
+        said = ", ".join(sorted(kinds)[:6])
         return Profile(
             channel=channel, eligible=False, confidence=0.8,
-            reason=f"chat is largely romanised Hindi ({hits} markers in {len(lines)} lines)",
+            reason=(
+                f"chat is largely romanised Hindi - {len(kinds)} different "
+                f"markers ({said}), {hits} times in {len(lines)} lines"
+            ),
             decided_by="chat words",
         )
     return None

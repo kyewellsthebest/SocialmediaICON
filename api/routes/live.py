@@ -280,6 +280,28 @@ def discard(catch_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"ok": True}
 
 
+@router.delete("/catches")
+def discard_all(
+    keep_approved: bool = True, db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    """Empty the queue.
+
+    For after a change to the scoring, when what is in there was ranked by
+    rules that no longer exist and reading it tells you about the old ones. It
+    leaves anything explicitly kept alone by default, because those were
+    approved by a person and a person's decision is not a stale measurement.
+    """
+    rows = db.query(Catch)
+    if keep_approved:
+        rows = rows.filter(Catch.approved.is_(False))
+    found = rows.all()
+    for row in found:
+        if row.storage_key:
+            Path(row.storage_key).unlink(missing_ok=True)
+        db.delete(row)
+    return {"ok": True, "deleted": len(found), "kept_approved": keep_approved}
+
+
 def _verdict_of(c: Catch) -> dict[str, Any]:
     """The stored verdict, wherever the row happens to keep it.
 

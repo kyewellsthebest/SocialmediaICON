@@ -72,10 +72,16 @@ DETECT_FPS = 6.0
 #: not say what it runs at. Everything else is read at the source's own rate.
 FPS = 30.0
 MAX_FPS = 60.0
-#: The smallest face worth finding, as a share of frame height. Below this it
-#: is a person in a crowd, not somebody the clip is about - and below about
-#: 22 pixels the cascade cannot see them anyway.
-MIN_FACE = 0.07
+#: The smallest face worth finding, as a share of frame height.
+#:
+#: 0.04 - about 14 pixels at the analysis size - down from 0.07, which was set
+#: by what a Haar cascade could manage rather than by what is worth finding. A
+#: webcam box in the corner of a game contains a face of about 20 pixels here,
+#: and that is the most common layout on Kick; a floor set at 25 threw away
+#: the one detection the stacked crop depends on. YuNet finds them, so the
+#: floor can be what it should always have been: small enough for a facecam,
+#: large enough that a face in a crowd behind somebody is not the subject.
+MIN_FACE = 0.04
 #: How far back "usual for this stream" reaches.
 BASELINE_S = 30.0
 WARMUP_S = 3.0
@@ -155,15 +161,47 @@ class Watching:
         }
 
 
+#: YuNet, 232KB, vendored rather than fetched at build time so a deploy does
+#: not depend on GitHub being up.
+#:
+#: It replaced the Haar cascade because Haar could not do the job. On a real
+#: screenshot of Ninja - headset, side lighting, looking down and away - the
+#: frontal, alt2 and profile cascades between them found nothing at all, and
+#: that is the single most common layout on Kick: a game filling the frame
+#: with the streamer in a box in the corner. Without a face there, the crop
+#: falls back to following the motion, which on that layout lands between the
+#: game and the webcam and shows neither.
+#:
+#: It is also faster: 2.62s against 3.10s for the same 180 frames, because a
+#: single small network beats sliding a cascade over six scales.
+MODEL = Path(__file__).with_name("assets") / "face_detection_yunet_2023mar.onnx"
+#: How sure it has to be. YuNet reports a score per box; below this the boxes
+#: are texture that happens to be face-shaped, which on a game stream is
+#: constant.
+MIN_SCORE = 0.65
+
+_finder = None
 _cascade = None
 
 
-def detector():  # noqa: ANN201 - cv2.CascadeClassifier
-    """The face finder, loaded once."""
-    global _cascade
-    if _cascade is None:
-        import cv2
+def detector():  # noqa: ANN201 - cv2.FaceDetectorYN or CascadeClassifier
+    """The face finder, loaded once. YuNet if it is there, Haar if not."""
+    global _finder, _cascade
+    import cv2
 
+    if _finder is None and MODEL.exists() and hasattr(cv2, "FaceDetectorYN"):
+        try:
+            _finder = cv2.FaceDetectorYN.create(
+                str(MODEL), "", (WIDTH, HEIGHT), MIN_SCORE, 0.3, 500
+            )
+        except Exception as exc:  # noqa: BLE001 - fall back rather than fail
+            log.warning("faces: could not load %s (%s); using the cascade",
+                        MODEL.name, exc)
+            _finder = None
+    if _finder is not None:
+        return _finder
+
+    if _cascade is None:
         _cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
@@ -174,24 +212,33 @@ def detector():  # noqa: ANN201 - cv2.CascadeClassifier
 
 def find(frame, width: int = WIDTH, height: int = HEIGHT) -> list[Face]:  # noqa: ANN001
     """Faces in one greyscale frame, in fractions of the frame."""
+    import cv2
+
+    found = detector()
     least = int(height * MIN_FACE)
+
+    if not isinstance(found, cv2.CascadeClassifier):
+        # YuNet wants three channels and its own idea of the frame size.
+        found.setInputSize((width, height))
+        _, boxes = found.detect(cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR))
+        return [
+            Face(x=x / width, y=y / height, w=w / width, h=h / height)
+            for x, y, w, h in (
+                (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+                for b in (boxes if boxes is not None else [])
+            )
+            if h >= least
+        ]
+
     # scaleFactor 1.1, not 1.2. The step is how much the search window grows
     # between passes, so 1.2 leaves 20% gaps in the sizes it looks for and a
-    # face that falls between two of them is not found at all. Measured on a
-    # webcam-sized face in the corner of a screen-share: 0 of 6 frames at 1.2,
-    # 6 of 6 at 1.1. That is why every radar on the dashboard read FACES 0 -
-    # not because there were no faces, because the sizes were not looked at.
-    #
-    # It costs 1.5s to 2.9s per 30-second window on real 1080p60, which is a
-    # tenth of a core more per stream and is worth it: faces are one of the
-    # five families of evidence, and a family that never fires cannot
-    # corroborate anything.
-    found = detector().detectMultiScale(
+    # face that falls between two of them is not found at all.
+    got = found.detectMultiScale(
         frame, scaleFactor=1.1, minNeighbors=4, minSize=(least, least)
     )
     return [
         Face(x=x / width, y=y / height, w=w / width, h=h / height)
-        for x, y, w, h in found
+        for x, y, w, h in got
     ]
 
 

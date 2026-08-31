@@ -37,13 +37,14 @@ class TestFindingPeople:
     def test_the_size_of_the_biggest_face_is_kept(self, alone):
         assert 0.0 < alone.biggest < 1.0
 
-    def test_the_frame_size_is_above_the_cascade_floor(self):
-        """Measured: the cascade finds a face down to about 22 pixels across.
-
-        At 320x180 this exact photograph was never found once. The frame size
-        is not a taste question - it decides which faces exist at all.
-        """
-        assert faces.HEIGHT * faces.MIN_FACE >= 22
+    def test_the_frame_is_big_enough_to_hold_a_facecam(self):
+        """The frame size is not a taste question - it decides which faces
+        exist at all. At 320x180 a real mid-shot photograph was never found
+        once; the floor used to be 22 pixels because that is where a Haar
+        cascade gave up. YuNet goes lower, and it has to: a webcam box in the
+        corner of a game holds a face of about twenty pixels here."""
+        assert faces.HEIGHT >= 360
+        assert 12 <= faces.HEIGHT * faces.MIN_FACE <= 22
 
 
 class TestWhenSomethingHappensToAFace:
@@ -146,3 +147,22 @@ class TestItWatchesEveryFrame:
         empty.write_bytes(b"")
         with pytest.raises(faces.FacesError):
             faces.watch(empty)
+
+
+class TestTheModelItActuallyUses:
+    def test_the_weights_are_vendored_not_fetched(self):
+        """A deploy that needs GitHub to be up is a deploy that fails on the
+        day GitHub is down."""
+        assert faces.MODEL.exists(), f"{faces.MODEL} is missing from the repo"
+        assert faces.MODEL.stat().st_size > 100_000
+
+    def test_it_loads_the_model_rather_than_the_cascade(self):
+        import cv2
+
+        assert not isinstance(faces.detector(), cv2.CascadeClassifier)
+
+    def test_the_size_floor_is_small_enough_for_a_facecam(self):
+        """A webcam box in the corner of a game holds a face of about twenty
+        pixels at the analysis size. A floor of 25 threw away the one
+        detection the stacked crop depends on."""
+        assert faces.HEIGHT * faces.MIN_FACE <= 20

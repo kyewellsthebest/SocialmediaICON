@@ -402,3 +402,38 @@ class TestItSaysHowItFramedTheClip:
         import synth_faces as people
 
         reframe.to_portrait(people.one_person(), tmp_path / "c.mp4", work_dir=tmp_path)
+
+
+class TestTheDetectorHasToFindARealFacecam:
+    """Haar could not. On a real screenshot of Ninja - headset, side-lit,
+    looking away - the frontal, alt2 and profile cascades between them found
+    nothing at all, and that is the most common layout on Kick: a game filling
+    the frame with the streamer in a box in the corner."""
+
+    def _cases(self):
+        import synth_faces as people
+
+        return [
+            (people.one_person(), False, "somebody filmed, filling the frame"),
+            (people.two_people(), False, "two people on a couch"),
+            (people.nobody(), False, "an empty room"),
+            (people.screen_share(), True, "a screen with a camera in the corner"),
+        ]
+
+    def test_it_tells_a_desk_stream_from_everything_else(self):
+        for src, want, why in self._cases():
+            got = reframe.find_webcam(src) is not None
+            assert got is want, f"{why}: stacked={got}, wanted={want}"
+
+    def test_a_face_in_the_middle_is_the_shot_not_an_overlay(self):
+        """Two people side by side sit off centre, and stacking them would
+        show one face and half a room."""
+        cam = reframe.Webcam(x=0.22, y=0.29, w=0.12, h=0.12, seen=1.0)
+        cx, cy = cam.x + cam.w / 2, cam.y + cam.h / 2
+        assert max(abs(cx - 0.5), abs(cy - 0.5)) < reframe.CAM_CORNER
+
+    def test_a_corner_is_a_corner_on_either_axis(self):
+        """Ninja's camera is far left and vertically central; a rule needing
+        both axes off centre would refuse it."""
+        for cx, cy in ((0.17, 0.55), (0.50, 0.10), (0.85, 0.50)):
+            assert max(abs(cx - 0.5), abs(cy - 0.5)) >= reframe.CAM_CORNER

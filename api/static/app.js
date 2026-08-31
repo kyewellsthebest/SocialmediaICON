@@ -1172,6 +1172,25 @@ function showInspect(id) {
   sheet(true);
 }
 
+/* Empty the queue. For after a change to the scoring, when what is in there
+   was ranked by rules that no longer exist. Anything explicitly kept is left
+   alone: that was a person's decision, not a stale measurement. */
+async function clearClips() {
+  const rows = state.clips || [];
+  const going = rows.filter((c) => !c.approved).length;
+  if (!going) return toast("Nothing to clear.", "");
+  if (!window.confirm(
+    `Delete ${going} clip${going === 1 ? "" : "s"} and their video files?\n\n`
+    + `Anything you have kept stays.`)) return;
+  try {
+    const found = await api("/live/catches", { method: "DELETE" });
+    toast(`Cleared ${found.deleted}.`, "good");
+    renderClips();
+  } catch (err) {
+    toast(err.message, "critical");
+  }
+}
+
 function sheet(open) {
   $("#sheet").hidden = !open;
   $("#sheet-scrim").hidden = !open;
@@ -1409,6 +1428,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
 
+    if (t.id === "clips-clear") return clearClips();
     if (t.dataset.inspect) return showInspect(t.dataset.inspect);
     if (t.id === "sheet-close") return sheet(false);
     if (t.dataset.keep) {
