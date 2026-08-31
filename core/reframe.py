@@ -360,19 +360,172 @@ def sendcmd_file(path: Path_, dest: Path | str, *, rate_hz: float = PATH_FPS) ->
     return dest
 
 
+# --- the desk layout --------------------------------------------------------
+#
+# A screen-share stream breaks the whole idea of following the action, because
+# the action is in two places at once: the thing being talked about is on the
+# screen and the person talking is in a box in the corner. A crop that follows
+# motion oscillates between them and settles between them, which shows
+# neither - a strip of desktop with half a face at the edge.
+#
+# So that layout gets a different answer: stack them. The webcam fills the top
+# third of the portrait frame and the middle of the screen fills the bottom
+# two thirds. Nothing moves, because nothing needs to.
+
+#: The webcam's share of the output height.
+CAM_SHARE = 1.0 / 3.0
+#: A face bigger than this is the shot, not an overlay on one.
+CAM_MAX_H = 0.34
+#: ...and one this far from the middle is in a corner, which is where an
+#: overlay lives and where a person being filmed does not.
+CAM_EDGE = 0.20
+#: How much of the clip a face has to be found in before it is furniture
+#: rather than somebody walking past.
+CAM_STEADY = 0.55
+#: How much bigger the overlay is than the face inside it. The detector
+#: returns the face - eyes to chin - and cropping to that fills the top third
+#: with a nose. A webcam box is head and shoulders, and a face is a bit under
+#: half its height, so the box is found by growing outwards from the face.
+CAM_ZOOM_OUT = 2.6
+
+
+@dataclass
+class Webcam:
+    """A camera box pinned to a corner of a screen-share, in 0..1 of frame."""
+
+    x: float
+    y: float
+    w: float
+    h: float
+    seen: float
+
+    def pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
+        return (
+            max(0, int(self.x * width)), max(0, int(self.y * height)),
+            max(2, int(self.w * width)), max(2, int(self.h * height)),
+        )
+
+
+def find_webcam(src: Path | str) -> Webcam | None:
+    """The webcam overlay on a desk stream, or None if this is not one.
+
+    Three things have to hold at once, and each of them on its own is a
+    different kind of shot: the face is small (an overlay, not the subject),
+    it sits away from the middle (a corner, not a person on camera), and it
+    stays there (furniture, not somebody walking past).
+    """
+    try:
+        from core import faces as facelib
+    except Exception:  # noqa: BLE001 - no OpenCV is not a crash
+        return None
+    try:
+        watched = facelib.watch(src, fps=facelib.DETECT_FPS)
+    except Exception as exc:  # noqa: BLE001 - a blind guess is no layout
+        log.debug("reframe: could not look for a webcam (%s)", exc)
+        return None
+
+    boxes = [max(frame, key=lambda f: f.area) for frame in watched.frames if frame]
+    if not boxes or not watched.frames:
+        return None
+    steady = len(boxes) / len(watched.frames)
+    if steady < CAM_STEADY:
+        return None
+
+    mid = lambda vals: sorted(vals)[len(vals) // 2]  # noqa: E731
+    x, y = mid([b.x for b in boxes]), mid([b.y for b in boxes])
+    w, h = mid([b.w for b in boxes]), mid([b.h for b in boxes])
+    cx, cy = x + w / 2, y + h / 2
+
+    if h > CAM_MAX_H:
+        return None
+    if abs(cx - 0.5) < CAM_EDGE and abs(cy - 0.5) < CAM_EDGE:
+        return None
+    return Webcam(x=x, y=y, w=w, h=h, seen=steady)
+
+
+def _fit(box: tuple[float, float, float, float], aspect: float,
+         width: int, height: int) -> tuple[int, int, int, int]:
+    """Grow a box to an aspect ratio about its own centre, inside the frame.
+
+    Grown rather than cropped, so a webcam that is 4:3 inside a 27:16 slot
+    keeps all of the face and gains some of what is beside it, instead of
+    losing the top of somebody's head. Only when there is nothing left to grow
+    into does it crop, and then from the middle.
+    """
+    x, y, w, h = box
+    if w / h < aspect:
+        w = h * aspect
+    else:
+        h = w / aspect
+    cx, cy = x + box[2] / 2, y + box[3] / 2
+    w, h = min(w, float(width)), min(h, float(height))
+    x = min(max(cx - w / 2, 0.0), width - w)
+    y = min(max(cy - h / 2, 0.0), height - h)
+    even = lambda v: int(v) - int(v) % 2  # noqa: E731
+    return even(x), even(y), even(w), even(h)
+
+
+def stacked_filter(cam: Webcam, width: int, height: int) -> str:
+    """Webcam over screen, as one ffmpeg chain."""
+    top_h = int(OUT_H * CAM_SHARE) // 2 * 2
+    bottom_h = OUT_H - top_h
+
+    fx, fy, fw, fh = cam.pixels(width, height)
+    # Out from the face to the box it is sitting in, about the face's centre.
+    grow_w, grow_h = fw * CAM_ZOOM_OUT, fh * CAM_ZOOM_OUT
+    cx, cy, cw, ch = _fit(
+        (fx + fw / 2 - grow_w / 2, fy + fh / 2 - grow_h / 2, grow_w, grow_h),
+        OUT_W / top_h, width, height,
+    )
+    # The middle of the screen, at the shape of the space left for it. Not the
+    # middle minus the webcam: the thing being pointed at is in the middle of
+    # what the streamer is looking at, which is the middle of the screen.
+    sw = min(float(width), height * (OUT_W / bottom_h))
+    sh = min(float(height), sw * bottom_h / OUT_W)
+    sx, sy, sw_, sh_ = _fit(
+        ((width - sw) / 2, (height - sh) / 2, sw, sh), OUT_W / bottom_h, width, height
+    )
+    return (
+        f"[0:v]split=2[cam][scr];"
+        f"[cam]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{top_h}:flags=lanczos,setsar=1[top];"
+        f"[scr]crop={sw_}:{sh_}:{sx}:{sy},scale={OUT_W}:{bottom_h}:flags=lanczos,setsar=1[bot];"
+        f"[top][bot]vstack=inputs=2[out]"
+    )
+
+
 def to_portrait(
     src: Path | str,
     dest: Path | str,
     *,
     work_dir: Path | str | None = None,
     extra_filters: str = "",
+    layout: str = "auto",
 ) -> Path:
-    """Reframe a landscape clip to 1080x1920, following the action."""
+    """Reframe a landscape clip to 1080x1920.
+
+    `layout="auto"` stacks a webcam over a screen when it finds a desk stream
+    and follows the action otherwise. "follow" and "stacked" force one.
+    """
     require_binaries()
     src, dest = Path(src), Path(dest)
     work = Path(work_dir) if work_dir else dest.parent
     work.mkdir(parents=True, exist_ok=True)
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    # A desk stream is not a tracking problem, it is a layout one: following
+    # the motion between a screen and a webcam settles between them and shows
+    # neither.
+    cam = find_webcam(src) if layout in ("auto", "stacked") else None
+    if cam is not None:
+        width, height = probe_size(src)
+        log.info(
+            "reframe: %s - webcam at %.2f,%.2f on %.0f%% of frames, stacking",
+            Path(src).name, cam.x, cam.y, cam.seen * 100,
+        )
+        chain = stacked_filter(cam, width, height)
+        if extra_filters:
+            chain = chain.replace("[out]", "[stacked];[stacked]") + f"{extra_filters}[out]"
+        return _render(src, dest, chain, complex_=True)
 
     path = build_path(src)
     commands = sendcmd_file(path, work / "crop.cmd")
@@ -384,11 +537,16 @@ def to_portrait(
     )
     if extra_filters:
         chain = f"{chain},{extra_filters}"
+    return _render(src, dest, chain, complex_=False)
 
+
+def _render(src: Path, dest: Path, chain: str, *, complex_: bool) -> Path:
+    """One encode, whichever way the frame was arrived at."""
+    where = ["-filter_complex", chain, "-map", "[out]"] if complex_ else ["-vf", chain]
     proc = subprocess.run(
         [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(src), "-vf", chain,
+            "-i", str(src), *where, "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
             "-c:a", "aac", "-movflags", "+faststart", str(dest),
         ],

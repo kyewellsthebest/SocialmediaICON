@@ -252,3 +252,89 @@ class TestTheCropMovesEveryFrameRatherThanTenTimesASecond:
         # At the turn the speed reverses; smoothstep brings it to zero first.
         assert abs(d1[239]) < abs(d1[120]) / 5, "it turned without slowing down"
         assert max(d2) < 0.002
+
+
+class TestADeskStreamIsStackedNotFollowed:
+    """A screen-share breaks the whole idea of following the action, because
+    the action is in two places: the thing being talked about is on the screen
+    and the person talking is in a box in the corner. Following the motion
+    oscillates between them and settles between them, which shows neither - a
+    strip of desktop with half a face at the edge."""
+
+    def test_a_webcam_in_the_corner_is_found(self):
+        import synth_faces as people
+
+        cam = reframe.find_webcam(people.screen_share())
+        assert cam is not None
+        assert cam.x + cam.w / 2 > 0.6, "it is on the right"
+        assert cam.y + cam.h / 2 < 0.4, "and near the top"
+        assert cam.seen > 0.5, "and it stays there"
+
+    def test_a_person_on_camera_is_not_a_webcam_overlay(self):
+        """The ordinary case: somebody filmed, filling the frame. Stacking
+        that would put their forehead over their chin."""
+        import synth_faces as people
+
+        assert reframe.find_webcam(people.one_person()) is None
+
+    def test_an_empty_room_is_not_one_either(self):
+        import synth_faces as people
+
+        assert reframe.find_webcam(people.nobody()) is None
+
+    def test_the_output_is_still_portrait(self, tmp_path):
+        import synth_faces as people
+
+        from core.ffmpeg_ops import probe
+
+        out = tmp_path / "stacked.mp4"
+        reframe.to_portrait(people.screen_share(), out, work_dir=tmp_path)
+        found = probe(out)
+        assert (found.width, found.height) == (reframe.OUT_W, reframe.OUT_H)
+
+    def test_the_webcam_gets_the_top_third(self):
+        cam = reframe.Webcam(x=0.75, y=0.06, w=0.05, h=0.09, seen=1.0)
+        chain = reframe.stacked_filter(cam, 1920, 1080)
+        top = int(reframe.OUT_H * reframe.CAM_SHARE) // 2 * 2
+        assert f"scale={reframe.OUT_W}:{top}" in chain
+        assert f"scale={reframe.OUT_W}:{reframe.OUT_H - top}" in chain
+        assert "vstack=inputs=2" in chain
+
+    def test_the_crop_is_the_overlay_not_the_face(self):
+        """The detector returns eyes to chin. Cropping to that fills the top
+        third with a nose; a webcam box is head and shoulders."""
+        cam = reframe.Webcam(x=0.75, y=0.06, w=0.05, h=0.09, seen=1.0)
+        chain = reframe.stacked_filter(cam, 1920, 1080)
+        crop = chain.split("[cam]crop=")[1].split(",")[0]
+        w, h = (int(v) for v in crop.split(":")[:2])
+        assert w > 0.05 * 1920 * 2, "the box has to be wider than the face"
+        assert h > 0.09 * 1080 * 1.5
+
+    def test_the_screen_half_is_the_middle_of_the_screen(self):
+        cam = reframe.Webcam(x=0.88, y=0.04, w=0.05, h=0.09, seen=1.0)
+        chain = reframe.stacked_filter(cam, 1920, 1080)
+        crop = chain.split("[scr]crop=")[1].split(",")[0]
+        w, h, x, y = (int(v) for v in crop.split(":"))
+        assert abs((x + w / 2) - 1920 / 2) < 4, "horizontally centred"
+        assert abs((y + h / 2) - 1080 / 2) < 4, "and vertically"
+
+    def test_every_crop_fits_inside_the_frame(self):
+        """A crop that runs off the edge is an ffmpeg error, not a bad shot."""
+        for x, y in ((0.0, 0.0), (0.95, 0.0), (0.0, 0.92), (0.95, 0.92)):
+            cam = reframe.Webcam(x=x, y=y, w=0.06, h=0.09, seen=1.0)
+            chain = reframe.stacked_filter(cam, 1920, 1080)
+            for part in ("[cam]crop=", "[scr]crop="):
+                w, h, cx, cy = (
+                    int(v) for v in chain.split(part)[1].split(",")[0].split(":"))
+                assert cx >= 0 and cy >= 0
+                assert cx + w <= 1920 and cy + h <= 1080, f"{part} at {x},{y}"
+
+    def test_forcing_follow_ignores_the_webcam(self, tmp_path):
+        import synth_faces as people
+
+        from core.ffmpeg_ops import probe
+
+        out = tmp_path / "followed.mp4"
+        reframe.to_portrait(people.screen_share(), out, work_dir=tmp_path,
+                            layout="follow")
+        assert probe(out).width == reframe.OUT_W

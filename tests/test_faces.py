@@ -61,7 +61,17 @@ class TestWhenSomethingHappensToAFace:
 
     def test_the_close_up_says_how_much_of_the_frame_it_filled(self):
         found = faces.watch(clips.leans_in(at=20.0))
-        assert found.close_ups[0][1] > 0.06
+        assert found.close_ups[0][1] >= faces.CLOSE_UP_AREA
+
+    def test_a_close_up_is_a_jump_against_this_face_not_a_fixed_size(self):
+        """The same lean has to read as a close-up whatever the box sizes
+        happen to be, or every change to the detector silently retunes it.
+        The detector got finer, every box shrank by about a third, and a
+        floor set against the old inflated boxes stopped firing at all."""
+        found = faces.watch(clips.leans_in(at=20.0))
+        before = max((f.area for fr in found.frames[:60] for f in fr), default=0.0)
+        after = found.close_ups[0][1]
+        assert after > before * 1.8, "it is the jump that makes it a close-up"
 
 
 class TestTheCostOfLooking:

@@ -51,9 +51,20 @@ class TestTheOrdering:
         assert score() > 85
 
     def test_more_evidence_beats_less(self):
-        one = score(heard={"laughs": [{"confidence": 0.9}], "speech_share": 0.6})
+        """One kind of evidence, with the others actually taken away.
+
+        Patching `heard` alone left the surges and the face reactions in
+        place, so "one kind" was three kinds with a quieter laugh - and the
+        test passed on a ranking where a lone signal reached half the event
+        axis on its own."""
+        one = score(
+            heard={"laughs": [{"confidence": 0.93}], "speech_share": 0.6},
+            seen={"surges": [], "cuts": [], "still_s": 0.0, "duration_s": 38},
+            watched_faces={"on_screen": 0.8, "biggest_face": 0.11,
+                           "reactions": [], "close_ups": []},
+        )
         several = score()
-        assert several > one, "agreement between kinds of evidence is the strongest signal"
+        assert several > one + 10, "agreement is the strongest thing a moment has"
 
     def test_a_bigger_audience_wins_all_else_equal(self):
         assert score(peak_viewers=43120) > score(peak_viewers=900)
@@ -197,3 +208,64 @@ class TestWhatCarriedTheClip:
 
     def test_it_is_reported_alongside_the_score(self):
         assert ranking.rank(clip()).as_dict()["carried_by"] == "event"
+
+
+class TestTheScoreHasToVaryBetweenClips:
+    """A hundred clips from one channel in an hour all scored within a point
+    or two of each other. 21 of their 100 points came from production and
+    reach - and a clip of people talking is *perfectly* produced, while reach
+    is the channel's viewer count and is the same for every clip it will ever
+    make. Two fifths of the score was a constant."""
+
+    def _nothing(self, **patch):
+        base = {
+            "heard": {"speech_share": 0.7, "music_share": 0.05, "laughs": [], "shouts": []},
+            "seen": {"surges": [{"size": 2.6}], "cuts": [], "still_s": 0.0, "duration_s": 40},
+            "watched_faces": {"on_screen": 0.8, "biggest_face": 0.12,
+                              "reactions": [], "close_ups": []},
+            "mood": {"dominant": "funny", "lift": 1.4, "confidence": 0.5,
+                     "emotive_lines": 20},
+            "chat": {"per_minute": 180.0, "burst_ratio": 1.2, "clip_requests": 0},
+            "said": {}, "verdict": {}, "peak_viewers": 15000, "duration_s": 40,
+        }
+        base.update(patch)
+        return base
+
+    def test_nothing_happening_ranks_far_below_something(self):
+        """Not a few points below - far below, or a hundred of them cannot be
+        told apart on a page."""
+        assert ranking.rank(self._nothing()).score < score() / 3
+
+    def test_being_well_lit_cannot_carry_a_clip(self):
+        """Production is the absence of a fault, not an achievement."""
+        flawless = ranking.rank(self._nothing()).score
+        rough = ranking.rank(self._nothing(
+            heard={"speech_share": 0.05, "music_share": 0.9, "laughs": [], "shouts": []},
+        )).score
+        assert flawless > rough, "a fault should still cost something"
+        assert flawless - rough < 12, "but being normal should not pay"
+
+    def test_a_penalty_can_never_raise_a_clip(self):
+        """The whole point of the shape: they multiply down from 1.0."""
+        for part in ("production", "reach"):
+            assert ranking.PENALTY_FLOOR[part] < 1.0
+        best = ranking.rank(clip()).score
+        assert best <= sum(ranking.MERIT.values())
+
+    def test_merit_is_only_things_that_vary_within_a_channel(self):
+        """Reach is a property of the channel, not of the clip, so it cannot
+        be allowed to rank two clips from the same channel against each other."""
+        assert set(ranking.MERIT) == {"event", "verdict", "reaction"}
+        assert sum(ranking.MERIT.values()) == 100.0
+
+    def test_the_spread_across_a_days_clips_is_wide(self):
+        """Two clips of nothing and one real moment have to land far apart."""
+        got = sorted(
+            ranking.rank(r).score for r in (
+                self._nothing(),
+                self._nothing(chat={"per_minute": 400.0, "burst_ratio": 1.0,
+                                    "clip_requests": 0}),
+                clip(),
+            )
+        )
+        assert got[-1] - got[0] > 50

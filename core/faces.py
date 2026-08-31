@@ -175,8 +175,19 @@ def detector():  # noqa: ANN201 - cv2.CascadeClassifier
 def find(frame, width: int = WIDTH, height: int = HEIGHT) -> list[Face]:  # noqa: ANN001
     """Faces in one greyscale frame, in fractions of the frame."""
     least = int(height * MIN_FACE)
+    # scaleFactor 1.1, not 1.2. The step is how much the search window grows
+    # between passes, so 1.2 leaves 20% gaps in the sizes it looks for and a
+    # face that falls between two of them is not found at all. Measured on a
+    # webcam-sized face in the corner of a screen-share: 0 of 6 frames at 1.2,
+    # 6 of 6 at 1.1. That is why every radar on the dashboard read FACES 0 -
+    # not because there were no faces, because the sizes were not looked at.
+    #
+    # It costs 1.5s to 2.9s per 30-second window on real 1080p60, which is a
+    # tenth of a core more per stream and is worth it: faces are one of the
+    # five families of evidence, and a family that never fires cannot
+    # corroborate anything.
     found = detector().detectMultiScale(
-        frame, scaleFactor=1.2, minNeighbors=4, minSize=(least, least)
+        frame, scaleFactor=1.1, minNeighbors=4, minSize=(least, least)
     )
     return [
         Face(x=x / width, y=y / height, w=w / width, h=h / height)
@@ -337,8 +348,20 @@ def _find_reactions(
     return found
 
 
+#: How much of the frame a face fills before it counts as a close-up, by area.
+#:
+#: 0.03, down from 0.06, because the boxes got smaller when the detector got
+#: finer. A coarse scale step snaps to whichever search window it happens to
+#: reach and overshoots; stepping by 10% instead of 20% returns the face
+#: rather than the face and some wall, and every box shrank by about a third.
+#: A real lean-in measured 0.037 and was being missed by a floor set against
+#: the old, inflated boxes. 0.03 of the area is a face about a fifth of the
+#: frame across, which is a close-up by any reading.
+CLOSE_UP_AREA = 0.03
+
+
 def _find_close_ups(
-    per_frame: list[list[Face]], fps: float, *, share: float = 0.06
+    per_frame: list[list[Face]], fps: float, *, share: float = CLOSE_UP_AREA
 ) -> list[tuple[float, float]]:
     """Where a face suddenly filled much more of the frame than it had.
 

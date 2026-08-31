@@ -94,3 +94,34 @@ def nobody() -> Path:
         return c
 
     return _build("nobody", frame)
+
+
+@functools.cache
+def screen_share() -> Path:
+    """A computer screen with a small webcam in the corner.
+
+    The layout the crop tracker could not handle: the interesting thing is in
+    two places at once, so following the motion lands between them and shows
+    neither. Text on the left, a chart that changes, and the person in a box
+    top-right - the shape of every desk stream.
+    """
+    import cv2
+
+    def frame(i, c):
+        c[:] = (28, 28, 30)
+        # A "screen": rows of text and a bar chart that moves a little.
+        for row in range(6):
+            y = 90 + row * 55
+            cv2.rectangle(c, (60, y), (60 + 380 + (row * 37) % 180, y + 16),
+                          (170, 170, 175), -1)
+        for bar in range(5):
+            h = 40 + int(60 * abs(((i / FPS) + bar) % 4 - 2))
+            cv2.rectangle(c, (520 + bar * 46, 430 - h), (556 + bar * 46, 430),
+                          (90, 150, 220), -1)
+        # ...and the webcam, small, top right.
+        # 0.45 of frame height. A real facecam is ~350px on a 1080p stream,
+        # which is a third of the height; this fixture is half that size, so
+        # the same overlay has to be the same *share* to stay findable.
+        return _place(c, 0.45, 0.80, 0.25)
+
+    return _build("screenshare2", frame)

@@ -39,20 +39,50 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-#: What each part of the answer is worth. The ordering is the argument.
+#: What a clip is worth, before anything is taken off it.
 #:
-#: The event outweighs the reaction because a reaction to nothing is what
-#: chat does all day, and this bot has already cut two clips proving it. The
-#: verdict sits near the top because it is the only opinion here formed by
-#: something that watched the video. Production is worth as much as reach
-#: because an unwatchable clip of a huge moment is worth nothing at all, and
-#: reach is the smallest because it is the one thing the bot did not earn.
+#: Only three things, and all three vary between two clips of the same stream.
+#: That is the whole test for belonging here: a hundred clips off one channel
+#: in an hour all scored within a point or two of each other, because 21 of
+#: their 100 points came from production and reach - and a clip of people
+#: talking is *perfectly* produced, while reach is the channel's viewer count
+#: and is identical for every clip it will ever make. Two fifths of the score
+#: was a constant, which is two fifths of the score saying nothing.
+#:
+#: The event outweighs everything because it is the only part that says
+#: something happened. The verdict is next because it is the only opinion
+#: formed by something that watched the video. The reaction is last because a
+#: reaction to nothing is what chat does all day.
+MERIT: dict[str, float] = {
+    "event": 50.0,
+    "verdict": 30.0,
+    "reaction": 20.0,
+}
+
+#: ...and what can be taken off it. These do not add.
+#:
+#: Production and reach are floors, not contributions. Being watchable is not
+#: an achievement - it is the absence of a fault - and a clip that is hard to
+#: follow, or that happened in front of nobody, should lose something rather
+#: than a normal one gaining something. So each is a multiplier that starts at
+#: the floor below and reaches 1.0, and neither can ever push a clip up.
+PENALTY_FLOOR: dict[str, float] = {
+    #: An unwatchable clip of a huge moment keeps half its merit.
+    "production": 0.5,
+    #: A moment in front of nobody is still a moment; it is worth less, not
+    #: nothing, and the bot did not earn the audience either way. Kept narrow
+    #: for that reason: on a strong clip the whole span from 900 viewers to
+    #: 43,000 is worth about six points, which is a tiebreak rather than a
+    #: ranking.
+    "reach": 0.75,
+}
+
+#: Kept so the page can still weight the parts it draws. Penalties are shown
+#: at what they can cost, which is what a reader wants to know about them.
 WEIGHTS: dict[str, float] = {
-    "event": 34.0,
-    "verdict": 26.0,
-    "reaction": 18.0,
-    "production": 14.0,
-    "reach": 8.0,
+    **MERIT,
+    "production": 100.0 * (1.0 - PENALTY_FLOOR["production"]),
+    "reach": 100.0 * (1.0 - PENALTY_FLOOR["reach"]),
 }
 
 #: Viewers at which reach counts as full marks. Logarithmic below it, because
@@ -154,7 +184,12 @@ def event_score(
     kinds.sort(reverse=True)
     best = kinds[0]
     agreement = sum(kinds[1:]) / max(len(kinds) - 1, 1)
-    return _clamp(0.72 * best + 0.28 * agreement * 2.0), detail
+    detail["kinds"] = sum(1 for k in kinds if k > 0.05)
+    # Weighted towards agreement rather than towards the loudest thing. At
+    # 0.72/0.28 a single motion surge - the shape a phone carried down a
+    # street makes all evening - reached 0.46 of this axis on its own, which
+    # on a hundred clips of nothing was most of what separated them.
+    return _clamp(0.5 * best + 0.5 * agreement * 2.0), detail
 
 
 def reaction_score(
@@ -300,7 +335,17 @@ def rank(record: dict[str, Any]) -> Rank:
     parts["reach"], detail["reach"] = reach_score(record.get("peak_viewers") or 0)
     parts["verdict"], detail["verdict"] = verdict_score(record.get("verdict") or {})
 
-    score = sum(WEIGHTS[name] * value for name, value in parts.items())
+    # Merit first, then what comes off it. A penalty can only ever reduce, so
+    # a clip cannot climb the list by being well lit.
+    merit = sum(MERIT[name] * parts[name] for name in MERIT)
+    kept = 1.0
+    for name, floor in PENALTY_FLOOR.items():
+        factor = floor + (1.0 - floor) * parts[name]
+        detail.setdefault(name, {})["keeps"] = round(factor, 3)
+        kept *= factor
+    score = merit * kept
+    detail["merit"] = round(merit, 1)
+    detail["kept"] = round(kept, 3)
 
     # A clip the model watched and refused is not ranked, it is rejected. The
     # ordering is over clips worth posting; something that failed the gate is
