@@ -304,7 +304,11 @@ class Settings(BaseSettings):
     #: cut something nobody has watched is the right default the moment
     #: posting stops going past a person.
     verdict_enabled: bool = True
-    verdict_required: bool = True
+    #: A clip nothing watched may not be *posted* automatically. It may still
+    #: be kept for a person to look at - those are different questions, and
+    #: conflating them cost a day of clips: this used to delete the candidate,
+    #: so once the day's look budget was spent nothing could be caught at all.
+    verdict_required_to_post: bool = True
     #: How sure it has to be. Refusing a mediocre clip costs one clip; posting
     #: one costs the account.
     verdict_min_confidence: float = 0.55

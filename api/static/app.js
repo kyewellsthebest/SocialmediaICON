@@ -147,6 +147,7 @@ async function renderLive() {
   paintStreams(streams, { running, queued, resuming, stuck, hint: data.hint,
                           diagnosis: data.diagnosis, health: data.health });
 
+  paintFunnel(data.funnel || {});
   paintRoster(data.roster || {});
   paintYield(data.yield || {});
 
@@ -230,6 +231,36 @@ function paintStreams(streams, status) {
     : "Nothing is being watched."))}</p>` +
     (status.diagnosis && status.diagnosis !== said
       ? `<p class="muted">${esc(status.diagnosis)}</p>` : "");
+}
+
+/* One clip in a day is either "it looked at four thousand moments and only
+   one was any good" or "it only ever looked at six", and those need opposite
+   fixes. This is the arithmetic behind whichever it is. */
+function paintFunnel(f) {
+  const card = $("#funnel");
+  card.hidden = !f.scored;
+  if (card.hidden) return;
+
+  $("#funnel-label").textContent = `${f.scored} moments scored`;
+  $("#funnel-body").innerHTML = bars((f.stages || []).map((r) => [r.stage, r.n]));
+
+  const bits = [];
+  if (f.near_misses) {
+    bits.push(`${f.near_misses} came within a quarter of the bar of ${f.bar} `
+      + `(best ${f.near_best}). That many near misses is what a bar set too `
+      + `high looks like - moving it would have changed the answer for all of `
+      + `them.`);
+  } else {
+    bits.push(`Nothing came close to the bar of ${f.bar}, so lowering it would `
+      + `not have caught anything. What is missing is evidence, not leniency.`);
+  }
+  bits.push(`${f.looks_spent} of ${f.looks_budget} model looks spent today, `
+    + `paced across the day. A moment cut after they run out is still kept - `
+    + `it just ranks below the ones something watched.`);
+  if (f.declined) {
+    bits.push(`${f.declined} were watched and turned down on their merits.`);
+  }
+  $("#funnel-note").textContent = bits.join(" ");
 }
 
 /* Three of ten slots filled is either "there were only three streams worth

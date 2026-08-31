@@ -989,21 +989,38 @@ class TestNothingIsCutThatNothingHasWatched:
         assert sup.declined[-1]["happening"] == "a man reads a menu"
         assert sup.declined[-1]["why"] == "nothing happens"
 
-    def test_a_candidate_nothing_could_watch_is_refused(self, monkeypatch):
+    def test_a_candidate_nothing_could_watch_is_kept_anyway(self, monkeypatch):
+        """This used to delete it, and that cost a day of clips.
+
+        The harvest loop spends a look per candidate it tries and a declined
+        one produces nothing, so the day's budget went early - and every
+        candidate after that arrived here unwatched and was binned. One clip
+        in twenty-four hours, with the rest cut, held and thrown away.
+        """
         from core.verdict import Verdict
 
         sup, watched, found = self._ready(monkeypatch)
-        monkeypatch.setattr(settings, "verdict_required", True)
-        monkeypatch.setattr(sup, "consider", lambda *a, **k: Verdict(problems=["no key"]))
-        assert _catch(sup, watched, found, time.time()) is None
+        monkeypatch.setattr(sup, "consider", lambda *a, **k: Verdict(
+            problems=["the daily look budget of 30 is spent"]))
+        record = _catch(sup, watched, found, time.time())
+        assert record is not None, "a clip nothing watched is worth less, not nothing"
+        assert record["verdict"]["watched"] is False
 
-    def test_unless_that_requirement_is_switched_off(self, monkeypatch):
+    def test_an_unwatched_clip_ranks_below_a_watched_one(self, monkeypatch):
+        """Which is what makes keeping it safe: it sorts to the bottom of the
+        review queue rather than pretending to be as good as the rest."""
+        from core import ranking
         from core.verdict import Verdict
 
         sup, watched, found = self._ready(monkeypatch)
-        monkeypatch.setattr(settings, "verdict_required", False)
-        monkeypatch.setattr(sup, "consider", lambda *a, **k: Verdict(problems=["no key"]))
-        assert _catch(sup, watched, found, time.time()) is not None
+        monkeypatch.setattr(sup, "consider", lambda *a, **k: Verdict(problems=["spent"]))
+        unwatched = _catch(sup, watched, found, time.time())
+
+        sup2, watched2, found2 = self._ready(monkeypatch)
+        _approves(sup2, monkeypatch)
+        seen = _catch(sup2, watched2, found2, time.time())
+
+        assert ranking.rank(unwatched).score < ranking.rank(seen).score
 
     def test_an_approval_is_recorded_with_the_clip(self, monkeypatch):
         sup, watched, found = self._ready(monkeypatch)
@@ -1632,3 +1649,100 @@ class TestItSaysWhyItIsHoldingThisMany:
         livestate.watchdog_ran()
         assert Supervisor().status()["roster"]["watchdog_last_s"] is not None
         livestate._fallback.clear()
+
+
+class TestWhereTheMomentsWent:
+    """"Is it too harsh, or is it missing things" is not answerable from a
+    count of clips. A day that scored four thousand windows and rejected all
+    but one as too weak, and a day that scored six windows in total, produce
+    the same one clip and need opposite fixes."""
+
+    def test_it_counts_every_stage(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_min_score", 20.0)
+        sup = Supervisor()
+        for score in (2.0, 5.0, 18.0, 40.0):
+            sup._tally("scored", score)
+            if score < 20.0:
+                sup._tally("too weak", score)
+        found = sup.funnel_report()
+        assert found["scored"] == 4
+        assert {"stage": "too weak", "n": 3} in found["stages"]
+        assert found["bar"] == 20.0
+
+    def test_a_near_miss_is_kept_and_a_hopeless_one_is_not(self, monkeypatch):
+        """A hundred windows scoring 18 against a bar of 20 says the bar is
+        wrong. A hundred scoring 3 says it is not. The difference is the whole
+        question."""
+        monkeypatch.setattr(settings, "live_min_score", 20.0)
+        sup = Supervisor()
+        sup._tally("too weak", 18.5)
+        sup._tally("too weak", 3.0)
+        found = sup.funnel_report()
+        assert found["near_misses"] == 1
+        assert found["near_best"] == 18.5
+
+    def test_near_misses_do_not_grow_without_bound(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_min_score", 20.0)
+        sup = Supervisor()
+        for _ in range(500):
+            sup._tally("too weak", 19.0)
+        assert len(sup.funnel["near_misses"]) <= 40
+
+    def test_a_new_day_starts_again(self, monkeypatch):
+        sup = Supervisor()
+        sup._tally("scored", 5.0)
+        sup.funnel["day"] = "1999-01-01"
+        sup._tally("scored", 5.0)
+        assert sup.funnel_report()["scored"] == 1
+
+    def test_the_look_budget_is_reported(self, monkeypatch):
+        monkeypatch.setattr(settings, "verdict_per_day", 30)
+        sup = Supervisor()
+        sup.looked.extend([1.0, 2.0])
+        found = sup.funnel_report()
+        assert found["looks_spent"] == 2
+        assert found["looks_budget"] == 30
+
+    def test_it_reaches_the_page(self):
+        assert "funnel" in Supervisor().status()
+
+
+class TestTheLookBudgetLastsTheDay:
+    """A cap alone is spent in the first hour: the harvest loop offers the
+    strongest held moment on every tick, a refusal costs a look and produces
+    nothing, and by mid-morning there is nothing left for the evening - which
+    on these channels is when things happen."""
+
+    def _sup(self, monkeypatch):
+        monkeypatch.setattr(settings, "verdict_enabled", True)
+        monkeypatch.setattr(settings, "verdict_per_day", 24)  # one an hour
+        return Supervisor()
+
+    def _candidate(self):
+        return type("C", (), {
+            "raw": Path("/nonexistent.mp4"), "senses": {}, "about": "", "said": None,
+            "faces_at": [], "quotes": [], "channel": "x",
+        })()
+
+    def test_a_second_look_straight_after_the_first_is_paced(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        sup.looked.append(time.time())
+        found = sup.consider(self._candidate())
+        assert found.watched is False
+        assert "paced" in " ".join(found.problems)
+
+    def test_it_says_how_long_until_the_next_one(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        sup.looked.append(time.time())
+        assert "min until the next one" in " ".join(sup.consider(self._candidate()).problems)
+
+    def test_the_first_look_of_the_day_is_not_held_up(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        monkeypatch.setattr("core.verdict.look", lambda *a, **k: "looked")
+        assert sup.consider(self._candidate()) == "looked"
+
+    def test_a_look_long_enough_ago_is_allowed(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        sup.looked.append(time.time() - 7200)  # two hours, pace is one hour
+        monkeypatch.setattr("core.verdict.look", lambda *a, **k: "looked")
+        assert sup.consider(self._candidate()) == "looked"

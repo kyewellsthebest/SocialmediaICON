@@ -638,6 +638,8 @@ class Supervisor:
     roster_count: dict[str, Any] = field(default_factory=dict)
     #: Channels that passed the gate but could not be attached, and why.
     attach_failed: dict[str, str] = field(default_factory=dict)
+    #: Where today's scored windows went. See _tally.
+    funnel: dict[str, Any] = field(default_factory=dict)
     #: The last poll that actually returned. Zero until one does.
     last_good_poll: float = 0.0
     #: Channels found asleep, and when they may be picked up again. A stream
@@ -1210,14 +1212,19 @@ class Supervisor:
             # there is a clip at all. Without them the watcher cut its best
             # five minutes of nothing every hour - a betting screen with music
             # over it, scored 18.0, entirely on how many people were typing.
+            self._tally("scored", found.score)
             if found.score < settings.live_min_score:
                 watched.last_reason = "too weak"
+                self._tally("too weak", found.score)
                 continue
             if found.event_score < settings.live_min_event_score:
                 watched.last_reason = "nothing happened"
+                self._tally("no event", found.score)
                 continue
             if now - watched.last_catch_at < COOLDOWN_S:
+                self._tally("cooling down", found.score)
                 continue
+            self._tally("cut", found.score)
 
             # Cut it now and decide later. The output slot may be fifty
             # minutes away and the buffer only remembers five, so waiting for
@@ -1254,6 +1261,20 @@ class Supervisor:
             return verdictlib.Verdict(
                 problems=[f"the daily look budget of {settings.verdict_per_day} is spent"]
             )
+        # Paced, not just capped. A cap alone is spent in the first hour - the
+        # harvest loop offers the strongest held moment on every tick, a
+        # refusal costs a look and produces nothing, and by mid-morning the
+        # day's looks are gone. Then nothing gets watched at all, and the
+        # evening - which on these channels is when things happen - is judged
+        # entirely on arithmetic.
+        gap = 86400.0 / max(settings.verdict_per_day, 1)
+        if self.looked and time.time() - self.looked[-1] < gap:
+            waited = time.time() - self.looked[-1]
+            return verdictlib.Verdict(problems=[
+                f"looks are paced one per {gap / 60:.0f} min so the budget of "
+                f"{settings.verdict_per_day} lasts the day; {(gap - waited) / 60:.0f} "
+                "min until the next one"
+            ])
 
         self.looked.append(time.time())
         del self.looked[: max(0, len(self.looked) - 500)]
@@ -1454,13 +1475,26 @@ class Supervisor:
                 candidate.channel, judged.happening or judged.why,
             )
             return None
-        if settings.verdict_required and settings.verdict_enabled and not judged.watched:
-            candidate.discard()
+        # Deliberately NOT discarded when nothing watched it.
+        #
+        # This threw away every clip after the thirtieth look of the day. The
+        # harvest loop spends a look per candidate it tries, a declined one
+        # costs a look and produces nothing, so the budget went early - and
+        # from then on every candidate reached here unwatched and was deleted.
+        # One clip a day, and twenty-three hours of moments cut, held, and
+        # binned. The clip that did come out was good, which made the failure
+        # look like taste rather than an arithmetic cliff.
+        #
+        # A clip nothing watched is worth less, not worth nothing: the ranking
+        # already scores its verdict part at zero, so it sorts below the
+        # watched ones and a person decides. What must never happen is
+        # *posting* something nothing watched, and that is a different gate -
+        # live_posting_enabled - which this never was.
+        if settings.verdict_enabled and not judged.watched:
             self._note(
-                f"{candidate.channel}: not cutting something nothing has watched "
+                f"{candidate.channel}: keeping this unwatched "
                 f"({'; '.join(judged.problems) or 'no verdict'})"
             )
-            return None
 
         # The model may have found the good part inside the window it was
         # given. Trusting it about where the moment is, is the same act as
@@ -1786,6 +1820,7 @@ class Supervisor:
             "health": self.health(),
             "yield": self._yield_quietly(),
             "lag": self.sense_lag(),
+            "funnel": self.funnel_report(),
             "roster": {
                 **self.roster_count,
                 "watching": len(self.watching),
@@ -1883,6 +1918,53 @@ class Supervisor:
         for candidate in self.shortlist:
             candidate.discard()
         self.shortlist.clear()
+
+    def _tally(self, stage: str, score: float) -> None:
+        """Count what happened to one scored window, and how strong it was.
+
+        The question this exists for is "is it too harsh, or is it missing
+        things", and neither is answerable from a count of clips. A day that
+        scored four thousand windows and rejected all but one as too weak, and
+        a day that scored six windows in total, produce the same one clip and
+        need opposite fixes.
+
+        The near-misses matter most: a hundred windows scoring 18 against a
+        bar of 20 says the bar is wrong, and a hundred scoring 3 says it is
+        not.
+        """
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        if self.funnel.get("day") != day:
+            self.funnel = {"day": day, "stages": {}, "near_misses": []}
+        stages = self.funnel["stages"]
+        stages[stage] = stages.get(stage, 0) + 1
+        # Within a quarter of the bar counts as a near miss - close enough
+        # that moving the bar would have changed the answer.
+        if stage == "too weak" and score >= settings.live_min_score * 0.75:
+            near = self.funnel["near_misses"]
+            near.append(round(score, 1))
+            del near[:-40]
+
+    def funnel_report(self) -> dict[str, Any]:
+        """Where today's moments went, for the page to show."""
+        stages = dict(self.funnel.get("stages") or {})
+        scored = stages.get("scored", 0)
+        near = list(self.funnel.get("near_misses") or [])
+        return {
+            "day": self.funnel.get("day"),
+            "scored": scored,
+            "stages": [
+                {"stage": k, "n": v} for k, v in sorted(
+                    ((k, v) for k, v in stages.items() if k != "scored"),
+                    key=lambda kv: -kv[1],
+                )
+            ],
+            "near_misses": len(near),
+            "near_best": max(near) if near else None,
+            "bar": settings.live_min_score,
+            "looks_spent": len(self.looked),
+            "looks_budget": settings.verdict_per_day,
+            "declined": len(self.declined),
+        }
 
     def _note(self, message: str) -> None:
         log.warning("supervisor: %s", message)
