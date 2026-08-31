@@ -49,6 +49,11 @@ TICK_S = 5.0
 #: Ignore a trigger this close to one already taken on the same channel: the
 #: same moment keeps scoring for as long as chat keeps talking about it.
 COOLDOWN_S = 180.0
+#: What one look costs, near enough to put a number on the page. Measured for
+#: the default model and effort at 12 frames and 4 face crops with the system
+#: prompt cached; it is wrong the moment either is changed, and wrong by a
+#: factor rather than an order of magnitude, which is the accuracy this is for.
+LOOK_COST_USD = 0.016
 
 
 class SupervisorError(RuntimeError):
@@ -1963,6 +1968,12 @@ class Supervisor:
             "bar": settings.live_min_score,
             "looks_spent": len(self.looked),
             "looks_budget": settings.verdict_per_day,
+            "look_model": settings.verdict_model,
+            # Roughly, and roughly is the point: a bill nobody can see is how
+            # a budget of thirty looks a day survived a redesign that was
+            # meant to clip everything.
+            "spent_usd": round(len(self.looked) * LOOK_COST_USD, 2),
+            "budget_usd": round(settings.verdict_per_day * LOOK_COST_USD, 2),
             "declined": len(self.declined),
         }
 

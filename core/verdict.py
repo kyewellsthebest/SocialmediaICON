@@ -59,6 +59,8 @@ class Verdict:
     worth_it: bool = False
     #: 0..1. How sure it is that a stranger would watch this to the end.
     confidence: float = 0.0
+    #: The model that judged this, so a later comparison knows who said it.
+    model: str = ""
     #: One sentence describing what is actually happening on screen.
     happening: str = ""
     #: What kind of moment - funny, shocking, skilful, an argument, nothing.
@@ -85,6 +87,7 @@ class Verdict:
             "watched": self.watched,
             "worth_it": self.worth_it,
             "confidence": round(self.confidence, 3),
+            "model": self.model,
             "happening": self.happening,
             "kind": self.kind,
             "setting": self.setting,
@@ -349,7 +352,17 @@ def look(
         response = client.messages.create(
             model=settings.verdict_model,
             max_tokens=2000,
-            system=SYSTEM,
+            # Cached: this prompt is identical on every look and it is a
+            # quarter of the input. Cache reads are a tenth of the price, so
+            # it pays for itself on the second call of the day and every one
+            # after it. It has to stay byte-identical to keep doing so - no
+            # timestamps, no channel name, nothing per-call. All of that is in
+            # the message, which comes after.
+            system=[{
+                "type": "text",
+                "text": SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=[{"role": "user", "content": content}],
             thinking={"type": "adaptive"},
             output_config={
@@ -367,6 +380,11 @@ def look(
 
     return Verdict(
         watched=True,
+        # Which model said so, stored on the clip. The model tier is a cost
+        # decision that can be revisited, and revisiting it means comparing
+        # what two of them said about comparable clips - which is impossible
+        # after the fact unless each verdict remembers its own author.
+        model=getattr(response, "model", "") or settings.verdict_model,
         worth_it=bool(payload.get("worth_it")),
         # Clamped here rather than in the schema, which cannot express a range.
         confidence=min(1.0, max(0.0, float(payload.get("confidence") or 0.0))),

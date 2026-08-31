@@ -289,15 +289,34 @@ class Settings(BaseSettings):
     #: ...and this much of it has to come from something actually happening
     #: rather than from how busy or loud the channel generally is.
     live_min_event_score: float = 15.0
-    #: The last check before a clip exists: a model looks at the frames, the
-    #: transcript and the evidence and says whether anything is happening.
-    #: Opus because this is the judgement the whole pipeline is built to
-    #: reach, and because it is the only thing standing between a bad clip and
-    #: an audience once posting is automatic. At about five cents a candidate
-    #: and a dozen or so candidates a day it is the cheapest part of the bill;
-    #: claude-sonnet-5 is a third of that if it ever stops being.
-    verdict_model: str = "claude-opus-5"
-    verdict_effort: str = "high"
+    # A model looks at the frames, the transcript and the evidence and says
+    # whether anything is happening. It is the only thing that can tell a man
+    # laughing at his own joke about nothing from a man falling off a chair -
+    # they make the same envelope - so what it costs decides how much of a day
+    # gets judged at all.
+    #
+    # The measured bill, at 12 frames and 4 face crops (4,866 input tokens)
+    # with the system prompt cached:
+    #
+    #     opus-5   effort high     $0.074 a look     27 a day for $60/month
+    #     opus-5   effort medium   $0.041            49
+    #     sonnet-5 effort medium   $0.016           122
+    #     haiku-4.5 effort medium  $0.008           244
+    #
+    # Thinking tokens dominate, not the images, so effort is the larger lever
+    # and the model tier is the second. Sonnet at medium because this is a
+    # perception task with a small schema - look at sixteen pictures and say
+    # what is going on - rather than the deep reasoning Opus at high effort is
+    # priced for, and because four times as many clips judged is worth more
+    # here than a slightly better opinion on a quarter of them. Not Haiku: the
+    # thing this call exists to catch is a betting screen with music over it,
+    # and noticing that nothing is happening in an image that is full of
+    # motion takes taste.
+    #
+    # Every verdict records which model made it, so this can be revisited by
+    # comparing what two of them said rather than by argument.
+    verdict_model: str = "claude-sonnet-5"
+    verdict_effort: str = "medium"
     #: How many frames it gets to look at. One every three or four seconds.
     verdict_frames: int = 12
     #: Whether it may look at all, and what to do when it cannot. Refusing to
@@ -314,10 +333,15 @@ class Settings(BaseSettings):
     verdict_min_confidence: float = 0.55
     #: A ceiling on how many candidates a day may be watched, because a
     #: refused candidate does not count against the clip cap and so cannot
-    #: throttle itself. At roughly five cents a look this is the difference
-    #: between a predictable bill and an open one. Held in memory, so a deploy
-    #: resets it - the bound is a guard against a bad day, not an accountant.
-    verdict_per_day: int = 30
+    #: throttle itself. Held in memory, so a deploy resets it - the bound is a
+    #: guard against a bad day, not an accountant.
+    #:
+    #: 120 at $0.016 is $58 a month, which is the look budget inside $100 once
+    #: Railway is paid for. The looks are paced across the day rather than
+    #: spent in the first hour, and a moment cut after they run out is kept
+    #: unjudged rather than thrown away - so this is a ceiling on how much is
+    #: *judged*, never on how much is caught.
+    verdict_per_day: int = 120
     #: How many cut-but-undecided moments to hold while waiting for an output
     #: slot. The buffer only remembers five minutes and the gap between clips
     #: is an hour, so a moment that is not cut immediately is gone - holding
