@@ -1949,15 +1949,25 @@ class Supervisor:
         """
         day = datetime.now(UTC).strftime("%Y-%m-%d")
         if self.funnel.get("day") != day:
-            self.funnel = {"day": day, "stages": {}, "near_misses": []}
+            self.funnel = {"day": day, "stages": {}, "near_misses": {}}
         stages = self.funnel["stages"]
         stages[stage] = stages.get(stage, 0) + 1
         # Within a quarter of the bar counts as a near miss - close enough
-        # that moving the bar would have changed the answer.
-        if stage == "too weak" and score >= settings.live_min_score * 0.75:
-            near = self.funnel["near_misses"]
-            near.append(round(score, 1))
-            del near[:-40]
+        # that moving the bar would have changed the answer. Kept for both
+        # bars a moment can fail at, because either one being wrong looks
+        # exactly like the streams being quiet.
+        bars = {
+            "too weak": settings.live_min_score,
+            "one signal only": settings.live_lone_signal_score,
+        }
+        bar = bars.get(stage)
+        if bar is not None and score >= bar * 0.75:
+            near = self.funnel.setdefault("near_misses", {})
+            if not isinstance(near, dict):  # an older shape, from before
+                near = self.funnel["near_misses"] = {}
+            rows = near.setdefault(stage, [])
+            rows.append(round(score, 1))
+            del rows[:-40]
 
     def spent_today(self) -> float:
         """What today's looks have cost, in dollars.
@@ -1983,7 +1993,8 @@ class Supervisor:
         """Where today's moments went, for the page to show."""
         stages = dict(self.funnel.get("stages") or {})
         scored = stages.get("scored", 0)
-        near = list(self.funnel.get("near_misses") or [])
+        near_by = self.funnel.get("near_misses") or {}
+        near = [v for rows in near_by.values() for v in rows]
         return {
             "day": self.funnel.get("day"),
             "scored": scored,
@@ -1996,6 +2007,15 @@ class Supervisor:
             "near_misses": len(near),
             "near_best": max(near) if near else None,
             "bar": settings.live_min_score,
+            # Split by which bar they nearly cleared, because they say
+            # different things: near the score bar means the streams are
+            # quiet, near the lone-signal bar means that number is wrong.
+            "near_by_bar": [
+                {"stage": k, "n": len(v), "best": max(v), "bar": (
+                    settings.live_min_score if k == "too weak"
+                    else settings.live_lone_signal_score)}
+                for k, v in near_by.items() if v
+            ],
             **self._pace(stages),
             "looks_spent": int(self.spend.get("looks") or 0),
             "look_model": settings.verdict_model,

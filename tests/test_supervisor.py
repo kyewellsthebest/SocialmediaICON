@@ -1883,3 +1883,43 @@ class TestALoneSignalHasToBeEnormous:
         sup.tick(now=time.time())
         stages = {r["stage"]: r["n"] for r in sup.funnel_report()["stages"]}
         assert stages.get("one signal only") == 1
+
+
+class TestBothBarsAreWatchedForBeingWrong:
+    """The lone-signal bar of 55 was picked from a single screenshot. A bar
+    picked that way being too high looks exactly like the streams being quiet,
+    so it has to be watched the same way the score bar is."""
+
+    def _sup(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_min_score", 20.0)
+        monkeypatch.setattr(settings, "live_lone_signal_score", 55.0)
+        return Supervisor()
+
+    def test_a_near_miss_on_the_lone_signal_bar_is_kept(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        sup._tally("one signal only", 52.0)
+        rows = {r["stage"]: r for r in sup.funnel_report()["near_by_bar"]}
+        assert rows["one signal only"]["n"] == 1
+        assert rows["one signal only"]["best"] == 52.0
+        assert rows["one signal only"]["bar"] == 55.0
+
+    def test_a_hopeless_lone_signal_is_not_a_near_miss(self, monkeypatch):
+        """Motion of 20 against a bar of 55 says nothing about the bar."""
+        sup = self._sup(monkeypatch)
+        sup._tally("one signal only", 20.0)
+        assert sup.funnel_report()["near_by_bar"] == []
+
+    def test_the_two_bars_are_counted_apart(self, monkeypatch):
+        """Near the score bar means the streams were quiet; near the lone
+        bar means that number is wrong. Summing them hides both."""
+        sup = self._sup(monkeypatch)
+        sup._tally("too weak", 18.0)
+        sup._tally("one signal only", 52.0)
+        rows = {r["stage"]: r["n"] for r in sup.funnel_report()["near_by_bar"]}
+        assert rows == {"too weak": 1, "one signal only": 1}
+
+    def test_neither_grows_without_bound(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        for _ in range(300):
+            sup._tally("one signal only", 52.0)
+        assert len(sup.funnel["near_misses"]["one signal only"]) <= 40

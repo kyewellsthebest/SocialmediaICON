@@ -268,14 +268,23 @@ function paintFunnel(f) {
         + `day's money ran out - those are the ones a bigger budget buys.`
       : ` Nothing was cut and left unjudged, so the budget is not what is `
         + `limiting the count.`));
-  if (f.near_misses) {
-    bits.push(`${f.near_misses} came within a quarter of the bar of ${f.bar} `
-      + `(best ${f.near_best}). That many near misses is what a bar set too `
-      + `high looks like - moving it would have changed the answer for all of `
-      + `them.`);
+  // Split by which bar they nearly cleared: they say different things. Near
+  // the score bar means the streams were quiet. Near the lone-signal bar
+  // means that number is wrong, and it is a number picked from one reading.
+  const near = f.near_by_bar || [];
+  if (near.length) {
+    for (const row of near) {
+      const what = row.stage === "one signal only"
+        ? `had one kind of evidence and nearly cleared the ${row.bar} a lone `
+          + `signal needs (best ${row.best}). If this is large, that bar is too `
+          + `high - it was picked from a single reading.`
+        : `came within a quarter of the score bar of ${row.bar} (best `
+          + `${row.best}), which is what a bar set too high looks like.`;
+      bits.push(`${row.n} ${what}`);
+    }
   } else {
-    bits.push(`Nothing came close to the bar of ${f.bar}, so lowering it would `
-      + `not have caught anything. What is missing is evidence, not leniency.`);
+    bits.push(`Nothing came close to either bar, so lowering one would not `
+      + `have caught anything. What is missing is evidence, not leniency.`);
   }
   bits.push(`$${f.spent_usd} of $${f.budget_usd} spent today on ${f.looks_spent} `
     + `looks (${f.look_model}), paced so the evening gets its share. A moment `
