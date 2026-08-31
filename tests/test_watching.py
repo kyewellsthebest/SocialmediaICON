@@ -174,3 +174,45 @@ class TestItReadsEveryFrame:
 class _Declares:
     def __init__(self, fps: float) -> None:
         self.fps = fps
+
+
+class TestACameraMovingIsNotAnEvent:
+    """A real reading: nineteen motion surges in thirty-two seconds on an IRL
+    stream - one every 1.7 seconds. Nineteen surges is not nineteen events, it
+    is a description of somebody holding a phone. It saturated the motion
+    signal and carried a score of 32 on its own."""
+
+    def _agitated(self, span_s=30.0, fps=20.0):
+        """Motion that jumps constantly, the way a handheld camera does."""
+        return [0.2 if i % 17 else 2.4 for i in range(int(span_s * fps))], fps
+
+    def _one_event(self, span_s=30.0, fps=20.0, at=20.0):
+        return [
+            2.6 if at * fps <= i < (at + 3) * fps else 0.2
+            for i in range(int(span_s * fps))
+        ], fps
+
+    def test_a_window_that_surges_throughout_reports_nothing(self):
+        motion, fps = self._agitated()
+        assert watching._find_surges(motion, fps) == []
+
+    def test_one_real_event_in_the_same_window_survives(self):
+        motion, fps = self._one_event()
+        found = watching._find_surges(motion, fps)
+        assert found, "a genuine surge must not be thrown out with the noise"
+        assert all(19.0 <= t <= 24.0 for t, _ in found)
+
+    def test_the_test_is_coverage_not_a_count(self):
+        """One four-second event collapses into five or six surges, and a
+        count cannot tell that from five separate ones. What separates them is
+        how much of the window they touch."""
+        motion, fps = self._one_event()
+        found = watching._find_surges(motion, fps)
+        touched = len({int(t) for t, _ in found})
+        assert len(found) >= 3, "the event does produce several"
+        assert touched / 30.0 < watching.AGITATED_SHARE
+
+    def test_a_planted_event_in_a_real_clip_is_still_found(self):
+        found = watching.watch(clips.calm_then_chaos(at=20.0))
+        assert found.surges, "the fixtures have to keep working"
+        assert any(19.0 <= t <= 25.0 for t, _ in found.surges)

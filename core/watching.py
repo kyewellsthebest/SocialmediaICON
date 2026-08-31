@@ -216,6 +216,27 @@ def watch(
     return found
 
 
+#: How much of a window surges may cover before none of them counts.
+#:
+#: A surge is "the picture moved far more than this stream normally moves",
+#: and on a phone carried through a party that is true every time the hand
+#: turns: a real reading showed nineteen of them in thirty-two seconds, one
+#: every 1.7 seconds. Nineteen surges is not nineteen events, it is a
+#: description of somebody holding a camera - and it saturated the motion
+#: signal, which then carried a score of 32 on its own.
+#:
+#: Coverage rather than a count, because one four-second event collapses into
+#: five or six surges and a count cannot tell that from five separate ones.
+#: What separates them is how much of the window they touch: an event is a
+#: moment in a window, and a moving camera is the whole window. Measured on
+#: the fixtures - a planted four-second event covers 17%, and the handheld
+#: reading covered most of it.
+#:
+#: A window this agitated has no baseline to be above, so the honest answer is
+#: that the eye cannot say anything about it, not that everything happened.
+AGITATED_SHARE = 0.35
+
+
 def _find_surges(
     motion: list[float], fps: float, *, over: float = 2.2, floor: float = 0.08
 ) -> list[tuple[float, float]]:
@@ -224,6 +245,9 @@ def _find_surges(
     A ratio, not a threshold. A nightclub stream sits at 0.118 average motion
     and a man at a desk at 0.009; a number that finds the interesting seconds
     in one of those finds every second of the other.
+
+    Returns nothing at all when they arrive faster than AGITATED_PER_S, which
+    is what a handheld camera does and is not what an event does.
     """
     back = max(1, int(BASELINE_S * fps))
     least = max(1, int(WARMUP_S * fps))
@@ -240,6 +264,15 @@ def _find_surges(
             found[-1] = (found[-1][0], max(found[-1][1], ratio))
         else:
             found.append((at, ratio))
+
+    span = len(motion) / max(fps, 1e-9)
+    touched = len({int(t) for t, _ in found})
+    if span > 0 and touched / span > AGITATED_SHARE:
+        log.info(
+            "watching: surges across %ds of a %.0fs window - the camera is "
+            "moving, not the stream; reporting none", touched, span,
+        )
+        return []
     return found
 
 
