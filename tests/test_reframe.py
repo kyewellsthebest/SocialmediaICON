@@ -338,3 +338,36 @@ class TestADeskStreamIsStackedNotFollowed:
         reframe.to_portrait(people.screen_share(), out, work_dir=tmp_path,
                             layout="follow")
         assert probe(out).width == reframe.OUT_W
+
+
+class TestTheWebcamStripDoesNotDragTheGameIn:
+    """The top strip is 1080x640, much wider than any webcam box, so filling
+    it by growing the crop sideways takes whatever is beside the person. On a
+    game stream that is the game: rendered that way, Ninja arrived in the top
+    third with a Fortnite character standing next to him."""
+
+    def _chain(self):
+        cam = reframe.Webcam(x=0.05, y=0.53, w=0.07, h=0.15, seen=1.0)
+        return reframe.stacked_filter(cam, 1920, 1080)
+
+    def test_the_camera_is_scaled_to_fit_not_to_fill(self):
+        assert "force_original_aspect_ratio=decrease" in self._chain()
+
+    def test_what_is_left_at_the_sides_is_the_camera_blurred(self):
+        """Not black bars, and not anything from outside the overlay."""
+        chain = self._chain()
+        assert "gblur" in chain
+        assert "force_original_aspect_ratio=increase" in chain
+        assert chain.count("[cam]crop=") == 1, "both layers come from one crop"
+
+    def test_the_sharp_camera_is_centred_in_the_strip(self):
+        assert "overlay=(W-w)/2:(H-h)/2" in self._chain()
+
+    def test_the_crop_is_the_overlay_and_not_an_aspect_ratio(self):
+        """Nothing has to be satisfied by the crop any more - the blur fills
+        the strip - so it can be the box the person is in and nothing else."""
+        cam = reframe.Webcam(x=0.05, y=0.53, w=0.07, h=0.15, seen=1.0)
+        chain = reframe.stacked_filter(cam, 1920, 1080)
+        w, h = (int(v) for v in chain.split("[cam]crop=")[1].split(",")[0].split(":")[:2])
+        # The face is 134x162 px; the overlay is that grown, not stretched to 27:16.
+        assert w / h < 1.5, f"{w}x{h} has been stretched to fill a wide strip"

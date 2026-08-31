@@ -443,6 +443,16 @@ def find_webcam(src: Path | str) -> Webcam | None:
     return Webcam(x=x, y=y, w=w, h=h, seen=steady)
 
 
+def _clip_box(x: float, y: float, w: float, h: float,
+              width: int, height: int) -> tuple[int, int, int, int]:
+    """A box moved and trimmed until it sits inside the frame, even-sided."""
+    w, h = min(w, float(width)), min(h, float(height))
+    x = min(max(x, 0.0), width - w)
+    y = min(max(y, 0.0), height - h)
+    even = lambda v: max(2, int(v) - int(v) % 2)  # noqa: E731
+    return even(x) if x else 0, even(y) if y else 0, even(w), even(h)
+
+
 def _fit(box: tuple[float, float, float, float], aspect: float,
          width: int, height: int) -> tuple[int, int, int, int]:
     """Grow a box to an aspect ratio about its own centre, inside the frame.
@@ -472,10 +482,12 @@ def stacked_filter(cam: Webcam, width: int, height: int) -> str:
 
     fx, fy, fw, fh = cam.pixels(width, height)
     # Out from the face to the box it is sitting in, about the face's centre.
+    # No aspect to satisfy any more - the strip is filled by the blur behind -
+    # so this is the overlay and nothing else.
     grow_w, grow_h = fw * CAM_ZOOM_OUT, fh * CAM_ZOOM_OUT
-    cx, cy, cw, ch = _fit(
-        (fx + fw / 2 - grow_w / 2, fy + fh / 2 - grow_h / 2, grow_w, grow_h),
-        OUT_W / top_h, width, height,
+    cx, cy, cw, ch = _clip_box(
+        fx + fw / 2 - grow_w / 2, fy + fh / 2 - grow_h / 2, grow_w, grow_h,
+        width, height,
     )
     # The middle of the screen, at the shape of the space left for it. Not the
     # middle minus the webcam: the thing being pointed at is in the middle of
@@ -487,9 +499,31 @@ def stacked_filter(cam: Webcam, width: int, height: int) -> str:
     )
     return (
         f"[0:v]split=2[cam][scr];"
-        f"[cam]crop={cw}:{ch}:{cx}:{cy},scale={OUT_W}:{top_h}:flags=lanczos,setsar=1[top];"
+        f"{_top_strip(cw, ch, cx, cy, top_h)}"
         f"[scr]crop={sw_}:{sh_}:{sx}:{sy},scale={OUT_W}:{bottom_h}:flags=lanczos,setsar=1[bot];"
         f"[top][bot]vstack=inputs=2[out]"
+    )
+
+
+def _top_strip(cw: int, ch: int, cx: int, cy: int, top_h: int) -> str:
+    """The webcam in the top third, without dragging the game in with it.
+
+    The strip is 1080x640 - much wider than any webcam box - so filling it by
+    growing the crop sideways takes whatever is beside the person, which on a
+    game stream is the game. Rendered that way, Ninja arrived with a Fortnite
+    character standing next to him.
+
+    So the camera is scaled to *fit* rather than to fill, and what is left at
+    the sides is the same picture blurred and enlarged behind it. Nothing from
+    outside the overlay is ever shown sharp, and the strip is full.
+    """
+    return (
+        f"[cam]crop={cw}:{ch}:{cx}:{cy},split=2[cam1][cam2];"
+        f"[cam1]scale={OUT_W}:{top_h}:force_original_aspect_ratio=increase,"
+        f"crop={OUT_W}:{top_h},gblur=sigma=24[camblur];"
+        f"[cam2]scale={OUT_W}:{top_h}:force_original_aspect_ratio=decrease:"
+        f"flags=lanczos[camfit];"
+        f"[camblur][camfit]overlay=(W-w)/2:(H-h)/2,setsar=1[top];"
     )
 
 
@@ -500,6 +534,7 @@ def to_portrait(
     work_dir: Path | str | None = None,
     extra_filters: str = "",
     layout: str = "auto",
+    webcam: Webcam | None = None,
 ) -> Path:
     """Reframe a landscape clip to 1080x1920.
 
@@ -515,7 +550,13 @@ def to_portrait(
     # A desk stream is not a tracking problem, it is a layout one: following
     # the motion between a screen and a webcam settles between them and shows
     # neither.
-    cam = find_webcam(src) if layout in ("auto", "stacked") else None
+    # A box handed in wins over looking for one. Haar misses plenty of real
+    # facecams - a headset, side lighting and a glance away is enough - so a
+    # channel known to be a desk stream can say where its camera is instead of
+    # falling back to a crop that follows two things at once.
+    cam = webcam
+    if cam is None and layout in ("auto", "stacked"):
+        cam = find_webcam(src)
     if cam is not None:
         width, height = probe_size(src)
         log.info(
