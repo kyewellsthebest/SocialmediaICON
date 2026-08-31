@@ -392,6 +392,11 @@ class Catch(TimestampMixin, Base):
     #: recomputed when the weights change rather than frozen at whatever they
     #: happened to be on the day
     evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: How it was cropped to portrait - stacked over a webcam, or following
+    #: the action - and the numbers behind that choice. The decision is made
+    #: from a face detection on a file that is deleted once the portrait
+    #: version exists, so it cannot be worked out afterwards.
+    framing: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="caught")
     #: set once the buffer it came from has been deleted, so an orphaned

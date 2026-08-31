@@ -1516,7 +1516,11 @@ class Supervisor:
         # trusting it about whether there is one.
         raw = self._tighten(candidate.raw, judged, out_dir)
 
-        reframe.to_portrait(raw, final, work_dir=out_dir / "tmp")
+        # How it was framed, kept with the clip. A desk stream is stacked and
+        # everything else follows the action, and which one happened is the
+        # first thing anyone asks when a clip looks wrong.
+        framing: dict[str, Any] = {}
+        reframe.to_portrait(raw, final, work_dir=out_dir / "tmp", report=framing)
         raw.unlink(missing_ok=True)
 
         # The clip is written here, on the worker, and watched in a browser
@@ -1550,6 +1554,7 @@ class Supervisor:
                 "ear": _ear_said(candidate.senses),
                 "model": judged.heard,
             },
+            "framing": framing,
             "mood": candidate.mood,
             "quotes": _top_quotes(candidate.quotes),
             "peak_viewers": candidate.viewers,
@@ -1774,6 +1779,7 @@ class Supervisor:
                         "chat": record.get("chat"),
                         "said": record.get("said"),
                     },
+                    framing=record.get("framing") or {},
                     status="caught",
                     source_deleted=True,
                 )

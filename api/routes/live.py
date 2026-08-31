@@ -308,6 +308,7 @@ def _row(c: Catch) -> dict[str, Any]:
         "rank_score": c.rank_score,
         "rank": c.rank or {},
         "evidence": c.evidence or {},
+        "framing": c.framing or {},
         "quotes": c.quotes or [],
         "peak_viewers": c.peak_viewers,
         "status": c.status,

@@ -535,6 +535,7 @@ def to_portrait(
     extra_filters: str = "",
     layout: str = "auto",
     webcam: Webcam | None = None,
+    report: dict | None = None,
 ) -> Path:
     """Reframe a landscape clip to 1080x1920.
 
@@ -563,12 +564,21 @@ def to_portrait(
             "reframe: %s - webcam at %.2f,%.2f on %.0f%% of frames, stacking",
             Path(src).name, cam.x, cam.y, cam.seen * 100,
         )
+        if report is not None:
+            report.update({
+                "layout": "stacked",
+                "webcam": {"x": round(cam.x, 3), "y": round(cam.y, 3),
+                           "w": round(cam.w, 3), "h": round(cam.h, 3),
+                           "seen": round(cam.seen, 2)},
+            })
         chain = stacked_filter(cam, width, height)
         if extra_filters:
             chain = chain.replace("[out]", "[stacked];[stacked]") + f"{extra_filters}[out]"
         return _render(src, dest, chain, complex_=True)
 
     path = build_path(src)
+    if report is not None:
+        report.update({"layout": "followed", "travel": round(path.travel(), 3)})
     commands = sendcmd_file(path, work / "crop.cmd")
 
     chain = (

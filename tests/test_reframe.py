@@ -371,3 +371,34 @@ class TestTheWebcamStripDoesNotDragTheGameIn:
         w, h = (int(v) for v in chain.split("[cam]crop=")[1].split(",")[0].split(":")[:2])
         # The face is 134x162 px; the overlay is that grown, not stretched to 27:16.
         assert w / h < 1.5, f"{w}x{h} has been stretched to fill a wide strip"
+
+
+class TestItSaysHowItFramedTheClip:
+    """Which of the two layouts happened is the first question anyone asks
+    when a clip looks wrong, and it cannot be worked out from the finished
+    file: the decision comes from a face detection on a source that is deleted
+    once the portrait version exists."""
+
+    def test_a_desk_stream_reports_stacked_and_where_the_camera_was(self, tmp_path):
+        import synth_faces as people
+
+        report: dict = {}
+        reframe.to_portrait(people.screen_share(), tmp_path / "a.mp4",
+                            work_dir=tmp_path, report=report)
+        assert report["layout"] == "stacked"
+        assert report["webcam"]["seen"] > 0.5
+        assert 0.0 <= report["webcam"]["x"] <= 1.0
+
+    def test_everything_else_reports_followed_and_how_far_it_moved(self, tmp_path):
+        import synth_faces as people
+
+        report: dict = {}
+        reframe.to_portrait(people.one_person(), tmp_path / "b.mp4",
+                            work_dir=tmp_path, report=report)
+        assert report["layout"] == "followed"
+        assert report["travel"] >= 0.0
+
+    def test_asking_for_no_report_is_not_a_crash(self, tmp_path):
+        import synth_faces as people
+
+        reframe.to_portrait(people.one_person(), tmp_path / "c.mp4", work_dir=tmp_path)

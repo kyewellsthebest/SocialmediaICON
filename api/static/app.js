@@ -1047,6 +1047,29 @@ function laneRows(senses) {
   ];
 }
 
+/* How the portrait crop was arrived at. The first question anyone asks when a
+   clip looks wrong is which of the two happened, and it cannot be worked out
+   from the finished file. */
+function framingNote(f) {
+  if (!f.layout) return "";
+  if (f.layout === "stacked") {
+    const cam = f.webcam || {};
+    return `<div class="card"><header><h3>How it was framed</h3>
+      <span class="label">stacked</span></header>
+      <p class="muted">A webcam over a screen, so it was not cropped by
+        following the action - that lands between the two and shows neither.
+        The camera fills the top third and the middle of the screen fills the
+        rest. Found at ${Math.round((cam.x + (cam.w || 0) / 2) * 100)}% across
+        and ${Math.round((cam.y + (cam.h || 0) / 2) * 100)}% down, on
+        ${Math.round((cam.seen || 0) * 100)}% of frames.</p></div>`;
+  }
+  return `<div class="card"><header><h3>How it was framed</h3>
+    <span class="label">followed</span></header>
+    <p class="muted">No webcam over a screen, so the crop followed the
+      motion${f.travel != null ? `, travelling ${f.travel} of the frame width
+      over the clip` : ""}.</p></div>`;
+}
+
 function clipLanes(c) {
   const senses = c.evidence || {};
   const rows = laneRows(senses);
@@ -1115,6 +1138,7 @@ function showInspect(id) {
            ${bars(Object.entries(rank.parts).map(([k, v]) => [k, v * 100]), true)}
            <p class="muted">Each part out of 100, weighted into the score.
              ${rank.detail?.rejected ? esc(rank.detail.rejected) : ""}</p></div>` : ""}
+    ${framingNote(c.framing || {})}
     ${clipLanes(c)}
     <div class="stats">
       ${stat(eventScore(c.why).toFixed(1), "from events", eventScore(c.why) <= 0)}
