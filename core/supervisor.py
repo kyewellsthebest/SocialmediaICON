@@ -49,11 +49,6 @@ TICK_S = 5.0
 #: Ignore a trigger this close to one already taken on the same channel: the
 #: same moment keeps scoring for as long as chat keeps talking about it.
 COOLDOWN_S = 180.0
-#: What one look costs, near enough to put a number on the page. Measured for
-#: the default model and effort at 12 frames and 4 face crops with the system
-#: prompt cached; it is wrong the moment either is changed, and wrong by a
-#: factor rather than an order of magnitude, which is the accuracy this is for.
-LOOK_COST_USD = 0.016
 
 
 class SupervisorError(RuntimeError):
@@ -645,6 +640,8 @@ class Supervisor:
     attach_failed: dict[str, str] = field(default_factory=dict)
     #: Where today's scored windows went. See _tally.
     funnel: dict[str, Any] = field(default_factory=dict)
+    #: What today's looking has cost. See spent_today.
+    spend: dict[str, Any] = field(default_factory=dict)
     #: The last poll that actually returned. Zero until one does.
     last_good_poll: float = 0.0
     #: Channels found asleep, and when they may be picked up again. A stream
@@ -666,7 +663,6 @@ class Supervisor:
     #: When each candidate was watched, so the bill has a ceiling: a refused
     #: candidate is not stored, so it does not count against the clip cap and
     #: cannot throttle itself.
-    looked: list[float] = field(default_factory=list)
     #: Candidates that were cut, watched and thrown away, so the page can show
     #: what the bot decided against as well as what it kept.
     declined: list[dict[str, Any]] = field(default_factory=list)
@@ -1262,27 +1258,29 @@ class Supervisor:
 
         if not settings.verdict_enabled:
             return verdictlib.Verdict(problems=["looking is switched off"])
-        if len(self.looked) >= settings.verdict_per_day:
-            return verdictlib.Verdict(
-                problems=[f"the daily look budget of {settings.verdict_per_day} is spent"]
-            )
-        # Paced, not just capped. A cap alone is spent in the first hour - the
-        # harvest loop offers the strongest held moment on every tick, a
-        # refusal costs a look and produces nothing, and by mid-morning the
-        # day's looks are gone. Then nothing gets watched at all, and the
-        # evening - which on these channels is when things happen - is judged
-        # entirely on arithmetic.
-        gap = 86400.0 / max(settings.verdict_per_day, 1)
-        if self.looked and time.time() - self.looked[-1] < gap:
-            waited = time.time() - self.looked[-1]
+
+        budget = float(settings.verdict_daily_usd)
+        spent = self.spent_today()
+        if spent >= budget:
             return verdictlib.Verdict(problems=[
-                f"looks are paced one per {gap / 60:.0f} min so the budget of "
-                f"{settings.verdict_per_day} lasts the day; {(gap - waited) / 60:.0f} "
-                "min until the next one"
+                f"the day's ${budget:.2f} of looking is spent (${spent:.2f})"
             ])
 
-        self.looked.append(time.time())
-        del self.looked[: max(0, len(self.looked) - 500)]
+        # Paced against the clock, not just capped. A cap alone goes in the
+        # first hour - the harvest loop offers the strongest held moment on
+        # every tick and a refusal costs money while producing nothing - and
+        # then the evening, which on these channels is when things happen, is
+        # judged entirely on arithmetic.
+        #
+        # The pace is the budget spread evenly over the day, so spending is
+        # allowed to run ahead of the clock only as far as the money that is
+        # left. A quiet morning banks its share for a busy night.
+        day_done = (time.time() % 86400.0) / 86400.0
+        if spent > budget * max(day_done, 0.02):
+            return verdictlib.Verdict(problems=[
+                f"${spent:.2f} of ${budget:.2f} spent {day_done * 100:.0f}% through "
+                "the day - pacing so the evening gets its share"
+            ])
 
         return verdictlib.look(
             candidate.raw,
@@ -1461,6 +1459,8 @@ class Supervisor:
         # same envelope. This is the only step that can.
         spoken = self.transcribe(candidate.raw)
         judged = self.consider(candidate, transcript=spoken)
+        if judged.watched:
+            self.record_look(judged)
         if watched is not None:
             watched.last_verdict = judged.as_dict()
 
@@ -1819,8 +1819,8 @@ class Supervisor:
                 {"channel": c, "why": why} for c, why in list(self.skipped.items())[:8]
             ],
             "declined": self.declined[-6:],
-            "looked_today": len(self.looked),
-            "look_budget": settings.verdict_per_day,
+            "looked_today": int(self.spend.get("looks") or 0),
+            "look_budget_usd": settings.verdict_daily_usd,
             "errors": self.errors[-6:],
             "health": self.health(),
             "yield": self._yield_quietly(),
@@ -1949,6 +1949,26 @@ class Supervisor:
             near.append(round(score, 1))
             del near[:-40]
 
+    def spent_today(self) -> float:
+        """What today's looks have cost, in dollars.
+
+        Priced from what the API reported using, not estimated from the
+        request: an estimate is what let a budget of thirty looks survive a
+        redesign meant to clip everything, because nobody could see the bill.
+        """
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        if self.spend.get("day") != day:
+            self.spend = {"day": day, "usd": 0.0, "looks": 0}
+        return float(self.spend.get("usd") or 0.0)
+
+    def record_look(self, judged) -> None:  # noqa: ANN001 - verdict.Verdict
+        """Add what a look cost to the day's running total."""
+        self.spent_today()  # rolls the day over if it has changed
+        self.spend["usd"] = float(self.spend.get("usd") or 0.0) + float(
+            getattr(judged, "cost_usd", 0.0) or 0.0
+        )
+        self.spend["looks"] = int(self.spend.get("looks") or 0) + 1
+
     def funnel_report(self) -> dict[str, Any]:
         """Where today's moments went, for the page to show."""
         stages = dict(self.funnel.get("stages") or {})
@@ -1966,14 +1986,12 @@ class Supervisor:
             "near_misses": len(near),
             "near_best": max(near) if near else None,
             "bar": settings.live_min_score,
-            "looks_spent": len(self.looked),
-            "looks_budget": settings.verdict_per_day,
+            "looks_spent": int(self.spend.get("looks") or 0),
             "look_model": settings.verdict_model,
-            # Roughly, and roughly is the point: a bill nobody can see is how
-            # a budget of thirty looks a day survived a redesign that was
-            # meant to clip everything.
-            "spent_usd": round(len(self.looked) * LOOK_COST_USD, 2),
-            "budget_usd": round(settings.verdict_per_day * LOOK_COST_USD, 2),
+            # Measured, not estimated. A bill nobody can see is how a budget of
+            # thirty looks a day survived a redesign meant to clip everything.
+            "spent_usd": round(self.spent_today(), 2),
+            "budget_usd": round(float(settings.verdict_daily_usd), 2),
             "declined": len(self.declined),
         }
 

@@ -49,6 +49,38 @@ class VerdictError(RuntimeError):
     pass
 
 
+#: Dollars per million tokens: (input, output, cache read). From Anthropic's
+#: published rates. A look is priced from the usage the API reports rather
+#: than estimated from the request, because the estimate is what let a budget
+#: of thirty looks a day survive a redesign meant to clip everything - nobody
+#: could see the bill, so nobody could see it was the wrong shape.
+PRICES = {
+    "claude-haiku-4-5": (1.00, 5.00, 0.10),
+    "claude-sonnet-5": (2.00, 10.00, 0.20),
+    "claude-opus-5": (5.00, 25.00, 0.50),
+    "claude-opus-4-8": (5.00, 25.00, 0.50),
+    "claude-fable-5": (10.00, 50.00, 1.00),
+}
+#: What to assume for a model not in the table. Sonnet's rate: high enough
+#: that an unknown model cannot quietly spend more than the budget says.
+DEFAULT_PRICE = (2.00, 10.00, 0.20)
+
+
+def price_of(model: str, usage) -> float:  # noqa: ANN001 - anthropic Usage
+    """What one call cost, in dollars, from what the API said it used."""
+    key = next((k for k in PRICES if model.startswith(k)), "")
+    rate_in, rate_out, rate_cached = PRICES.get(key, DEFAULT_PRICE)
+    got = lambda name: float(getattr(usage, name, 0) or 0)  # noqa: E731
+    return (
+        got("input_tokens") / 1e6 * rate_in
+        + got("output_tokens") / 1e6 * rate_out
+        # A cache write is 1.25x input; a read is a tenth. Both are counted so
+        # the first look of the day is not reported as free.
+        + got("cache_creation_input_tokens") / 1e6 * rate_in * 1.25
+        + got("cache_read_input_tokens") / 1e6 * rate_cached
+    )
+
+
 @dataclass
 class Verdict:
     """What a look at the actual video says about it."""
@@ -61,6 +93,8 @@ class Verdict:
     confidence: float = 0.0
     #: The model that judged this, so a later comparison knows who said it.
     model: str = ""
+    #: What this look cost, in dollars, from the usage the API reported.
+    cost_usd: float = 0.0
     #: One sentence describing what is actually happening on screen.
     happening: str = ""
     #: What kind of moment - funny, shocking, skilful, an argument, nothing.
@@ -88,6 +122,7 @@ class Verdict:
             "worth_it": self.worth_it,
             "confidence": round(self.confidence, 3),
             "model": self.model,
+            "cost_usd": round(self.cost_usd, 5),
             "happening": self.happening,
             "kind": self.kind,
             "setting": self.setting,
@@ -385,6 +420,10 @@ def look(
         # what two of them said about comparable clips - which is impossible
         # after the fact unless each verdict remembers its own author.
         model=getattr(response, "model", "") or settings.verdict_model,
+        cost_usd=price_of(
+            getattr(response, "model", "") or settings.verdict_model,
+            getattr(response, "usage", None),
+        ),
         worth_it=bool(payload.get("worth_it")),
         # Clamped here rather than in the schema, which cannot express a range.
         confidence=min(1.0, max(0.0, float(payload.get("confidence") or 0.0))),

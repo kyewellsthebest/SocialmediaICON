@@ -1040,11 +1040,14 @@ class TestNothingIsCutThatNothingHasWatched:
         assert watched.last_catch_at == LIVE_EDGE
 
     def test_the_page_is_told_how_much_of_the_budget_is_spent(self):
+        from core.verdict import Verdict
+
         sup = Supervisor()
-        sup.looked = [1.0, 2.0]
+        sup.record_look(Verdict(watched=True, cost_usd=0.008))
+        sup.record_look(Verdict(watched=True, cost_usd=0.008))
         found = sup.status()
         assert found["looked_today"] == 2
-        assert found["look_budget"] == settings.verdict_per_day
+        assert found["look_budget_usd"] == settings.verdict_daily_usd
 
 
 class TestItChoosesRatherThanTakingTheFirst:
@@ -1695,13 +1698,19 @@ class TestWhereTheMomentsWent:
         sup._tally("scored", 5.0)
         assert sup.funnel_report()["scored"] == 1
 
-    def test_the_look_budget_is_reported(self, monkeypatch):
-        monkeypatch.setattr(settings, "verdict_per_day", 30)
+    def test_the_bill_is_reported_in_dollars(self, monkeypatch):
+        """A count of looks is a guess at a bill dressed up as a limit: thirty
+        Opus looks was $2.20 a day and thirty Haiku looks is 25 cents."""
+        from core.verdict import Verdict
+
+        monkeypatch.setattr(settings, "verdict_daily_usd", 2.50)
         sup = Supervisor()
-        sup.looked.extend([1.0, 2.0])
+        sup.record_look(Verdict(watched=True, cost_usd=0.008))
+        sup.record_look(Verdict(watched=True, cost_usd=0.008))
         found = sup.funnel_report()
         assert found["looks_spent"] == 2
-        assert found["looks_budget"] == 30
+        assert found["spent_usd"] == 0.02
+        assert found["budget_usd"] == 2.50
 
     def test_it_reaches_the_page(self):
         assert "funnel" in Supervisor().status()
@@ -1709,13 +1718,13 @@ class TestWhereTheMomentsWent:
 
 class TestTheLookBudgetLastsTheDay:
     """A cap alone is spent in the first hour: the harvest loop offers the
-    strongest held moment on every tick, a refusal costs a look and produces
+    strongest held moment on every tick, a refusal costs money and produces
     nothing, and by mid-morning there is nothing left for the evening - which
     on these channels is when things happen."""
 
     def _sup(self, monkeypatch):
         monkeypatch.setattr(settings, "verdict_enabled", True)
-        monkeypatch.setattr(settings, "verdict_per_day", 24)  # one an hour
+        monkeypatch.setattr(settings, "verdict_daily_usd", 2.40)
         return Supervisor()
 
     def _candidate(self):
@@ -1724,25 +1733,55 @@ class TestTheLookBudgetLastsTheDay:
             "faces_at": [], "quotes": [], "channel": "x",
         })()
 
-    def test_a_second_look_straight_after_the_first_is_paced(self, monkeypatch):
+    def _spend(self, sup, usd):
+        sup.spent_today()          # roll the day over
+        sup.spend["usd"] = usd
+
+    def test_spending_the_whole_day_stops_it(self, monkeypatch):
         sup = self._sup(monkeypatch)
-        sup.looked.append(time.time())
+        self._spend(sup, 2.40)
         found = sup.consider(self._candidate())
         assert found.watched is False
-        assert "paced" in " ".join(found.problems)
+        assert "spent" in " ".join(found.problems)
 
-    def test_it_says_how_long_until_the_next_one(self, monkeypatch):
+    def test_running_ahead_of_the_clock_is_paced(self, monkeypatch):
+        """Two dollars of a $2.40 day, spent by breakfast, is the shape that
+        left the evening judged entirely on arithmetic."""
         sup = self._sup(monkeypatch)
-        sup.looked.append(time.time())
-        assert "min until the next one" in " ".join(sup.consider(self._candidate()).problems)
+        self._spend(sup, 2.00)
+        found = sup.consider(self._candidate())
+        assert found.watched is False
+        assert "pacing" in " ".join(found.problems)
 
-    def test_the_first_look_of_the_day_is_not_held_up(self, monkeypatch):
+    def test_spending_behind_the_clock_is_allowed(self, monkeypatch):
         sup = self._sup(monkeypatch)
+        self._spend(sup, 0.0)
         monkeypatch.setattr("core.verdict.look", lambda *a, **k: "looked")
         assert sup.consider(self._candidate()) == "looked"
 
-    def test_a_look_long_enough_ago_is_allowed(self, monkeypatch):
+    def test_a_quiet_morning_banks_its_share_for_a_busy_night(self, monkeypatch):
+        """The pace is against the clock, not a fixed gap, so an hour with
+        nothing in it leaves more for the hour that has everything."""
         sup = self._sup(monkeypatch)
-        sup.looked.append(time.time() - 7200)  # two hours, pace is one hour
+        # Most of the way through the day, a third of the budget spent.
+        self._spend(sup, 0.80)
         monkeypatch.setattr("core.verdict.look", lambda *a, **k: "looked")
+        monkeypatch.setattr(time, "time", lambda: 86400.0 * 10 + 86400.0 * 0.8)
         assert sup.consider(self._candidate()) == "looked"
+
+    def test_what_a_look_cost_is_added_to_the_day(self, monkeypatch):
+        from core.verdict import Verdict
+
+        sup = self._sup(monkeypatch)
+        sup.record_look(Verdict(watched=True, cost_usd=0.0082))
+        sup.record_look(Verdict(watched=True, cost_usd=0.0082))
+        assert sup.spent_today() == pytest.approx(0.0164)
+        assert sup.spend["looks"] == 2
+
+    def test_a_new_day_starts_the_budget_again(self, monkeypatch):
+        from core.verdict import Verdict
+
+        sup = self._sup(monkeypatch)
+        sup.record_look(Verdict(watched=True, cost_usd=1.0))
+        sup.spend["day"] = "1999-01-01"
+        assert sup.spent_today() == 0.0

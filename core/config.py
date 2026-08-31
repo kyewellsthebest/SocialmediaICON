@@ -292,30 +292,28 @@ class Settings(BaseSettings):
     # A model looks at the frames, the transcript and the evidence and says
     # whether anything is happening. It is the only thing that can tell a man
     # laughing at his own joke about nothing from a man falling off a chair -
-    # they make the same envelope - so what it costs decides how much of a day
-    # gets judged at all.
+    # they make the same envelope.
     #
-    # The measured bill, at 12 frames and 4 face crops (4,866 input tokens)
-    # with the system prompt cached:
+    # Haiku, and deliberately not the best available. The job is to follow a
+    # story across a few dozen frames - he drinks something disgusting, the
+    # room laughs, he is sick - and that is perception, not reasoning. A
+    # better model finds a few more good clips out of a hundred; at five to
+    # ten posts a day, more clips *looked at* is worth more than a better
+    # opinion on a fifth of them. The measured bill per look, with the system
+    # prompt cached:
     #
-    #     opus-5   effort high     $0.074 a look     27 a day for $60/month
-    #     opus-5   effort medium   $0.041            49
-    #     sonnet-5 effort medium   $0.016           122
-    #     haiku-4.5 effort medium  $0.008           244
+    #     haiku-4.5   $0.008      opus-5 high    $0.074
+    #     sonnet-5    $0.016      opus-5 medium  $0.041
     #
-    # Thinking tokens dominate, not the images, so effort is the larger lever
-    # and the model tier is the second. Sonnet at medium because this is a
-    # perception task with a small schema - look at sixteen pictures and say
-    # what is going on - rather than the deep reasoning Opus at high effort is
-    # priced for, and because four times as many clips judged is worth more
-    # here than a slightly better opinion on a quarter of them. Not Haiku: the
-    # thing this call exists to catch is a betting screen with music over it,
-    # and noticing that nothing is happening in an image that is full of
-    # motion takes taste.
+    # One environment variable moves it back up. Every verdict records which
+    # model made it, so that decision can be revisited by comparing what two
+    # of them said about the same clips rather than by argument - which is
+    # what the /compare tool is for.
     #
-    # Every verdict records which model made it, so this can be revisited by
-    # comparing what two of them said rather than by argument.
-    verdict_model: str = "claude-sonnet-5"
+    # The known weak spot, worth watching: the hard case is not "what is the
+    # story", it is noticing there is no story behind a screen full of motion.
+    # That is the betting-screen clip. If those come back, this is why.
+    verdict_model: str = "claude-haiku-4-5"
     verdict_effort: str = "medium"
     #: How many frames it gets to look at. One every three or four seconds.
     verdict_frames: int = 12
@@ -331,17 +329,20 @@ class Settings(BaseSettings):
     #: How sure it has to be. Refusing a mediocre clip costs one clip; posting
     #: one costs the account.
     verdict_min_confidence: float = 0.55
-    #: A ceiling on how many candidates a day may be watched, because a
-    #: refused candidate does not count against the clip cap and so cannot
-    #: throttle itself. Held in memory, so a deploy resets it - the bound is a
-    #: guard against a bad day, not an accountant.
+    #: What may be spent looking at clips in a day, in US dollars.
     #:
-    #: 120 at $0.016 is $58 a month, which is the look budget inside $100 once
-    #: Railway is paid for. The looks are paced across the day rather than
-    #: spent in the first hour, and a moment cut after they run out is kept
-    #: unjudged rather than thrown away - so this is a ceiling on how much is
-    #: *judged*, never on how much is caught.
-    verdict_per_day: int = 120
+    #: A budget, not a count. A count of looks is a guess at a bill dressed up
+    #: as a limit, and it goes wrong in both directions: thirty Opus looks was
+    #: $2.20 a day, thirty Haiku looks is 25 cents, and neither number tells
+    #: anyone what they are spending. Priced from the usage the API actually
+    #: reports, so changing model or frame count changes how many looks fit
+    #: rather than silently changing the bill.
+    #:
+    #: $2.50 a day is $76 a month, which at Haiku is around 300 clips judged a
+    #: day - almost certainly more than the watcher cuts, so in practice
+    #: everything gets looked at. The rest of a $150-200 AUD month is Railway
+    #: and headroom. Raise this and more gets judged; there is no other cap.
+    verdict_daily_usd: float = 2.50
     #: How many cut-but-undecided moments to hold while waiting for an output
     #: slot. The buffer only remembers five minutes and the gap between clips
     #: is an hour, so a moment that is not cut immediately is gone - holding

@@ -254,10 +254,10 @@ function paintFunnel(f) {
     bits.push(`Nothing came close to the bar of ${f.bar}, so lowering it would `
       + `not have caught anything. What is missing is evidence, not leniency.`);
   }
-  bits.push(`${f.looks_spent} of ${f.looks_budget} model looks spent today `
-    + `(about $${f.spent_usd} of $${f.budget_usd}, ${f.look_model}), paced `
-    + `across the day. A moment cut after they run out is still kept - it just `
-    + `ranks below the ones something watched.`);
+  bits.push(`$${f.spent_usd} of $${f.budget_usd} spent today on ${f.looks_spent} `
+    + `looks (${f.look_model}), paced so the evening gets its share. A moment `
+    + `cut after the money runs out is still kept - it just ranks below the `
+    + `ones something watched.`);
   if (f.declined) {
     bits.push(`${f.declined} were watched and turned down on their merits.`);
   }

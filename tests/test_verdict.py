@@ -118,14 +118,44 @@ class TestTheGate:
 
 
 class TestTheBudget:
-    def test_looking_stops_at_the_daily_ceiling(self, monkeypatch, tmp_path):
+    def test_looking_stops_when_the_days_money_is_gone(self, monkeypatch, tmp_path):
         """A refused candidate is not stored, so it cannot throttle itself."""
-        monkeypatch.setattr(settings, "verdict_per_day", 3)
+        monkeypatch.setattr(settings, "verdict_daily_usd", 2.50)
         sup = Supervisor()
-        sup.looked = [0.0, 0.0, 0.0]
+        sup.spent_today()
+        sup.spend["usd"] = 2.50
         found = sup.consider(_held(tmp_path / "nope.mp4"))
         assert found.watched is False
-        assert "budget" in " ".join(found.problems)
+        assert "spent" in " ".join(found.problems)
+
+    def test_a_look_is_priced_from_what_the_api_reported(self):
+        """Not estimated from the request. An estimate is what let a budget of
+        thirty looks a day survive a redesign meant to clip everything -
+        nobody could see the bill, so nobody could see it was the wrong shape."""
+        usage = type("U", (), {
+            "input_tokens": 900, "output_tokens": 900,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 1300,
+        })()
+        # haiku: 900 in @ $1, 900 out @ $5, 1300 cached @ $0.10 per million
+        assert verdict.price_of("claude-haiku-4-5", usage) == pytest.approx(
+            900 / 1e6 * 1.0 + 900 / 1e6 * 5.0 + 1300 / 1e6 * 0.10
+        )
+
+    def test_a_model_nobody_priced_is_assumed_expensive(self):
+        """So an unknown model cannot quietly spend more than the budget says."""
+        usage = type("U", (), {"input_tokens": 1_000_000, "output_tokens": 0,
+                               "cache_creation_input_tokens": 0,
+                               "cache_read_input_tokens": 0})()
+        assert verdict.price_of("something-new", usage) == pytest.approx(
+            verdict.DEFAULT_PRICE[0]
+        )
+
+    def test_a_cache_write_is_not_free(self):
+        """Otherwise the first look of the day is reported as costing nothing."""
+        usage = type("U", (), {"input_tokens": 0, "output_tokens": 0,
+                               "cache_creation_input_tokens": 1_000_000,
+                               "cache_read_input_tokens": 0})()
+        assert verdict.price_of("claude-haiku-4-5", usage) == pytest.approx(1.25)
 
     def test_switching_looking_off_is_honoured(self, monkeypatch, tmp_path):
         monkeypatch.setattr(settings, "verdict_enabled", False)
