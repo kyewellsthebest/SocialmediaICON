@@ -619,8 +619,12 @@ class Supervisor:
         """
         from core import profile as profiles
 
-        if profiles.blocked_category(watched.category):
-            watched.skip_reason = f"{watched.category} is a game"
+        marker = profiles.event_marker(watched.category, watched.title)
+        if marker:
+            watched.skip_reason = (
+                f"switched to a competitive event ({marker}), which is a fixture "
+                "rather than a person"
+            )
             return False
 
         # Chat is the most honest language signal a stream has: the directory

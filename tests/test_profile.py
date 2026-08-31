@@ -13,6 +13,8 @@ that an unknown answer is never mistaken for a yes.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from core import profile
@@ -26,16 +28,41 @@ def clean():
     profile._local.clear()
 
 
-class TestGamesAreOut:
-    @pytest.mark.parametrize("category", [
-        "Battlegrounds Mobile India", "Call of Duty: Warzone", "VALORANT",
-        "Grand Theft Auto V", "League of Legends", "Fortnite", "Minecraft",
-        "EA Sports FC 25", "Counter-Strike 2", "Free Fire",
+class TestEventsAreOutButGamesAreNot:
+    """The first rule was "no gaming" and it was wrong. It threw out xQc
+    playing anything, LosPollosTV in co-op and a GTA channel - people being
+    funny with a game on screen, which is most of what a clipping bot wants.
+    What nobody clips is a bracket."""
+
+    @pytest.mark.parametrize("category,title", [
+        ("Counter-Strike 2", "ESL Pro League - Grand Final"),
+        ("VALORANT", "VCT Pacific | Group Stage Day 3"),
+        ("Battlegrounds Mobile India", "BGIS 2026 Qualifier"),
+        ("League of Legends", "LCK Playoffs watch party"),
+        ("Just Chatting", "IEM Katowice tournament co-stream"),
+        ("Dota 2", "TI13 - Championship bracket"),
+        ("Rocket League", "RLCS scrims with the roster"),
     ])
-    def test_a_game_category_is_a_rejection_on_sight(self, category):
-        found = profile.from_listing("x", category=category)
-        assert found is not None and found.eligible is False
-        assert found.is_gaming is True
+    def test_a_competitive_event_is_a_rejection_on_sight(self, category, title):
+        found = profile.from_listing("x", category=category, title=title)
+        assert found is not None and found.eligible is False, f"{category} / {title}"
+        assert found.is_esports is True
+
+    @pytest.mark.parametrize("category,title", [
+        # The three from the screenshot that should never have been refused.
+        ("Chained Together", "co-op with the boys"),
+        ("It Takes Two", "playthrough day 2"),
+        ("Grand Theft Auto V", "RP - back on the streets"),
+        # And the rest of ordinary gaming.
+        ("Counter-Strike 2", "ranked grind, come chat"),
+        ("Minecraft", "building the base"),
+        ("Fortnite", "solos until i win"),
+        ("Elden Ring", "first playthrough NO SPOILERS"),
+    ])
+    def test_a_person_playing_a_game_is_not(self, category, title):
+        assert profile.from_listing("x", category=category, title=title) is None, (
+            f"{category} / {title} is a person, not a fixture"
+        )
 
     @pytest.mark.parametrize("category", [
         "Just Chatting", "IRL", "Music", "Sports", "Pools, Hot Tubs & Beaches",
@@ -44,15 +71,31 @@ class TestGamesAreOut:
     def test_the_categories_it_wants_are_not_rejected(self, category):
         assert profile.from_listing("x", category=category) is None
 
+    @pytest.mark.parametrize("title", [
+        "the major vibes stream", "season 2 finale reaction",
+        "me vs chat 1v1", "competitive eating challenge",
+    ])
+    def test_the_cheap_layer_does_not_guess(self, title):
+        """A false positive here throws away a good streamer for a week, and
+        the model answers the same question properly one layer down. So the
+        phrase list stays short and unambiguous."""
+        assert profile.from_listing("x", category="Just Chatting", title=title) is None
+
     def test_it_costs_nothing_to_decide(self, monkeypatch):
         """No HTTP, no model - the cheap layer is the one that runs on 40 rows."""
         monkeypatch.setattr(
-            profile, "from_kick", lambda c: pytest.fail("looked up a blocked category")
+            profile, "from_kick", lambda c: pytest.fail("looked up a named event")
         )
         monkeypatch.setattr(
-            profile, "research", lambda c, **k: pytest.fail("researched a game")
+            profile, "research", lambda c, **k: pytest.fail("researched an event")
         )
-        assert profile.decide("x", category="PUBG Mobile").eligible is False
+        found = profile.decide("x", category="PUBG Mobile", title="PMGC Grand Final")
+        assert found.eligible is False
+
+    def test_an_acronym_is_matched_as_a_word_not_a_substring(self):
+        """"esl" inside another word is not the ESL circuit."""
+        assert profile.event_marker("Just Chatting", "wrestling and eslabon music") == ""
+        assert profile.event_marker("Counter-Strike 2", "ESL Pro League") == "esl"
 
 
 class TestEnglishOnly:
@@ -151,8 +194,8 @@ class TestItOnlyAsksOnce:
         assert asked == ["someone"], "a streamer does not change between polls"
 
     def test_a_rejection_is_remembered_too(self):
-        profile.decide("gamer", category="VALORANT")
-        assert profile.recall("gamer").eligible is False
+        profile.decide("caster", category="VALORANT", title="VCT Grand Final")
+        assert profile.recall("caster").eligible is False
 
     def test_it_can_be_asked_again_on_purpose(self, monkeypatch):
         asked = []
@@ -175,13 +218,23 @@ class TestWhatItTellsTheRestOfThePipeline:
         assert "Los Angeles" in found.summary()
         assert "Boxing" in found.summary()
 
-    def test_the_prompt_says_watching_a_game_is_still_gaming(self):
-        """A reaction stream over gameplay is the obvious loophole."""
-        assert "reacting to it on camera is still gameplay" in profile.SYSTEM
+    def test_the_prompt_draws_the_line_at_the_event_not_the_game(self):
+        """The whole distinction lives in this prompt, so if the wording goes
+        the rule goes with it - and the failure is silent and expensive: a
+        week of a watch slot spent on a bracket, or a good streamer refused."""
+        assert "A video game on screen is not a problem" in profile.SYSTEM
+        assert "did the audience come for a person or for a result" not in profile.SYSTEM
+        assert "The test is what the audience came for" in profile.SYSTEM
 
     def test_the_schema_demands_both_decisions_and_a_reason(self):
-        for key in ("is_english", "is_gaming", "confidence", "reason"):
+        for key in ("is_english", "is_esports", "confidence", "reason"):
             assert key in profile.SCHEMA["required"]
+
+    def test_the_schema_spells_out_that_a_game_alone_is_not_an_event(self):
+        """The field is answered by a model reading only its description."""
+        said = profile.SCHEMA["properties"]["is_esports"]["description"]
+        assert "tournament" in said
+        assert "NOT" in said, "the exclusion has to be explicit or it is guessed at"
 
 
 class TestAnOutageIsNotAVerdict:
@@ -226,16 +279,26 @@ class TestAnOutageIsNotAVerdict:
         assert not profile.decide("someone", language="en").eligible
 
     def test_the_cheap_rejections_still_win_over_the_fallback(self, monkeypatch):
-        """The fallback runs after them, so a game is still a game."""
+        """The fallback runs after them, so an event is still an event."""
         self._fails(monkeypatch)
         monkeypatch.setattr(profile, "from_kick", lambda channel: {
             "categories": ["Just Chatting"],
         })
         found = profile.decide(
-            "someone", language="en", category="Battlegrounds Mobile India"
+            "someone", language="en",
+            category="Battlegrounds Mobile India", title="BGIS Grand Final",
         )
         assert not found.eligible
-        assert found.is_gaming
+        assert found.is_esports
+
+    def test_a_gaming_stream_still_gets_the_benefit_of_the_fallback(self, monkeypatch):
+        """Gaming is not a reason to refuse anybody any more, outage or not."""
+        self._fails(monkeypatch)
+        monkeypatch.setattr(profile, "from_kick", lambda channel: {
+            "categories": ["Chained Together"], "bio": "a man and his friends",
+        })
+        found = profile.decide("lospollostv", language="en", category="Chained Together")
+        assert found.eligible
 
     def test_a_provisional_yes_is_never_cached(self, monkeypatch):
         """It has to be re-asked, or a five-minute outage decides a whole week."""
@@ -247,3 +310,12 @@ class TestAnOutageIsNotAVerdict:
         monkeypatch.setattr(profile, "remember", lambda found: remembered.append(found))
         assert profile.decide("someone", language="en").eligible
         assert remembered == []
+
+
+class TestARuleChangeTakesEffectToday:
+    def test_the_cache_key_carries_the_rule_it_was_decided_under(self):
+        """A dossier is kept for a week. Without a version in the key, a
+        channel refused under an old rule stays refused for seven days after
+        that rule is gone - which for "no gaming" meant LosPollosTV, an It
+        Takes Two co-op and a GTA channel, all of them wanted."""
+        assert re.search(r":v\d+:", profile.KEY), profile.KEY
