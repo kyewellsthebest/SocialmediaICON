@@ -491,6 +491,23 @@ class Watched:
             "senses": self.senses,
             "verdict": self.last_verdict,
             "senses_age_s": round(time.time() - self.senses_at, 1) if self.senses_at else None,
+            # Whether anything has actually been heard or seen on this stream
+            # yet. Without it a stream that has not been read is drawn exactly
+            # like one that was read and found nothing - both are a score of
+            # 0.0 and five empty axes - and the first is the normal state of a
+            # stream for the first half-minute after it attaches. Reading "the
+            # bot thinks two men talking at a table is worth nothing" off a
+            # stream it has not listened to yet is the page's fault, not the
+            # reader's.
+            "read": bool(
+                self.senses_at
+                and (self.heard is not None or self.seen is not None
+                     or self.people is not None)
+            ),
+            "next_read_in_s": (
+                max(0.0, round(SENSE_EVERY_S - (time.time() - self.senses_at), 1))
+                if self.senses_at else None
+            ),
             "chat": {
                 **self.chat.status(),
                 "per_minute": round(sum(curve.counts) / max(curve.duration_s / 60.0, 1e-6), 1),

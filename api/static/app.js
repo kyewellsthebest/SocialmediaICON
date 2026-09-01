@@ -625,14 +625,27 @@ async function renderStream() {
   box.innerHTML = `
     <div class="card plate">
       <header><h3>Why it is scoring</h3>
-        <span class="label">${(s.score ?? 0).toFixed(1)} total</span></header>
-      <div class="vz-pair">
-        ${meter(s.score ?? 0, s.cut_at ?? 20, "score")}
-        ${radar(streamAxes(s))}
-      </div>
-      ${why.length ? bars(why) : `<p class="empty-note">Nothing is standing out right now.</p>`}
-      <p class="muted">${axisNote(streamAxes(s))}</p>
-      ${senseNote(senses) ? `<p class="empty-note">${esc(senseNote(senses))}</p>` : ""}
+        <span class="label">${s.read === false ? "not read yet"
+          : `${(s.score ?? 0).toFixed(1)} total`}</span></header>
+      ${s.read === false
+        // A stream that has not been listened to yet is not a stream scoring
+        // zero, and drawing it as one - 0.0 over five empty axes - says the
+        // bot looked at two men talking and thought it was worth nothing.
+        // It says that for the first half-minute of every stream it attaches.
+        ? `<p class="empty-note">Nothing has been heard or seen on this stream
+             yet${s.next_read_in_s != null
+               ? ` - the next reading is about ${Math.round(s.next_read_in_s)}s away`
+               : ", and the first reading takes about half a minute"}.
+             There is no score until there is.</p>`
+        : `<div class="vz-pair">
+             ${meter(s.score ?? 0, s.cut_at ?? 20, "score")}
+             ${radar(streamAxes(s))}
+           </div>
+           ${why.length ? bars(why)
+             : `<p class="empty-note">Nothing is standing out right now.</p>`}
+           <p class="muted">${axisNote(streamAxes(s))}</p>
+           ${senseNote(senses)
+             ? `<p class="empty-note">${esc(senseNote(senses))}</p>` : ""}`}
     </div>
 
     ${streamLanes(senses)}
