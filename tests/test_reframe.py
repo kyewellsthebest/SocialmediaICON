@@ -389,12 +389,23 @@ class TestItSaysHowItFramedTheClip:
         assert report["webcam"]["seen"] > 0.5
         assert 0.0 <= report["webcam"]["x"] <= 1.0
 
-    def test_everything_else_reports_followed_and_how_far_it_moved(self, tmp_path):
+    def test_everything_else_reports_centred(self, tmp_path):
+        """Not "followed" any more. A moving crop on a stream that is not a
+        desk was either tracking the wrong thing or arriving late at the right
+        one, so the default is now a still, centred frame."""
         import synth_faces as people
 
         report: dict = {}
         reframe.to_portrait(people.one_person(), tmp_path / "b.mp4",
                             work_dir=tmp_path, report=report)
+        assert report["layout"] == "centred"
+
+    def test_following_is_still_there_when_it_is_asked_for(self, tmp_path):
+        import synth_faces as people
+
+        report: dict = {}
+        reframe.to_portrait(people.one_person(), tmp_path / "b2.mp4",
+                            work_dir=tmp_path, layout="follow", report=report)
         assert report["layout"] == "followed"
         assert report["travel"] >= 0.0
 
@@ -660,3 +671,54 @@ class TestTheCropFollowsThePersonNotWhateverMoved:
 
         path = reframe.build_path(people.nobody())
         assert path.points, "a shot with nobody in it produced no path at all"
+
+
+class TestTheStillCentredFrame:
+    """What a stream that is not a desk gets now.
+
+    Asked for after watching seventeen clips of a stream held on a phone: the
+    moving crop was either following the wrong thing or arriving late at the
+    right one. The replacement is the layout of the reference thumbnail - a
+    portrait slice out of the middle of the picture, 1949x2436, sitting on a
+    9:16 canvas with black where it does not reach.
+    """
+
+    def test_the_slice_has_the_reference_shape(self):
+        chain = reframe.centred_filter(1920, 1080)
+        crop = chain.split(",")[0].removeprefix("crop=")
+        w, h, x, y = (int(v) for v in crop.split(":"))
+        assert w / h == pytest.approx(reframe.CENTRED_W / reframe.CENTRED_H, abs=0.01)
+        assert abs(x - (1920 - w) / 2) <= 1, "taken from the middle"
+        assert abs(y - (1080 - h) / 2) <= 1
+
+    def test_it_takes_the_full_height_of_a_landscape_source(self):
+        """Nothing is thrown away vertically - the slice is as tall as the
+        frame and only as wide as the shape allows."""
+        chain = reframe.centred_filter(1920, 1080)
+        assert chain.startswith("crop=864:1080:")
+
+    def test_the_rest_of_the_canvas_is_black_not_a_stretch(self):
+        chain = reframe.centred_filter(1920, 1080)
+        assert f"pad={reframe.OUT_W}:{reframe.OUT_H}" in chain
+        assert chain.endswith("black,setsar=1")
+        assert f"scale={reframe.OUT_W}:-2" in chain, "aspect preserved"
+
+    def test_a_source_narrower_than_the_slice_is_not_cropped_wider_than_it_is(self):
+        chain = reframe.centred_filter(720, 1280)
+        crop = chain.split(",")[0].removeprefix("crop=")
+        w, h, x, y = (int(v) for v in crop.split(":"))
+        assert w <= 720 and h <= 1280 and x >= 0 and y >= 0
+
+    def test_every_size_produces_a_crop_that_fits_inside_the_source(self):
+        for width, height in ((1920, 1080), (1280, 720), (854, 480),
+                              (2560, 1440), (1080, 1080), (720, 1280)):
+            chain = reframe.centred_filter(width, height)
+            w, h, x, y = (int(v) for v in
+                          chain.split(",")[0].removeprefix("crop=").split(":"))
+            assert x + w <= width and y + h <= height, (width, height, chain)
+            assert w % 2 == h % 2 == x % 2 == y % 2 == 0, "odd values break 4:2:0"
+
+    def test_it_never_moves(self):
+        """The whole point. No sendcmd, no per-frame expression."""
+        chain = reframe.centred_filter(1920, 1080)
+        assert "sendcmd" not in chain and "t)" not in chain

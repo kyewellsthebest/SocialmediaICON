@@ -115,6 +115,26 @@ MAX_PAN_PER_S = 0.18
 MAX_ACCEL_PER_S2 = 0.35
 
 
+#: The shape of the visible picture when a clip is neither stacked nor
+#: followed: a centred portrait slice of the source, scaled to the full width,
+#: with black above and below.
+#:
+#: This replaces following the action on everything that is not a desk stream,
+#: and it replaces it because following did not work. The crop tracked motion,
+#: and on an IRL stream the biggest motion is a robot crossing the floor or
+#: somebody walking behind - so it drifted to a corner of the room while the
+#: person talking sat outside the frame, and being heavily smoothed it arrived
+#: late as well. Following faces instead helped and did not fix it: a face is
+#: found in about a third of frames on real footage, and the gaps are where it
+#: went wrong.
+#:
+#: A crop that never moves cannot be in the wrong place at the wrong moment.
+#: It shows less than a perfect track would and it is right every time, which
+#: on this material is the better trade - and it is what the reference the
+#: layout was asked for actually does.
+CENTRED_W, CENTRED_H = 1949, 2436
+
+
 class ReframeError(RuntimeError):
     pass
 
@@ -701,6 +721,31 @@ def _top_strip(cw: int, ch: int, cx: int, cy: int, top_h: int) -> str:
     )
 
 
+def centred_filter(width: int, height: int) -> str:
+    """A centred slice of the source, full width, black above and below.
+
+    The slice is the widest CENTRED_W:CENTRED_H region that fits, taken from
+    the middle of the frame. Scaled to the output width it is shorter than the
+    output, and the remainder is black - which is the point: the picture is
+    never stretched and never moves.
+    """
+    aspect = CENTRED_W / CENTRED_H
+    crop_h = height
+    crop_w = int(min(width, height * aspect)) // 2 * 2
+    if crop_w >= width:  # a source already narrower than the slice
+        crop_w = width // 2 * 2
+        crop_h = int(min(height, crop_w / aspect)) // 2 * 2
+    # Even offsets as well as even sizes: an odd x on 4:2:0 chroma is not
+    # subsampled cleanly and ffmpeg silently shifts it.
+    x = (width - crop_w) // 2 // 2 * 2
+    y = (height - crop_h) // 2 // 2 * 2
+    return (
+        f"crop={crop_w}:{crop_h}:{x}:{y},"
+        f"scale={OUT_W}:-2:flags=lanczos,"
+        f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+    )
+
+
 def to_portrait(
     src: Path | str,
     dest: Path | str,
@@ -713,8 +758,11 @@ def to_portrait(
 ) -> Path:
     """Reframe a landscape clip to 1080x1920.
 
-    `layout="auto"` stacks a webcam over a screen when it finds a desk stream
-    and follows the action otherwise. "follow" and "stacked" force one.
+    `layout="auto"` stacks a webcam over a screen when it finds a desk stream,
+    and otherwise centres the picture and leaves it there. "stacked",
+    "centred" and "follow" force one; following is kept for the cases where a
+    moving crop is genuinely wanted, and is no longer what anything defaults
+    to - see CENTRED_W.
     """
     require_binaries()
     src, dest = Path(src), Path(dest)
@@ -750,16 +798,24 @@ def to_portrait(
             chain = chain.replace("[out]", "[stacked];[stacked]") + f"{extra_filters}[out]"
         return _render(src, dest, chain, complex_=True)
 
-    path = build_path(src)
-    if report is not None:
-        report.update({"layout": "followed", "travel": round(path.travel(), 3)})
-    commands = sendcmd_file(path, work / "crop.cmd")
+    if layout == "follow":
+        path = build_path(src)
+        if report is not None:
+            report.update({"layout": "followed", "travel": round(path.travel(), 3)})
+        commands = sendcmd_file(path, work / "crop.cmd")
+        chain = (
+            f"sendcmd=f='{commands.as_posix()}',"
+            f"crop=w={path.crop_w}:h={path.source_h}:x={path.x_at(0):.1f}:y=0,"
+            f"scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1"
+        )
+        if extra_filters:
+            chain = f"{chain},{extra_filters}"
+        return _render(src, dest, chain, complex_=False)
 
-    chain = (
-        f"sendcmd=f='{commands.as_posix()}',"
-        f"crop=w={path.crop_w}:h={path.source_h}:x={path.x_at(0):.1f}:y=0,"
-        f"scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1"
-    )
+    width, height = probe_size(src)
+    if report is not None:
+        report.update({"layout": "centred"})
+    chain = centred_filter(width, height)
     if extra_filters:
         chain = f"{chain},{extra_filters}"
     return _render(src, dest, chain, complex_=False)

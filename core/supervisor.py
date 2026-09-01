@@ -1349,15 +1349,66 @@ class Supervisor:
 
     @staticmethod
     def _tighten(raw: Path, judged, out_dir: Path) -> Path:  # noqa: ANN001
-        """Trim to the part the model said was the moment, if it named one."""
+        """Trim the held window down to the clip inside it.
+
+        What is held is a window: `live_lead_s` before the peak and a tail
+        after it. What ships has to be a clip, and those are different shapes -
+        see core.clipping. The window opens twenty-two seconds before anything
+        happens, which puts the payoff three quarters of the way through
+        something nobody is still watching by then.
+
+        So the edges are found from the audio of the window itself: back to
+        the pause that opens the line setting it up, forward to the end of the
+        loud part with room after it for the reaction to land. The model gets
+        a say in *where* the moment is when it named one - its window seeds
+        the trigger - but not in where the clip ends, because it was answering
+        about the moment and the clip is the moment plus its room.
+
+        Falls back to what the model said, and then to the untrimmed window,
+        so a clip is never lost to this.
+        """
+        from core import clipping, hearing
+        # Locally, and renamed: `probe` is a chat connection everywhere else
+        # in this file.
+        from core.ffmpeg_ops import probe as probe_video
+
         start, end = judged.best_start_s, judged.best_end_s
+        span_s = 0.0
+        try:
+            span_s = probe_video(raw).duration_s
+        except Exception:  # noqa: BLE001 - a probe that fails is not fatal here
+            pass
+        if span_s > 0.0:
+            # The peak is at live_lead_s in the window by construction; if the
+            # model named a moment, the middle of what it named is better.
+            trigger_s = float(settings.live_lead_s)
+            if start is not None and end is not None and end > start:
+                trigger_s = (start + end) / 2.0
+            trigger_s = max(0.0, min(span_s, trigger_s))
+            try:
+                bounds = clipping.find(hearing.listen(raw), trigger_s, span_s=span_s)
+                start, end = bounds.start_s, bounds.end_s
+                log.info(
+                    "supervisor: %s cut to %.1f..%.1f of %.0fs (%s)",
+                    raw.name, start, end, span_s, bounds.why.get("ends_on", "?"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.info("supervisor: could not find the edges of %s (%s)", raw.name, exc)
+
         if start is None or end is None or end - start < 6.0:
             return raw
+        # Re-encoded rather than copied. A stream copy can only start on a
+        # keyframe, so it slides the edges by up to a whole GOP - measured on
+        # a 40-second window it trimmed 3.6 seconds off a cut that asked for
+        # 16, which throws away the point of finding the edges at all. The
+        # clip is re-encoded by the reframe a moment later regardless, so the
+        # cost of being exact here is one encode of half a minute.
         trimmed = out_dir / f"{raw.stem}-tight.mp4"
         proc = subprocess.run(
             ["ffmpeg", "-y", "-v", "error", "-ss", f"{max(0.0, start):.2f}",
              "-t", f"{end - start:.2f}", "-i", str(raw),
-             "-c", "copy", "-avoid_negative_ts", "make_zero", str(trimmed)],
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+             "-c:a", "aac", "-movflags", "+faststart", str(trimmed)],
             capture_output=True,
         )
         if proc.returncode != 0 or not trimmed.exists() or trimmed.stat().st_size == 0:

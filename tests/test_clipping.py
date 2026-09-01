@@ -60,14 +60,14 @@ class TestTheSetupIsShort:
         watching seventeen clips that were correct and felt clipped short."""
         heard = build((14.0, -20.0), (10.0, -8.0))
         found = clipping.find(heard, trigger_s=14.0, span_s=24.0)
-        assert found.lead_s == pytest.approx(clipping.ROOM_S, abs=0.5)
+        assert found.lead_s == pytest.approx(clipping.ROOM_BEFORE_S, abs=0.5)
 
     def test_the_room_is_not_the_twenty_two_second_lead_again(self):
         """Five seconds around the whole loud stretch is a different thing
         from twenty-two seconds before the trigger, and has to stay one."""
         heard = build((30.0, -28.0), (6.0, -6.0), (30.0, -28.0))
         found = clipping.find(heard, trigger_s=32.0, span_s=66.0)
-        assert found.lead_s <= clipping.ROOM_S + clipping.ROOM_SNAP_S + 1.0
+        assert found.lead_s <= clipping.ROOM_BEFORE_S + clipping.ROOM_SNAP_S + 1.0
         # ...and the moment still lands in the front half of the clip.
         assert (32.0 - found.start_s) / found.length_s < 0.5
 
@@ -89,7 +89,8 @@ class TestItEndsWhenTheMomentEnds:
         # Quiet, the moment, a long loud reaction, then back to quiet.
         heard = build((8.0, -28.0), (6.0, -6.0), (20.0, -28.0))
         found = clipping.find(heard, trigger_s=8.0, span_s=34.0)
-        assert 14.0 <= found.end_s <= 22.0, found.as_dict()
+        # The loud part runs 8..14; the clip ends after it plus the room.
+        assert 14.0 <= found.end_s <= 14.0 + clipping.ROOM_AFTER_S + 2.0, found.as_dict()
         assert "loud part" in found.why["ends_on"]
 
     def test_it_finds_the_moment_even_when_the_trigger_lands_after_it(self):
@@ -125,6 +126,22 @@ class TestItEndsWhenTheMomentEnds:
         heard = build((5.0, -28.0), (120.0, -6.0))
         found = clipping.find(heard, trigger_s=5.0, span_s=125.0)
         assert found.length_s <= clipping.MAX_CLIP_S
+
+
+class TestTheRoomIsLopsided:
+    """More after than before. The reaction is the part worth watching and it
+    outlasts the thing that caused it."""
+
+    def test_there_is_more_room_after_than_before(self):
+        assert clipping.ROOM_AFTER_S > clipping.ROOM_BEFORE_S
+
+    def test_a_clip_gets_both(self):
+        heard = build((20.0, -30.0), (4.0, -6.0), (25.0, -30.0))
+        found = clipping.find(heard, trigger_s=21.0, span_s=49.0)
+        before = found.why["loud_from"] - found.start_s
+        after = found.end_s - found.why["loud_to"]
+        assert before >= clipping.ROOM_BEFORE_S - 1.0, found.as_dict()
+        assert after >= clipping.ROOM_AFTER_S - 1.0, found.as_dict()
 
 
 class TestWhatAClipMayBe:
@@ -169,3 +186,32 @@ class TestPauses:
         soft = build((3.0, -40.0), (0.4, -54.0), (3.0, -40.0))
         assert clipping.pauses(loud.level_db, loud.window_s, over=(0.0, 6.4))
         assert clipping.pauses(soft.level_db, soft.window_s, over=(0.0, 6.4))
+
+
+class TestTheClipIsAboutItsOwnTrigger:
+    """Four of seventeen real clips were built around a loud stretch that had
+    nothing to do with the moment the sensors nominated - the nearest one was
+    taken however far away it was - so the clip opened long before its own
+    trigger and the nominated moment sat in the back half."""
+
+    def test_a_distant_loud_stretch_is_not_this_moment(self):
+        # Loud at 5..9, trigger at 40, nothing loud anywhere near it.
+        heard = build((5.0, -30.0), (4.0, -6.0), (51.0, -30.0))
+        found = clipping.find(heard, trigger_s=40.0, span_s=60.0)
+        assert found.why["ends_on"] == "nothing loud to end on"
+        assert found.start_s > 9.0, found.as_dict()
+
+    def test_the_trigger_is_always_inside_the_clip(self):
+        for trigger in (12.0, 20.0, 30.0, 40.0, 55.0):
+            heard = build((5.0, -30.0), (4.0, -6.0), (51.0, -30.0))
+            found = clipping.find(heard, trigger_s=trigger, span_s=60.0)
+            assert found.start_s <= found.trigger_s <= found.end_s, found.as_dict()
+
+    def test_a_loud_stretch_just_beside_the_trigger_is_still_this_moment(self):
+        """The sensors are approximate, not wrong - a couple of seconds off is
+        the same moment and has to stay one."""
+        heard = build((8.0, -30.0), (5.0, -6.0), (30.0, -30.0))
+        found = clipping.find(heard, trigger_s=16.0, span_s=43.0)
+        assert "near it" in found.why["ends_on"] or found.why["ends_on"].startswith(
+            "the end of the loud part")
+        assert found.why["loud_to"] == pytest.approx(13.0, abs=1.0)

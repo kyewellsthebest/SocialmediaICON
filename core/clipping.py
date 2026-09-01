@@ -75,6 +75,14 @@ LOUD_MIN_S = 1.0
 #: Two loud stretches closer together than this are one moment with a breath
 #: in the middle.
 LOUD_JOIN_S = 1.8
+#: How far from the trigger a loud stretch may be and still be *this* moment.
+#:
+#: Without a limit the nearest stretch was taken however far away it was, and
+#: on four of seventeen real clips that was a different moment entirely: the
+#: clip was built around a loud run twenty seconds off, so it opened long
+#: before its own trigger and the thing the sensors nominated was somewhere in
+#: the back half. Past this the trigger is treated as the moment on its own.
+LOUD_NEAR_S = 6.0
 #: Once it has settled, run on to the end of whatever is being said, up to
 #: this much. This is the "and then he says the thing that makes it" clause -
 #: cutting on the instant the laugh stops truncates the best line in the clip.
@@ -94,7 +102,11 @@ TAIL_S = 0.6
 #: 22 seconds before the *trigger*, with the payoff 73% of the way through.
 #: This is five seconds around the *whole loud stretch*, which usually already
 #: contains the setup - so the moment still lands early.
-ROOM_S = 5.0
+#: More after than before, because the reaction is the part worth watching and
+#: it outlasts the thing that caused it. Asked for after a second viewing:
+#: five seconds still felt like leaving before anyone had finished responding.
+ROOM_BEFORE_S = 5.0
+ROOM_AFTER_S = 7.0
 #: How far the room may be nudged to land on a pause instead of mid-word.
 ROOM_SNAP_S = 2.0
 
@@ -122,7 +134,7 @@ SNAP_S = 4.0
 #: shorter than this the clip is grown outwards to the pauses either side,
 #: which is the difference between giving it room and padding it: the extra
 #: seconds are whole sentences, not an arbitrary number tacked on the end.
-MIN_CLIP_S = 15.0
+MIN_CLIP_S = 20.0
 MAX_CLIP_S = 59.0
 
 #: A dip this far below the local speech level, held this long, is a gap
@@ -330,14 +342,23 @@ def find(heard, trigger_s: float, *, span_s: float) -> Bounds:  # noqa: ANN001
     look_from = max(0.0, trigger_s - REACTION_MAX_S)
     runs = stretches(envelope, step, over=(look_from, look_to))
 
+    def away(run: tuple[float, float]) -> float:
+        if run[0] <= trigger_s <= run[1]:
+            return 0.0
+        return min(abs(run[0] - trigger_s), abs(run[1] - trigger_s))
+
     here = [r for r in runs if r[0] - 1.0 <= trigger_s <= r[1] + 1.0]
+    nearest = min(runs, key=away) if runs else None
     if here:
         moment = here[0]
         why["ends_on"] = "the end of the loud part"
-    elif runs:
-        moment = min(runs, key=lambda r: min(abs(r[0] - trigger_s), abs(r[1] - trigger_s)))
+    elif nearest is not None and away(nearest) <= LOUD_NEAR_S:
+        moment = nearest
         why["ends_on"] = "the end of the loud part near it"
     else:
+        # Everything loud belongs to some other moment. Build the clip around
+        # the trigger rather than around a stretch that has nothing to do
+        # with it.
         moment = (trigger_s, trigger_s)
         why["ends_on"] = "nothing loud to end on"
 
@@ -345,14 +366,14 @@ def find(heard, trigger_s: float, *, span_s: float) -> Bounds:  # noqa: ANN001
     # opens and closes on a sentence rather than mid-word. The moment may well
     # start before the trigger - the sensors point at a reaction, and a
     # reaction is the back half of the thing.
-    want = max(0.0, moment[0] - ROOM_S)
+    want = max(0.0, moment[0] - ROOM_BEFORE_S)
     near = [
         t for t in pauses(levels, step, over=(max(0.0, want - ROOM_SNAP_S),
                                               min(moment[0], want + ROOM_SNAP_S)))
     ]
     start = min(start, min(near, key=lambda t: abs(t - want)) if near else want)
 
-    end = min(span_s, moment[1] + ROOM_S)
+    end = min(span_s, moment[1] + ROOM_AFTER_S)
     after = [
         t for t in pauses(levels, step, over=(end, min(span_s, end + ROOM_SNAP_S)))
         if t > end

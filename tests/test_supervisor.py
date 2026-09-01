@@ -2267,3 +2267,85 @@ class TestTheDeclineCountIsADayNotAWindow:
                       ago_s=90.0, chat_s=285.0)
         assert sup.finish(sup.cut(watched, found=found, now=time.time()),
                           now=time.time()) is None
+
+
+class TestWhatShipsIsAClipNotTheWindow:
+    """The buffer holds `live_lead_s` before the peak and a tail after it -
+    22 seconds and 8 - because a moment nominated by chat happened before chat
+    reacted to it. That correction belongs to the *trigger*, not to the edges
+    of the clip, and the two were conflated: every clip shipped with
+    twenty-two seconds of preamble in front of it.
+
+    core.clipping finds the real edges from the audio. It was written for the
+    offline reel tool first, and until this was wired in it ran nowhere near
+    the live path, so the bot kept shipping the window.
+    """
+
+    @staticmethod
+    def _held_window(tmp_path):
+        """The shape of what the buffer hands over: talking, one loud moment
+        at live_lead_s, talking after it."""
+        import subprocess
+
+        import synth_audio
+
+        sound = synth_audio.join(
+            synth_audio.speech(22.0, level=0.05),
+            synth_audio.laughter(4.0, level=0.45),
+            synth_audio.speech(14.0, level=0.05),
+        )
+        wav = synth_audio.write("held-window", sound, out=tmp_path)
+        held = tmp_path / "held.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error",
+             "-f", "lavfi", "-i", "color=c=gray:s=320x180:r=15:d=40",
+             "-i", str(wav), "-c:v", "libx264", "-preset", "ultrafast",
+             "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(held)],
+            check=True, capture_output=True,
+        )
+        return held
+
+    def test_the_window_is_trimmed_to_the_edges_the_audio_gives(self, tmp_path):
+        from core import clipping
+        from core import supervisor as sup
+        from core.ffmpeg_ops import probe
+
+        src = self._held_window(tmp_path)
+        was = probe(src).duration_s
+        out = sup.Supervisor._tighten(src, _Judged(None, None), tmp_path)
+
+        assert out != src, "it shipped the window untrimmed"
+        length = probe(out).duration_s
+        assert length < was - 4.0, "nothing was trimmed off the window"
+        assert clipping.MIN_CLIP_S - 2.0 <= length <= clipping.MAX_CLIP_S
+
+    def test_it_opens_near_the_moment_not_twenty_two_seconds_before_it(
+            self, tmp_path):
+        """The whole point. The moment is at 22s in the window; the clip has
+        to open in the seconds before it, not at the top of the window."""
+        from core import clipping
+        from core import supervisor as sup
+        from core import hearing
+        from core.ffmpeg_ops import probe
+
+        src = self._held_window(tmp_path)
+        bounds = clipping.find(hearing.listen(src), 22.0, span_s=probe(src).duration_s)
+        assert bounds.start_s > 6.0, bounds.as_dict()
+        assert bounds.start_s <= 22.0 <= bounds.end_s
+
+    def test_a_clip_it_cannot_listen_to_is_still_shipped(self, tmp_path):
+        """Never lose a clip to this. A file with no audio, an ffmpeg that
+        fails - the untrimmed window is worse than the clip and much better
+        than nothing."""
+        from core import supervisor as sup
+
+        missing = tmp_path / "not-a-video.mp4"
+        missing.write_bytes(b"")
+        judged = _Judged(best_start_s=None, best_end_s=None)
+        assert sup.Supervisor._tighten(missing, judged, tmp_path) == missing
+
+
+@dataclass
+class _Judged:
+    best_start_s: float | None
+    best_end_s: float | None
