@@ -35,6 +35,29 @@ def write(name: str, samples: list[float], out: Path | None = None) -> Path:
     return path
 
 
+def write_stereo(name: str, samples: list[float], out: Path | None = None) -> Path:
+    """The same audio, in two channels. Which is what a real stream is.
+
+    Every other fixture here is mono, and that gap hid a bug that made the
+    ear useless in production for the life of the project: the band splitter
+    merges nine taps into nine channels, which is only nine if each tap is
+    mono. Stereo in makes eighteen, ffmpeg refuses the graph, and listen()
+    raises - so laughter and voice scored zero on every real stream while
+    every test here passed.
+    """
+    OUT = out or Path(tempfile.gettempdir()) / "clipengine-synth"
+    OUT.mkdir(parents=True, exist_ok=True)
+    path = OUT / f"{name}-stereo.wav"
+    with wave.open(str(path), "wb") as f:
+        f.setnchannels(2)
+        f.setsampwidth(2)
+        f.setframerate(RATE)
+        f.writeframes(b"".join(
+            struct.pack("<hh", *(max(-32767, min(32767, int(v * 32767))),) * 2)
+            for v in samples))
+    return path
+
+
 def voiced(t: float, f0: float) -> float:
     """A glottal-ish tone: a fundamental plus the harmonics that make it a voice."""
     return sum(math.sin(2 * math.pi * f0 * h * t) / h for h in (1, 2, 3, 4, 5)) / 2.3

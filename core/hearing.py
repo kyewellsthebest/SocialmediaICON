@@ -159,7 +159,24 @@ def _split_bands(src: Path | str, *, seconds: float | None = None) -> list[array
     # filtered version of it.
     outs = len(BANDS) + 1
     taps = "".join(f"[s{i}]" for i in range(outs))
-    chain = [f"[0:a]asplit={outs}{taps}"]
+    # Downmixed to mono before anything else, and this is not a nicety.
+    #
+    # The nine taps are merged back into one stream of nine channels, which is
+    # what the reader below unpacks. That arithmetic only holds if each tap is
+    # mono: on a stereo source the merge produces eighteen channels, the
+    # requested nine cannot be reconciled with them, and ffmpeg fails the
+    # whole filter graph with "Error reinitializing filters". Not partially -
+    # it writes no audio at all, and listen() raises.
+    #
+    # Every fixture in the tests is mono and every real stream is stereo, so
+    # the ear passed every test and had never once worked in production. What
+    # that cost: laughter and voice scored zero on every window of every
+    # stream, so the only families that could ever fire were motion and faces,
+    # so almost nothing ever had two families agreeing, so almost everything
+    # faced the lone-signal bar and failed it. Measured on 27 minutes of real
+    # video: 168 windows, 0 with two families agreeing, 141 rejected as "one
+    # signal only".
+    chain = [f"[0:a]aformat=channel_layouts=mono,asplit={outs}{taps}"]
     for i, (_, low, high) in enumerate(BANDS):
         chain.append(f"[s{i}]highpass=f={low},lowpass=f={high}[b{i}]")
     chain.append(f"[s{len(BANDS)}]anull[b{len(BANDS)}]")

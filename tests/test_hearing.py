@@ -220,3 +220,53 @@ class TestTheShapeOfTheAnswer:
         found = heard(sound, "shape", synth.join(synth.speech(20), synth.laughter(4)))
         json.dumps(found.as_dict())
         assert set(found.as_dict()) >= {"laughs", "shouts", "drops", "speech_share"}
+
+
+class TestTheEarWorksOnRealAudio:
+    """Every fixture in this file is mono. Every real stream is stereo. The ear
+    passed every test here and had never once worked in production.
+
+    The band splitter merges nine taps - eight bands and the untouched signal -
+    back into one stream and reads nine channels off it. That is nine only if
+    each tap is mono. On a stereo source the merge makes eighteen, the nine
+    requested cannot be reconciled with them, and ffmpeg fails the whole graph
+    with "Error reinitializing filters". Not partially: it writes no audio and
+    listen() raises.
+
+    What it cost, measured on 27 minutes of real 1080p video: 168 windows
+    scored, the ear failed on all 168, laughter and voice therefore scored zero
+    on every one, and not a single window had two families of evidence
+    agreeing - so almost everything faced the lone-signal bar and 141 of them
+    were rejected as "one signal only".
+    """
+
+    def _talking(self):
+        import synth_audio as sound
+
+        return sound.join(sound.room(2.0), sound.speech(6.0), sound.room(2.0))
+
+    def test_stereo_is_heard_at_all(self):
+        import synth_audio as sound
+
+        path = sound.write_stereo("talking", self._talking())
+        found = hearing.listen(path)
+        assert found.duration_s > 5.0, "a stereo source read as no audio at all"
+
+    def test_it_hears_the_same_thing_in_stereo_as_in_mono(self):
+        """Downmixing must not change what the ear reports, or every threshold
+        tuned on the mono fixtures becomes wrong the moment this is fixed."""
+        import synth_audio as sound
+
+        samples = self._talking()
+        one = hearing.listen(sound.write("talking-mono", samples))
+        two = hearing.listen(sound.write_stereo("talking", samples))
+        assert abs(one.speech_share - two.speech_share) < 0.05
+        assert abs(len(one.shouts) - len(two.shouts)) <= 1
+
+    def test_a_stereo_laugh_is_still_a_laugh(self):
+        """The shape the other laughter tests use - speech first, so the laugh
+        has a baseline to stand out from rather than silence."""
+        import synth_audio as sound
+
+        samples = sound.join(sound.speech(20), sound.laughter(4))
+        assert hearing.listen(sound.write_stereo("laughing", samples)).laughs
