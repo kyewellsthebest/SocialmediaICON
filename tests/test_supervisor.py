@@ -2230,3 +2230,40 @@ class TestADroppedClipCostsOnlyALook:
         record = sup.finish(sup.cut(watched, found=found, now=time.time()),
                             now=time.time())
         assert record["framing"]["layout"] == "stacked"
+
+
+class TestTheDeclineCountIsADayNotAWindow:
+    """The Clips tally showed "3 it turned down" off len(self.declined) - a
+    list trimmed to the last eight. It is right until the ninth decline of the
+    day and then stops moving, which reads like a model that stopped being
+    fussy at exactly the moment it got fussier."""
+
+    def _sup(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        monkeypatch.setattr(sup, "store", lambda record: record)
+        monkeypatch.setattr(sup, "publish_clip", lambda path: "key")
+        monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
+        _refuses(sup, monkeypatch)
+        return sup
+
+    def test_it_keeps_counting_past_the_recent_list(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        for i in range(12):
+            watched = _watched(f"c{i}", messages=_chatter(burst_at=285.0),
+                               heard=_laughing_at(285.0))
+            found = Found(score=50.0, why={"laughter": 50.0}, at_s=15.0,
+                          ago_s=90.0, chat_s=285.0)
+            sup.finish(sup.cut(watched, found=found, now=time.time()), now=time.time())
+
+        assert len(sup.declined) == 8, "the recent list is still trimmed"
+        assert sup.funnel_report()["declined"] == 12, "but the count is the day's"
+
+    def test_a_declined_clip_is_still_not_kept(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        watched = _watched("x", messages=_chatter(burst_at=285.0),
+                           heard=_laughing_at(285.0))
+        found = Found(score=50.0, why={"laughter": 50.0}, at_s=15.0,
+                      ago_s=90.0, chat_s=285.0)
+        assert sup.finish(sup.cut(watched, found=found, now=time.time()),
+                          now=time.time()) is None

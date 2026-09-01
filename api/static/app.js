@@ -1042,7 +1042,7 @@ function clipTally(live) {
   const judged = f.judged_today ?? 0;
   const cut = f.cut_today ?? 0;
   const dropped = at("ranked too low");
-  const declined = f.declined ?? 0;
+  const declined = at("the model turned it down") || (f.declined ?? 0);
 
   // Ordered as the moment travels: looked at, cleared the bar, watched, kept.
   const tiles = [
@@ -1077,6 +1077,15 @@ function clipTally(live) {
     why = `${cut} moments were cut and ${dropped} were dropped for ranking `
       + `under ${live.caps?.keep_rank ?? 20}. If that keeps happening the floor `
       + `is set too high, not the streams too quiet.`;
+  } else if (declined >= cut && cut > 0 && !rowsKept(f)) {
+    // The case this page hit first, and the one it could not explain: every
+    // moment cut was watched and every one was turned down. That is the model
+    // working, or the model being too strict, and the two are told apart by
+    // reading what it said - which is on the Live page, under what it decided
+    // against.
+    why = `All ${cut} moments cut were watched, and the model turned down every `
+      + `one. That is either it doing its job or it being too strict - the Live `
+      + `page lists what it said about each, which is the only way to tell.`;
   }
 
   return `<div class="card plate">

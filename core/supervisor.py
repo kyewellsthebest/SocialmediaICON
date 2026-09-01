@@ -1494,6 +1494,11 @@ class Supervisor:
 
         if judged.watched and not self._acceptable(judged):
             candidate.discard()
+            # Counted in the funnel, not just kept in the recent list - that
+            # list is trimmed to the last eight, so reading a day's declines
+            # off its length silently stops counting at eight and reads like a
+            # model that stopped being fussy.
+            self._tally("the model turned it down", candidate.found.score)
             self.declined.append({
                 "channel": candidate.channel,
                 "at": datetime.fromtimestamp(candidate.cut_at, UTC).isoformat(),
@@ -2136,7 +2141,10 @@ class Supervisor:
             # thirty looks a day survived a redesign meant to clip everything.
             "spent_usd": round(self.spent_today(), 2),
             "budget_usd": round(float(settings.verdict_daily_usd), 2),
-            "declined": len(self.declined),
+            # The day's count, from the funnel. `self.declined` is the last
+            # eight for the page to read, and its length is not a total.
+            "declined": (self.funnel.get("stages") or {}).get(
+                "the model turned it down", 0),
         }
 
     def _pace(self, stages: dict[str, int]) -> dict[str, Any]:
