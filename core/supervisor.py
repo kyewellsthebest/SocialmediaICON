@@ -1232,23 +1232,10 @@ class Supervisor:
             # five minutes of nothing every hour - a betting screen with music
             # over it, scored 18.0, entirely on how many people were typing.
             self._tally("scored", found.score)
-            if found.score < settings.live_min_score:
-                watched.last_reason = "too weak"
-                self._tally("too weak", found.score)
-                continue
-            if found.event_score < settings.live_min_event_score:
-                watched.last_reason = "nothing happened"
-                self._tally("no event", found.score)
-                continue
-            # One kind of evidence is the weakest a moment can be, and on an
-            # IRL stream it is usually the camera: a phone carried down a
-            # street surges against its own baseline all evening and scores 40
-            # every time. Two families agreeing clear the bar above; one on
-            # its own has to be enormous.
-            agreed = moments.agreeing(found.why)
-            if len(agreed) < 2 and found.event_score < settings.live_lone_signal_score:
-                watched.last_reason = f"only {agreed[0] if agreed else 'one signal'}"
-                self._tally("one signal only", found.score)
+            passed, stage, reason = gate(found)
+            if not passed:
+                watched.last_reason = reason
+                self._tally(stage, found.score)
                 continue
             if now - watched.last_catch_at < COOLDOWN_S:
                 self._tally("cooling down", found.score)
@@ -2180,6 +2167,33 @@ class Supervisor:
         log.warning("supervisor: %s", message)
         self.errors.append(f"{datetime.now(UTC).strftime('%H:%M:%S')} {message}")
         del self.errors[:-20]
+
+
+def gate(found: Found) -> tuple[bool, str, str]:
+    """Is this scored window worth cutting? (passed, funnel stage, reason).
+
+    Pulled out of tick() so that anything asking "would this have been cut"
+    asks the code that actually decides, rather than a copy of it. A harness
+    that reimplements the gate tests the harness.
+
+    Two bars, and both are about whether this is worth anyone's time. The caps
+    decide how many clips a day; these decide whether there is a clip at all.
+    Without them the watcher cut its best five minutes of nothing every hour -
+    a betting screen with music over it, scored 18.0, entirely on how many
+    people were typing.
+    """
+    if found.score < settings.live_min_score:
+        return False, "too weak", "too weak"
+    if found.event_score < settings.live_min_event_score:
+        return False, "no event", "nothing happened"
+    # One kind of evidence is the weakest a moment can be, and on an IRL
+    # stream it is usually the camera: a phone carried down a street surges
+    # against its own baseline all evening and scores 40 every time. Two
+    # families agreeing clear the bar above; one on its own has to be enormous.
+    agreed = moments.agreeing(found.why)
+    if len(agreed) < 2 and found.event_score < settings.live_lone_signal_score:
+        return False, "one signal only", f"only {agreed[0] if agreed else 'one signal'}"
+    return True, "cut", found.top_reason
 
 
 def _face_moments(watched: Watched, found: Found) -> list[float]:
