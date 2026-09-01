@@ -147,6 +147,41 @@ def read(path: Path, length_s: float) -> Window:
     return window
 
 
+def make_clip(src: Path, window: Window, into: Path, n: int) -> dict[str, Any]:
+    """Cut the moment and crop it to portrait, the way the watcher does.
+
+    The same two steps the live path takes, in the same order and through the
+    same code: the moment is taken with `live_lead_s` in front of the peak
+    because a clip that opens on the punchline is a clip nobody understands,
+    and then core.reframe decides for itself whether this is a desk stream to
+    be stacked or something to be followed.
+
+    One thing it cannot do the same way: live, the tail runs until chat calms
+    down, and there is no chat here, so it uses the floor - `live_trail_s`.
+    """
+    from core import reframe
+
+    lead = float(settings.live_lead_s)
+    trail = float(settings.live_trail_s)
+    start = max(0.0, window.peak_s - lead)
+    raw = into / f"{n:02d}-raw.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}",
+         "-t", f"{lead + trail:.2f}", "-i", str(src),
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+         "-c:a", "aac", "-movflags", "+faststart", str(raw)],
+        check=True, capture_output=True,
+    )
+
+    when = f"{int(window.peak_s) // 60:02d}m{int(window.peak_s) % 60:02d}s"
+    final = into / f"{n:02d}-{when}-score{window.score:.0f}.mp4"
+    framing: dict[str, Any] = {}
+    reframe.to_portrait(raw, final, work_dir=into / "tmp", report=framing)
+    raw.unlink(missing_ok=True)
+    return {"path": final, "framing": framing,
+            "start_s": start, "length_s": lead + trail}
+
+
 def fetch(source: str, into: Path) -> Path:
     """A local file stays where it is; anything else comes down with yt-dlp."""
     local = Path(source)
@@ -229,6 +264,9 @@ def main() -> int:
                         help="seconds between windows (default: the window size)")
     parser.add_argument("--moments", default="",
                         help="where you know the moments are: 4:12,17:40")
+    parser.add_argument("--cut", type=Path, help=(
+        "write the clips it would have cut into this directory, cropped to "
+        "portrait exactly as the watcher crops them"))
     parser.add_argument("--json", type=Path, help="also write the readings here")
     parser.add_argument("--no-chat-note", action="store_true")
     args = parser.parse_args()
@@ -264,6 +302,29 @@ def main() -> int:
             at += step
 
         report(windows, marked, chat_note=not args.no_chat_note)
+
+        if args.cut:
+            args.cut.mkdir(parents=True, exist_ok=True)
+            passed = [w for w in windows if w.passed]
+            # Two windows can nominate the same moment; the watcher would not
+            # cut both, because a moment it has just caught is inside its
+            # cooldown. Keeping the strongest is the same choice.
+            kept: list[Window] = []
+            for w in sorted(passed, key=lambda w: -w.score):
+                if all(abs(w.peak_s - k.peak_s) > supervisor.COOLDOWN_S
+                       for k in kept):
+                    kept.append(w)
+            kept.sort(key=lambda w: w.peak_s)
+
+            print(f"\nCutting {len(kept)} clip(s) into {args.cut}:")
+            for n, w in enumerate(kept, start=1):
+                made = make_clip(src, w, args.cut, n)
+                how = made["framing"].get("layout", "?")
+                cam = made["framing"].get("webcam") or {}
+                where = (f" (webcam at {cam['x'] + cam['w'] / 2:.0%},"
+                         f"{cam['y'] + cam['h'] / 2:.0%})" if cam else "")
+                print(f"  {made['path'].name}  {w.at}  score {w.score:.1f}  "
+                      f"{how}{where}")
 
         if args.json:
             args.json.write_text(json.dumps([
