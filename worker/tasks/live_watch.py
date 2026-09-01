@@ -66,6 +66,50 @@ def _stalled(hint: str, **extra: object) -> dict:
     return {"ok": False, "reason": hint}
 
 
+#: How long a starting watcher waits for a lease somebody else holds.
+#:
+#: Slightly longer than the lease itself, so a lease left behind by a killed
+#: container is always outlived rather than sometimes.
+LEASE_WAIT_S = livestate.LEASE_S + 30.0
+#: How often it checks while waiting.
+LEASE_POLL_S = 5.0
+
+
+def _claim(holder: str) -> bool:
+    """Take the lease, waiting out one that is only still there because the
+    last container was killed before it could hand it back.
+
+    Railway stops a container with SIGKILL on deploy, so the release in the
+    `finally` below does not always run and the lease sits in Redis until its
+    TTL. This used to return immediately, and the watchdog re-queued the job
+    every sixty seconds until the TTL passed - so a deploy cost five minutes
+    of not watching, and the page said "Another watcher already holds the
+    lease; leaving it alone", which reads as a permanent refusal rather than
+    a wait. It was neither obvious that it would recover nor true that it
+    already had.
+
+    Waiting here instead means a deploy costs however long is actually left on
+    the old lease, and the page can say so while it counts down.
+    """
+    if livestate.take_lease(holder):
+        return True
+
+    deadline = time.time() + LEASE_WAIT_S
+    while time.time() < deadline:
+        left = livestate.lease_left_s()
+        livestate.note(
+            "Waiting for the previous watcher's lease to expire"
+            + (f" - about {left:.0f}s left." if left else ".")
+        )
+        log.info("live_watch: waiting for the lease (%s left)",
+                 f"{left:.0f}s" if left else "unknown")
+        time.sleep(LEASE_POLL_S)
+        if livestate.take_lease(holder):
+            log.info("live_watch: took the lease after waiting")
+            return True
+    return False
+
+
 def run(max_seconds: float | None = None) -> dict:
     """Watch until told to stop. Returns a summary of what was caught."""
     global _current
@@ -83,8 +127,13 @@ def run(max_seconds: float | None = None) -> dict:
     # watchdog can queue a run while a healthy one is mid-tick, and two
     # watchers would double the bandwidth and race on the caps.
     holder = _holder()
-    if not livestate.take_lease(holder):
-        return _stalled("Another watcher already holds the lease; leaving it alone.")
+    if not _claim(holder):
+        return _stalled(
+            "Another watcher still holds the lease and it did not expire in "
+            f"{LEASE_WAIT_S:.0f}s. If nothing else is running, the previous "
+            "container was killed without handing it back and it will clear "
+            "itself shortly."
+        )
 
     supervisor = Supervisor()
     _current = supervisor

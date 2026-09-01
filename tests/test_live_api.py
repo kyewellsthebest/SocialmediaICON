@@ -684,11 +684,77 @@ class TestItKeepsWatchingWithoutBeingAskedTo:
 
         monkeypatch.setattr(settings, "live_enabled", True)
         monkeypatch.setattr(live_watch, "_current", None)
+        # It waits for a lease now rather than refusing on sight, so the wait
+        # is shortened here. What is under test is that it still gives up
+        # rather than starting a second watcher beside a live one.
+        monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 0.2)
+        monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.05)
         livestate.take_lease("somebody-else")
 
         result = live_watch.run(max_seconds=0)
         assert result["ok"] is False
         assert "lease" in result["reason"]
+
+
+class TestADeployDoesNotCostFiveMinutesOfWatching:
+    """Railway stops a container with SIGKILL, so the release in the watcher's
+    `finally` does not run on a deploy and the lease sits in Redis until its
+    five-minute TTL.
+
+    Starting up, the watcher used to see that lease, return immediately, and
+    leave the page saying "Another watcher already holds the lease; leaving it
+    alone" - which reads as a permanent refusal. It was not permanent: the
+    watchdog re-queued every sixty seconds and one of those eventually landed
+    after the TTL. But it was five minutes of not watching after every deploy,
+    and nothing on the page said it would recover on its own."""
+
+    def test_it_waits_for_a_lease_that_is_about_to_expire(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 5.0)
+        monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.02)
+        # A lease left behind by a container that was killed: nobody is
+        # renewing it, so it lapses on its own a moment from now.
+        livestate.take_lease("the-killed-one")
+        livestate._fallback["lease"] = (
+            "the-killed-one", time.time() - livestate.LEASE_S + 0.1)
+
+        assert live_watch._claim("the-new-one") is True
+
+    def test_it_gives_up_on_a_lease_that_keeps_being_renewed(self, monkeypatch):
+        """A watcher that is actually alive holds its lease indefinitely, and
+        a second one must never start beside it."""
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 0.2)
+        monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.05)
+        livestate.take_lease("the-live-one")
+
+        assert live_watch._claim("the-new-one") is False
+
+    def test_a_free_lease_is_taken_without_waiting(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 30.0)
+        started = time.time()
+        assert live_watch._claim("the-only-one") is True
+        assert time.time() - started < 1.0, "it waited when nothing held it"
+
+    def test_the_page_is_told_it_is_waiting_rather_than_refusing(self, monkeypatch):
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 0.2)
+        monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.05)
+        livestate.take_lease("the-live-one")
+        live_watch._claim("the-new-one")
+
+        note = livestate.last_note() or {}
+        assert "waiting" in str(note).lower(), note
+
+    def test_how_long_is_left_can_be_asked(self):
+        livestate.take_lease("somebody")
+        left = livestate.lease_left_s()
+        assert left is not None and 0 < left <= livestate.LEASE_S
 
     def test_the_watchdog_leaves_a_live_watcher_alone(self, monkeypatch):
         from worker.tasks import live_watch

@@ -228,6 +228,27 @@ def renew_lease(holder: str) -> None:
         log.debug("livestate: could not renew the lease (%s)", exc)
 
 
+def lease_left_s() -> float | None:
+    """Seconds until the current lease expires by itself, if there is one.
+
+    A watcher that has to wait for a stale lease needs to say how long for.
+    "Another watcher already holds the lease" reads as a permanent refusal
+    when it is usually a container that was killed four minutes ago.
+    """
+    client = _redis()
+    if client is None:
+        held = _fallback.get("lease")
+        if not held:
+            return None
+        left = LEASE_S - (time.time() - held[1])
+        return max(0.0, left)
+    try:
+        ttl = client.ttl(LEASE_KEY)
+    except Exception:  # noqa: BLE001 - not knowing is not an error
+        return None
+    return float(ttl) if isinstance(ttl, int) and ttl > 0 else None
+
+
 def release_lease(holder: str) -> None:
     """Give it up on the way out, so the next one starts in seconds."""
     client = _redis()
