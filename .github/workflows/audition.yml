@@ -59,6 +59,15 @@ jobs:
           # Only used when `judge` is on. Absent is fine: the verdict step is
           # skipped and the arithmetic half still runs.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # YouTube challenges datacenter addresses, and a CI runner is the
+          # most datacenter address there is. core.ytdlp rotates player
+          # clients to get past that, which works often but not always; these
+          # are what it falls back on. All optional - without them it tries
+          # the clients alone and says so clearly if it is refused.
+          YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
+          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES_B64 }}
+          YTDLP_PROXIES: ${{ secrets.YTDLP_PROXIES }}
+          YTDLP_PLAYER_CLIENTS: ${{ vars.YTDLP_PLAYER_CLIENTS }}
         run: |
           set -o pipefail
           python scripts/audition.py "${{ inputs.source }}" \

@@ -210,22 +210,53 @@ def judge(clip: Path, window: Window) -> dict[str, Any]:
 
 
 def fetch(source: str, into: Path) -> Path:
-    """A local file stays where it is; anything else comes down with yt-dlp."""
+    """A local file stays where it is; anything else comes down with yt-dlp.
+
+    Through core.ytdlp rather than yt-dlp directly, which is the whole point:
+    YouTube challenges datacenter addresses, and the set of player clients
+    that gets served changes every few months. That module already rotates
+    clients and proxies and carries cookies, because the rest of the codebase
+    hit this first. Calling yt-dlp raw here - which is what this did - meant
+    one client, one address, and "Sign in to confirm you're not a bot" on a
+    CI runner, which is the most datacenter address there is.
+    """
+    import yt_dlp
+
+    from core import ytdlp
+
     local = Path(source)
     if local.exists():
         return local
 
-    import yt_dlp
+    options = ytdlp.base_options(
+        format="bv*[height<=720]+ba/b[height<=720]/bv*+ba/b",
+        merge_output_format="mp4",
+        outtmpl=str(into / "%(id)s.%(ext)s"),
+    )
 
-    dest = into / "source.mp4"
-    with yt_dlp.YoutubeDL({
-        "outtmpl": str(dest), "quiet": True, "no_warnings": True,
-        "format": "best[height<=720]/best", "merge_output_format": "mp4",
-    }) as ydl:
-        ydl.download([source])
-    if not dest.exists():
-        raise SystemExit(f"could not download {source}")
-    return dest
+    def attempt(opts: dict) -> Path:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(source, download=True)
+            return Path(ydl.prepare_filename(info))
+
+    try:
+        path = ytdlp.run(attempt, options)
+    except Exception as exc:
+        raise SystemExit(
+            f"could not download {source}: {exc}\n\n"
+            f"{ytdlp.describe()}\n\n"
+            "If this is a bot check: YouTube refuses datacenter addresses, "
+            "which is what a CI runner is. Paste a cookies.txt into the "
+            "YTDLP_COOKIES secret, or run this against a local file instead."
+        ) from exc
+
+    if not path.exists():
+        # yt-dlp rewrote the container during the merge (.webm -> .mp4).
+        found = sorted(into.glob(f"{path.stem}.*"))
+        if not found:
+            raise SystemExit(f"yt-dlp reported success but wrote nothing for {source}")
+        path = found[0]
+    return path
 
 
 def report(windows: list[Window], marked: list[float], *, chat_note: bool) -> None:
