@@ -32,12 +32,29 @@ dependencies = [
   # numpy it is a second, which is the difference between a measurement the
   # watcher can afford on a timer and one it cannot.
   "numpy>=1.26",
+  # The eye that finds faces, and the one thing that decides whether a clip is
+  # a desk stream to be stacked or something to be followed. core.faces and
+  # core.reframe both import it.
+  #
+  # It was missing from here for the life of the project, and because the
+  # Dockerfile installs exactly this list, the deployed image had no cv2 at
+  # all. Both callers swallow the ImportError - a missed face is not an
+  # outage, and a blind guess is no layout - so nothing crashed and nothing
+  # said why. What actually happened, every day, on every clip: the FACES
+  # family scored zero on every stream, and find_webcam returned None on every
+  # desk stream, so every clip was framed "followed" and none was ever
+  # stacked. Both of those were reported as bugs in the detector and tuned
+  # against for days. The detector was fine. It was not installed.
+  "opencv-python-headless>=4.9",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
   "ruff>=0.5",
+  # There is no corpus of streamer footage here, so the face tests move a real
+  # photograph around a real H.264 video. scikit-image bundles the photograph.
+  "scikit-image>=0.22",
 ]
 
 [build-system]
