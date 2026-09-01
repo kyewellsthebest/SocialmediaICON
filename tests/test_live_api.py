@@ -690,6 +690,9 @@ class TestItKeepsWatchingWithoutBeingAskedTo:
         monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 0.2)
         monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.05)
         livestate.take_lease("somebody-else")
+        # ...and it is alive, which is to say it is publishing. A lease with
+        # no snapshot behind it is now taken over rather than waited out.
+        livestate.publish({"running": True})
 
         result = live_watch.run(max_seconds=0)
         assert result["ok"] is False
@@ -729,6 +732,7 @@ class TestADeployDoesNotCostFiveMinutesOfWatching:
         monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 0.2)
         monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.05)
         livestate.take_lease("the-live-one")
+        livestate.publish({"running": True})
 
         assert live_watch._claim("the-new-one") is False
 
@@ -746,6 +750,7 @@ class TestADeployDoesNotCostFiveMinutesOfWatching:
         monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 0.2)
         monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.05)
         livestate.take_lease("the-live-one")
+        livestate.publish({"running": True})
         live_watch._claim("the-new-one")
 
         note = livestate.last_note() or {}
@@ -870,3 +875,90 @@ class TestUnknownIsNotAnAnswer:
         monkeypatch.setattr(live_watch, "relaunch", lambda why: queued.append(why) or True)
         assert live_watch.ensure_running()["ok"] is True
         assert queued
+
+
+class TestADeployShouldNotCostMinutes:
+    """The lease is meant to stop two watchers, not to make a deploy expensive.
+
+    Railway sends SIGTERM and then SIGKILL. Nothing listened for either, so
+    every deploy left the lease behind to expire on its own and the next
+    watcher waited out the full five minutes for a container that had been
+    gone the whole time."""
+
+    def test_a_signal_hands_the_lease_back(self, monkeypatch):
+        import signal as signals
+
+        from worker.tasks import live_watch
+
+        handlers: dict = {}
+        monkeypatch.setattr(
+            signals, "signal", lambda sig, fn: handlers.__setitem__(sig, fn))
+        livestate.take_lease("me")
+        live_watch._hand_back_on_signal("me")
+
+        assert signals.SIGTERM in handlers, "nothing listens for a deploy"
+        killed: list = []
+        monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(sig))
+        handlers[signals.SIGTERM](signals.SIGTERM, None)
+
+        assert not livestate.watcher_alive(), "the lease was not handed back"
+        assert killed, "it must still die when it is told to"
+
+    def test_a_lease_whose_holder_stopped_publishing_is_taken_over(self, monkeypatch):
+        """A lease says somebody claims to be watching; the snapshot says
+        somebody is. A lease with no snapshot behind it belongs to a process
+        that is gone, and waiting out its TTL helps nobody."""
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 5.0)
+        monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.02)
+        livestate.take_lease("the-killed-one")
+        livestate.clear()  # it published nothing, because it is gone
+
+        assert live_watch._claim("the-new-one") is True
+
+    def test_a_holder_that_is_still_publishing_keeps_it(self, monkeypatch):
+        """The check has to cost a live watcher nothing, or the lease stops
+        being a lease and two of them run at once."""
+        from worker.tasks import live_watch
+
+        monkeypatch.setattr(live_watch, "LEASE_WAIT_S", 0.3)
+        monkeypatch.setattr(live_watch, "LEASE_POLL_S", 0.05)
+        livestate.take_lease("the-live-one")
+        livestate.publish({"running": True})
+
+        assert live_watch._claim("the-new-one") is False
+
+
+class TestAStreamNotYetReadIsNotAStreamScoringZero:
+    """Two men talking at a table, twenty seconds after the stream attached:
+    score 0.0, and five axes reading zero. That is not what the bot thought of
+    them - it had not listened to them yet. It reads as a judgement and it is
+    the normal state of every stream for its first half-minute."""
+
+    def _watched(self):
+        from core.supervisor import Watched
+
+        from test_supervisor import FakeBuffer, FakeChat
+        import core.chat as chatlib
+
+        return Watched(channel="deenthegreat", buffer=FakeBuffer("deenthegreat"),
+                       chat=FakeChat(chatlib.LiveLog(window_s=300.0)), started_at=0.0)
+
+    def test_a_stream_nothing_has_read_says_so(self):
+        assert self._watched().signals()["read"] is False
+
+    def test_a_stream_that_has_been_read_says_so_too(self):
+        from test_supervisor import Seen
+
+        watched = self._watched()
+        watched.seen = Seen(surges=[(15.0, 4.0)])
+        watched.senses_at = time.time()
+        assert watched.signals()["read"] is True
+
+    def test_it_says_how_long_until_the_next_reading(self):
+        watched = self._watched()
+        watched.senses_at = time.time()
+        found = watched.signals()
+        assert found["next_read_in_s"] is not None
+        assert found["next_read_in_s"] >= 0

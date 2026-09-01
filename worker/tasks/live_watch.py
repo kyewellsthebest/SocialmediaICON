@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import socket
 import time
 
@@ -73,6 +74,9 @@ def _stalled(hint: str, **extra: object) -> dict:
 LEASE_WAIT_S = livestate.LEASE_S + 30.0
 #: How often it checks while waiting.
 LEASE_POLL_S = 5.0
+#: How many consecutive "no snapshot" readings mean the lease holder is gone
+#: rather than merely starting up.
+DEAD_READINGS = 2
 
 
 def _claim(holder: str) -> bool:
@@ -95,7 +99,23 @@ def _claim(holder: str) -> bool:
         return True
 
     deadline = time.time() + LEASE_WAIT_S
+    dead_readings = 0
     while time.time() < deadline:
+        # A lease says somebody claims to be watching; the snapshot says
+        # somebody is. A lease with no snapshot behind it belongs to a process
+        # that is gone, and waiting out its five minutes helps nobody. Two
+        # readings apart, because a watcher that has this second taken the
+        # lease has not published yet and stealing from it would give us the
+        # two watchers the lease exists to prevent.
+        if livestate.read() is None:
+            dead_readings += 1
+            if dead_readings >= DEAD_READINGS:
+                log.info("live_watch: the lease holder stopped publishing; taking over")
+                if livestate.steal_lease(holder):
+                    return True
+        else:
+            dead_readings = 0
+
         left = livestate.lease_left_s()
         livestate.note(
             "Waiting for the previous watcher's lease to expire"
@@ -108,6 +128,31 @@ def _claim(holder: str) -> bool:
             log.info("live_watch: took the lease after waiting")
             return True
     return False
+
+
+def _hand_back_on_signal(holder: str) -> None:
+    """Release the lease when the platform asks the process to stop.
+
+    Railway sends SIGTERM and then SIGKILL a grace period later. Nothing here
+    listened, so every deploy left the lease behind to expire on its own and
+    the next watcher waited minutes for a container that had been gone the
+    whole time. Handing it back on the way out makes a deploy cost seconds.
+
+    Only ever called on the way out, and it re-raises the default behaviour
+    afterwards so the process still dies when it is told to.
+    """
+    def handler(signum, frame):  # noqa: ANN001, ARG001
+        log.info("live_watch: signal %s - handing the lease back", signum)
+        livestate.request_stop()
+        livestate.release_lease(holder)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):  # not the main thread, or not supported
+            log.debug("live_watch: could not catch %s", sig)
 
 
 def run(max_seconds: float | None = None) -> dict:
@@ -134,6 +179,8 @@ def run(max_seconds: float | None = None) -> dict:
             "container was killed without handing it back and it will clear "
             "itself shortly."
         )
+
+    _hand_back_on_signal(holder)
 
     supervisor = Supervisor()
     _current = supervisor

@@ -249,6 +249,32 @@ def lease_left_s() -> float | None:
     return float(ttl) if isinstance(ttl, int) and ttl > 0 else None
 
 
+def steal_lease(holder: str) -> bool:
+    """Take the lease from a holder that has stopped publishing.
+
+    The lease says somebody *claims* to be watching. The status snapshot says
+    somebody *is*: it is republished before and after every pass and expires
+    in STATUS_TTL_S. A lease with no snapshot behind it belongs to a process
+    that is gone - killed by a deploy, by the out-of-memory killer, or by an
+    unhandled error - and waiting out its five minutes helps nobody.
+
+    Only called after the caller has confirmed the snapshot is missing twice,
+    because a watcher that has this second taken the lease has not published
+    yet, and stealing from it would give us the two watchers the lease exists
+    to prevent.
+    """
+    client = _redis()
+    if client is None:
+        _fallback["lease"] = (holder, time.time())
+        return True
+    try:
+        client.set(LEASE_KEY, holder, ex=LEASE_S)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("livestate: could not take over the lease (%s)", exc)
+        return False
+
+
 def release_lease(holder: str) -> None:
     """Give it up on the way out, so the next one starts in seconds."""
     client = _redis()
