@@ -575,3 +575,88 @@ class TestItFindsAFacecamAtTheSizeRealOnesAre:
                           ("two on a couch", people.two_people()),
                           ("an empty room", people.nobody())):
             assert reframe.find_webcam(src) is None, name
+
+
+class TestStackingNeedsAScreenNotJustAFaceInACorner:
+    """A clip came out stacked with a zoomed crop of a man's head over a wide
+    shot of his living room. There was no computer anywhere in it.
+
+    find_webcam asked three questions - is the face small, is it away from the
+    middle, does it stay there - and every one of them is true of a person
+    standing to one side of a room, which is most of what an IRL stream is. It
+    never asked the question the layout is named after: is there a *screen*
+    behind them.
+    """
+
+    def test_a_person_in_a_room_is_not_a_desk_stream(self):
+        import synth_faces as people
+
+        assert reframe.find_webcam(people.person_in_a_room()) is None
+
+    def test_that_room_passes_every_test_except_the_screen(self):
+        """Which is why the screen test had to be added rather than the others
+        tightened: on the old three it is indistinguishable from a facecam."""
+        import synth_faces as people
+        from core import faces as facelib
+
+        src = people.person_in_a_room()
+        watched = facelib.watch(src, fps=facelib.DETECT_FPS,
+                                size=(facelib.LOOK_W, facelib.LOOK_H),
+                                min_face=facelib.LOOK_MIN_FACE)
+        boxes = [max(f, key=lambda b: b.area) for f in watched.frames if f]
+        assert boxes, "the fixture has to have a findable face at all"
+        mid = lambda v: sorted(v)[len(v) // 2]  # noqa: E731
+        h = mid([b.h for b in boxes])
+        cx = mid([b.x for b in boxes]) + mid([b.w for b in boxes]) / 2
+        cy = mid([b.y for b in boxes]) + h / 2
+        assert h <= reframe.CAM_MAX_H, "small enough to look like an overlay"
+        assert max(abs(cx - 0.5), abs(cy - 0.5)) >= reframe.CAM_CORNER, "and cornered"
+        assert len(boxes) / len(watched.frames) >= reframe.CAM_STEADY, "and steady"
+
+    def test_a_real_desk_stream_still_reads_as_a_screen(self):
+        import synth_faces as people
+
+        found, measured = reframe.looks_like_a_screen(people.desk_stream(0.20))
+        assert found, measured
+
+    def test_a_room_does_not(self):
+        import synth_faces as people
+
+        found, measured = reframe.looks_like_a_screen(people.person_in_a_room())
+        assert not found, measured
+
+
+class TestTheCropFollowsThePersonNotWhateverMoved:
+    """It followed motion, smoothed over two and a half seconds, and on a real
+    clip that meant drifting towards a robot crossing the floor while the
+    person talking sat outside the frame. Measured on that clip: the crop swung
+    across 0.27-0.71 of the width, travelling 1.66 in thirty seconds.
+
+    Motion was not chosen over faces on merit - it was chosen while OpenCV was
+    not installed, so the face detector found nothing and motion was the only
+    thing that ran."""
+
+    def test_it_finds_the_people(self):
+        import synth_faces as people
+
+        found = reframe.face_track(people.one_person())
+        assert found, "no frames were read at all"
+        assert sum(1 for v in found if v is not None) / len(found) > 0.5
+
+    def test_a_shot_with_nobody_in_it_falls_back_to_motion(self):
+        import synth_faces as people
+
+        found = reframe.face_track(people.nobody())
+        seen = sum(1 for v in found if v is not None) / max(len(found), 1)
+        assert seen < reframe.FACE_LED_SHARE
+
+    def test_a_face_led_path_is_smoothed_less(self):
+        """A motion centroid jumps between whatever moved and needs holding
+        down; a face is where it was a fifth of a second ago."""
+        assert reframe.FACE_SMOOTH_S < reframe.SMOOTH_S
+
+    def test_the_path_still_comes_out_of_a_shot_with_no_faces(self):
+        import synth_faces as people
+
+        path = reframe.build_path(people.nobody())
+        assert path.points, "a shot with nobody in it produced no path at all"

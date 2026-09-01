@@ -124,6 +124,47 @@ def desk_stream(share: float = 0.20) -> Path:
 
 
 @functools.cache
+def person_in_a_room() -> Path:
+    """Somebody small, off to one side, in a room with no screen in it.
+
+    The exact shape that was mistaken for a desk stream: the face is small
+    (an overlay-sized face), it sits well away from the middle (a corner), and
+    it stays there (furniture, not somebody walking past). All three of the
+    old tests pass. There is no computer anywhere in the shot, and stacking it
+    put a zoomed crop of the person's head over a wide shot of the same room.
+
+    The background is deliberately organic - blobs and gradients, no straight
+    lines and no flat panels - because that is what actually separates a room
+    from a screen.
+    """
+    import cv2
+    import numpy as np
+
+    rng = np.random.default_rng(11)
+    blobs = [(int(rng.integers(0, W)), int(rng.integers(0, H)),
+              int(rng.integers(40, 140))) for _ in range(26)]
+
+    # Texture everywhere, which is the point. A real room is carpet, fabric
+    # and sensor noise - never a flat panel. A first attempt at this fixture
+    # painted the wall in bands of flat colour and read as 92% flat, which is
+    # more screen-like than an actual screen; the fixture was wrong, not the
+    # detector.
+    grain = rng.integers(-14, 15, size=(H, W, 3), dtype=np.int16)
+
+    def frame(i, c):
+        for x in range(0, W, 8):                       # a soft wall gradient
+            c[:, x : x + 8] = 40 + int(38 * x / W)
+        for x, y, r in blobs:                          # furniture-ish shapes
+            cv2.circle(c, (x, y), r, (int(60 + r % 70), int(52 + r % 40), 48), -1)
+        rolled = np.roll(grain, i % 7, axis=0)         # and it never sits still
+        np.clip(c.astype(np.int16) + rolled, 0, 255, out=c.astype(np.int16))
+        c[:] = np.clip(c.astype(np.int16) + rolled, 0, 255).astype(np.uint8)
+        return _place(c, 0.22, 0.17, 0.55)             # small, far left
+
+    return _build("room-textured", frame, seconds=12.0)
+
+
+@functools.cache
 def screen_share() -> Path:
     """A computer screen with a small webcam in the corner.
 

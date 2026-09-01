@@ -6,11 +6,21 @@ side, and a centre crop spends two thirds of a phone screen on an empty wall
 while the person talking is half out of frame.
 
 So the crop has to move. The question is what it should follow, and the
-answer here is motion rather than faces. Face detection needs a model, misses
-anyone turned away, and finds nothing at all when the interesting thing is a
-game, a screen or a dog. Motion needs no model, works on anything, and is
-what the eye follows anyway - in a still room the crop simply stays put,
-which is the correct behaviour.
+answer is **the people when there are any, and the motion when there are
+not.**
+
+It used to be motion alone, and the reasoning was that face detection needs a
+model, misses anyone turned away, and finds nothing when the interesting thing
+is a game or a screen. All true, and all of it was written while OpenCV was
+not installed in the deployed image - so the face detector found nothing ever,
+and motion was not the better answer, it was the only one that ran.
+
+Motion alone tracks whatever moved most, which on an IRL stream is a robot
+crossing the floor, a curtain, or somebody walking behind. Heavily smoothed so
+it does not twitch, it also arrives late. The result on real clips was a crop
+drifting towards a corner of the room while the person talking sat outside the
+frame. A face is the subject on these streams, it is stable, and it needs far
+less smoothing to stay watchable.
 
 The measurement is deliberately tiny. Frames are decoded at 64 pixels wide
 and 4 per second, and the whole path for a thirty second clip is under eight
@@ -74,6 +84,21 @@ MEDIAN_S = 1.25
 #: How much of the recent path to average over. Long, deliberately: a crop
 #: that arrives a beat late is invisible, a crop that twitches is not.
 SMOOTH_S = 2.5
+#: ...and how much when it is following a face, which needs much less. A
+#: motion centroid jumps between whatever moved; a face is where it was a
+#: fifth of a second ago. Smoothing it as hard as motion is what made the crop
+#: arrive after the moment it was following.
+FACE_SMOOTH_S = 0.9
+#: How much of a clip has to contain a face before the path is led by faces
+#: rather than by motion. Below this it is a game, a screen or an empty room,
+#: and motion is the right answer for all three.
+#:
+#: A third, not a half. On real IRL footage a face is found in about a third
+#: of frames - people turn away, look down, walk behind things - and requiring
+#: more than that hands the shot back to motion on exactly the streams where a
+#: person is obviously the subject. Below a fifth the faces are incidental:
+#: somebody in the background of a gameplay stream is not what the clip is of.
+FACE_LED_SHARE = 0.2
 #: Displacement needed to start the crop moving, as a share of frame width.
 DEADZONE = 0.06
 #: ...and how close it has to get before it stops again. Lower than DEADZONE
@@ -281,18 +306,62 @@ def _follow(
     return out
 
 
-def build_path(src: Path | str, *, smooth_s: float = SMOOTH_S) -> Path_:
+def face_track(src: Path | str) -> list[float | None]:
+    """Where the people are, per probe frame, or None where there are none.
+
+    Weighted by area, so the person nearest the camera wins rather than the
+    average of everyone in the room - which on a shot with somebody in the
+    foreground and two more behind sits on nobody.
+    """
+    try:
+        from core import faces as facelib
+    except Exception:  # noqa: BLE001 - no OpenCV is not a crash
+        return []
+    try:
+        watched = facelib.watch(src, fps=PROBE_FPS)
+    except Exception as exc:  # noqa: BLE001 - a blind frame is not a failure
+        log.debug("reframe: could not follow faces (%s)", exc)
+        return []
+
+    out: list[float | None] = []
+    for frame in watched.frames:
+        if not frame:
+            out.append(None)
+            continue
+        weight = sum(f.area for f in frame) or 1.0
+        out.append(sum((f.x + f.w / 2.0) * f.area for f in frame) / weight)
+    return out
+
+
+def build_path(src: Path | str, *, smooth_s: float | None = None) -> Path_:
     """Where the action is, second by second, smoothed into something watchable."""
     width, height = probe_size(src)
     rows = motion_columns(src)
+    people = face_track(src)
+    led_by_faces = (
+        sum(1 for v in people if v is not None) / max(len(rows), 1) >= FACE_LED_SHARE
+    )
+    if smooth_s is None:
+        smooth_s = FACE_SMOOTH_S if led_by_faces else SMOOTH_S
 
-    # Where the motion is, per frame. A still frame keeps the previous target
-    # rather than snapping to the middle, which is what makes the crop hold
-    # steady through a pause instead of wandering home.
+    # Where to look, per frame: the people if this shot has any, the motion if
+    # it does not. A still frame keeps the previous target rather than snapping
+    # to the middle, which is what makes the crop hold steady through a pause
+    # instead of wandering home.
     raw: list[float] = []
     last = 0.5
-    for columns in rows:
-        last = _focus_centre(columns, last)
+    for i, columns in enumerate(rows):
+        here = people[i] if led_by_faces and i < len(people) else None
+        if here is not None:
+            last = here
+        elif not led_by_faces:
+            last = _focus_centre(columns, last)
+        # ...and when this shot *is* led by faces, a gap holds the last known
+        # position rather than handing the frame back to motion. Somebody
+        # turning their head for half a second is still the subject, and
+        # following the motion through that gap is precisely how the crop ends
+        # up on a robot crossing the floor while the person talking sits
+        # outside the frame.
         raw.append(last)
 
     despiked = _median_filter(raw, max(1, int(MEDIAN_S * PROBE_FPS)) | 1)
@@ -329,8 +398,9 @@ def build_path(src: Path | str, *, smooth_s: float = SMOOTH_S) -> Path_:
 
     path = Path_(points=points, source_w=width, source_h=height)
     log.info(
-        "reframe: %s - %dx%d, crop %dpx wide, %d points, travel %.2f",
+        "reframe: %s - %dx%d, crop %dpx wide, %d points, travel %.2f, following %s",
         Path(src).name, width, height, path.crop_w, len(points), path.travel(),
+        "faces" if led_by_faces else "motion",
     )
     return path
 
@@ -422,6 +492,79 @@ class Webcam:
         )
 
 
+#: How rectilinear the picture has to be before it counts as a screen, and how
+#: much of it has to be flat. Both, not either.
+#:
+#: A face that is small, off centre and steady is not enough to call something
+#: a desk stream, and believing it was put a zoomed crop of a man's head over a
+#: wide shot of his living room - no computer anywhere in it. Every one of the
+#: three tests passes on an ordinary IRL shot of a person standing to one side
+#: of the room, which is most of what these streams are.
+#:
+#: What actually distinguishes the layout is the thing it is named after:
+#: there is a *screen* behind the person. A screen is rectilinear and flat -
+#: panels, rows of text, UI furniture - and a room is neither. Measured on a
+#: real gambling stream against a real living room:
+#:
+#:     straight edges   flat regions
+#:     0.143            0.648          the gambling stream
+#:     0.021            0.252          the living room
+#:
+#: Anything below both of these is a room, and a room is followed, not stacked.
+SCREEN_STRAIGHT = 0.06
+SCREEN_FLAT = 0.40
+#: Frames sampled to decide. A handful: this is a property of the shot, not of
+#: the moment, and a shot does not become a desk halfway through a clip.
+SCREEN_FRAMES = 5
+
+
+def looks_like_a_screen(src: Path | str) -> tuple[bool, dict[str, float]]:
+    """Is there a computer screen in this shot? (verdict, what was measured).
+
+    Cheap and deliberately blunt: a screen is made of straight lines and flat
+    panels, and a room is made of neither. Canny for the edges, then keep only
+    the ones that survive a long horizontal or vertical opening - that is what
+    "straight" means here, and it is what a window border, a row of text or a
+    UI panel has and a sofa does not.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except Exception:  # noqa: BLE001 - no OpenCV is not a crash
+        return False, {}
+
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(src),
+         "-vf", f"fps={SCREEN_FRAMES}/30,scale=640:360,format=gray",
+         "-f", "rawvideo", "-"],
+        capture_output=True,
+    )
+    stride = 640 * 360
+    frames = [
+        np.frombuffer(proc.stdout[i : i + stride], np.uint8).reshape(360, 640)
+        for i in range(0, len(proc.stdout) - stride + 1, stride)
+    ][:SCREEN_FRAMES]
+    if not frames:
+        return False, {}
+
+    straights, flats = [], []
+    wide = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
+    tall = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 25))
+    for frame in frames:
+        edges = cv2.Canny(frame, 60, 160)
+        lines = (
+            cv2.morphologyEx(edges, cv2.MORPH_OPEN, wide).sum()
+            + cv2.morphologyEx(edges, cv2.MORPH_OPEN, tall).sum()
+        )
+        straights.append(lines / max(float(edges.sum()), 1.0))
+        flats.append(float((np.abs(cv2.Laplacian(frame, cv2.CV_32F)) < 2).mean()))
+
+    straight = sorted(straights)[len(straights) // 2]
+    flat = sorted(flats)[len(flats) // 2]
+    found = {"straight": round(straight, 3), "flat": round(flat, 3)}
+    return (straight >= SCREEN_STRAIGHT and flat >= SCREEN_FLAT), found
+
+
 def find_webcam(src: Path | str) -> Webcam | None:
     """The webcam overlay on a desk stream, or None if this is not one.
 
@@ -461,6 +604,15 @@ def find_webcam(src: Path | str) -> Webcam | None:
     if h > CAM_MAX_H:
         return None
     if max(abs(cx - 0.5), abs(cy - 0.5)) < CAM_CORNER:
+        return None
+    # ...and there has to be a screen behind them. Small, cornered and steady
+    # describes a facecam overlay, and it equally describes a person standing
+    # to one side of their living room - which is what it was believed about,
+    # and the clip came out with a zoomed crop of his head stacked over a wide
+    # shot of the same room.
+    screen, measured = looks_like_a_screen(src)
+    if not screen:
+        log.debug("reframe: a face in the corner but no screen behind it (%s)", measured)
         return None
     return Webcam(x=x, y=y, w=w, h=h, seen=steady)
 
