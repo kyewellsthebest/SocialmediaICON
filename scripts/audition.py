@@ -179,7 +179,34 @@ def make_clip(src: Path, window: Window, into: Path, n: int) -> dict[str, Any]:
     reframe.to_portrait(raw, final, work_dir=into / "tmp", report=framing)
     raw.unlink(missing_ok=True)
     return {"path": final, "framing": framing,
-            "start_s": start, "length_s": lead + trail}
+            "start_s": start, "length_s": lead + trail, "raw": raw}
+
+
+def judge(clip: Path, window: Window) -> dict[str, Any]:
+    """Have the model watch it, the way the watcher has it watched.
+
+    The other half of the bot. Everything above is arithmetic, and arithmetic
+    cannot tell a man laughing at his own joke about nothing from a man
+    falling off a chair - they make the same envelope. This is the only step
+    that can, and it is the step that decides whether a cut clip is kept.
+    """
+    from core import verdict as verdictlib
+
+    found = verdictlib.look(
+        clip,
+        evidence={"seen": {"surges": [{"at_s": window.peak_s, "size": 1.0}]}},
+        count=settings.verdict_frames,
+    )
+    return {
+        "watched": found.watched,
+        "worth_it": found.worth_it,
+        "kind": found.kind,
+        "confidence": round(found.confidence, 2),
+        "happening": found.happening,
+        "why": found.why,
+        "cost_usd": round(found.cost_usd, 4),
+        "problems": found.problems,
+    }
 
 
 def fetch(source: str, into: Path) -> Path:
@@ -267,6 +294,9 @@ def main() -> int:
     parser.add_argument("--cut", type=Path, help=(
         "write the clips it would have cut into this directory, cropped to "
         "portrait exactly as the watcher crops them"))
+    parser.add_argument("--judge", action="store_true", help=(
+        "also have the model watch each clip it cut, as the watcher does. "
+        "Needs ANTHROPIC_API_KEY; without one it reports why it could not."))
     parser.add_argument("--json", type=Path, help="also write the readings here")
     parser.add_argument("--no-chat-note", action="store_true")
     args = parser.parse_args()
@@ -325,6 +355,17 @@ def main() -> int:
                          f"{cam['y'] + cam['h'] / 2:.0%})" if cam else "")
                 print(f"  {made['path'].name}  {w.at}  score {w.score:.1f}  "
                       f"{how}{where}")
+                if args.judge:
+                    said = judge(made["path"], w)
+                    if not said["watched"]:
+                        print(f"      the model did not watch it: "
+                              f"{'; '.join(said['problems']) or 'no reason given'}")
+                    else:
+                        print(f"      {'KEEP' if said['worth_it'] else 'DROP'} "
+                              f"({said['kind']}, {said['confidence']:.0%} sure, "
+                              f"${said['cost_usd']:.4f}) - "
+                              f"{said['happening'] or said['why']}")
+                    w.problems.extend(said["problems"])
 
         if args.json:
             args.json.write_text(json.dumps([

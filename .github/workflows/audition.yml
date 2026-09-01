@@ -1,0 +1,94 @@
+name: audition
+
+# Run the clip detector over a video and hand back the clips it would have cut.
+#
+# The point is to be able to do this from a phone. Everything else needs a
+# console: the Railway shell, a laptop, a checkout. This needs the Actions tab,
+# a URL, and a button - and it comes back with the portrait clips attached to
+# the run, downloadable, plus a readable report on the summary page.
+#
+# It runs the real code. The senses, the scoring, the gate and the crop are all
+# imported from core/, not reimplemented, so what comes out is what the live
+# watcher would have produced from the same footage.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Video URL (YouTube, Kick VOD, anything yt-dlp takes)"
+        required: true
+      at:
+        description: "Start at (90, 1:30, 1:02:03)"
+        default: "0"
+      length:
+        description: "How much to read (10m, 30m, 90s)"
+        default: "10m"
+      step:
+        description: "Seconds between windows. Lower finds more, costs more."
+        default: "10"
+      moments:
+        description: "Timestamps you know are moments, comma separated (4:12,17:40)"
+        default: ""
+      judge:
+        description: "Also have the model watch each clip (needs ANTHROPIC_API_KEY)"
+        type: boolean
+        default: false
+
+jobs:
+  audition:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install the engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Audition
+        env:
+          # Only used when `judge` is on. Absent is fine: the verdict step is
+          # skipped and the arithmetic half still runs.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -o pipefail
+          python scripts/audition.py "${{ inputs.source }}" \
+            --at "${{ inputs.at }}" \
+            --for "${{ inputs.length }}" \
+            --step "${{ inputs.step }}" \
+            --moments "${{ inputs.moments }}" \
+            ${{ inputs.judge && '--judge' || '' }} \
+            --cut clips \
+            --json readings.json 2>&1 | tee report.txt
+
+      - name: Put the report on the summary page
+        if: always()
+        run: |
+          {
+            echo '## What the bot would have done'
+            echo
+            echo '```'
+            cat report.txt || echo "(the run produced no report)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hand back the clips
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clips
+          path: |
+            clips/*.mp4
+            report.txt
+            readings.json
+          if-no-files-found: warn
+          retention-days: 14
