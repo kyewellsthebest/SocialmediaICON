@@ -82,6 +82,22 @@ RESOLVE_MAX_S = 6.0
 #: A beat of air at the end, so it does not stop dead on a word.
 TAIL_S = 0.6
 
+#: Breathing room either side of the loud part.
+#:
+#: The stretch finder marks where the moment is *loud*, which is tighter than
+#: where the moment is. Cut to the stretch exactly and the clips are correct
+#: and feel clipped short - you arrive mid-reaction and leave before anyone has
+#: finished responding to it. Five seconds each side, asked for after watching
+#: seventeen of them.
+#:
+#: Not the same thing as the 22-second lead this file exists to undo. That was
+#: 22 seconds before the *trigger*, with the payoff 73% of the way through.
+#: This is five seconds around the *whole loud stretch*, which usually already
+#: contains the setup - so the moment still lands early.
+ROOM_S = 5.0
+#: How far the room may be nudged to land on a pause instead of mid-word.
+ROOM_SNAP_S = 2.0
+
 #: How far the trigger may be moved to land on the loudest part of the moment.
 #:
 #: The sensors say roughly where something happened; they are not precise about
@@ -325,16 +341,24 @@ def find(heard, trigger_s: float, *, span_s: float) -> Bounds:  # noqa: ANN001
         moment = (trigger_s, trigger_s)
         why["ends_on"] = "nothing loud to end on"
 
-    # The moment may well start before the trigger - the sensors point at a
-    # reaction, and a reaction is the back half of the thing.
-    start = min(start, max(0.0, moment[0] - SETUP_MIN_S))
-    if trigger_s - start > SETUP_MAX_S:
-        gaps = [
-            t for t in pauses(levels, step, over=(moment[0] - SETUP_MAX_S, moment[0]))
-            if t <= moment[0]
-        ]
-        start = gaps[-1] if gaps else max(0.0, moment[0] - SETUP_DEFAULT_S)
-    end = moment[1]
+    # Room either side of the loud part, then nudged onto a pause so the clip
+    # opens and closes on a sentence rather than mid-word. The moment may well
+    # start before the trigger - the sensors point at a reaction, and a
+    # reaction is the back half of the thing.
+    want = max(0.0, moment[0] - ROOM_S)
+    near = [
+        t for t in pauses(levels, step, over=(max(0.0, want - ROOM_SNAP_S),
+                                              min(moment[0], want + ROOM_SNAP_S)))
+    ]
+    start = min(start, min(near, key=lambda t: abs(t - want)) if near else want)
+
+    end = min(span_s, moment[1] + ROOM_S)
+    after = [
+        t for t in pauses(levels, step, over=(end, min(span_s, end + ROOM_SNAP_S)))
+        if t > end
+    ]
+    if after:
+        end = after[0]
     why["loud_from"] = round(moment[0], 1)
     why["loud_to"] = round(moment[1], 1)
 

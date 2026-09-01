@@ -56,9 +56,20 @@ class TestTheSetupIsShort:
         assert 10.0 <= found.start_s <= 10.9, found.start_s
 
     def test_with_no_pause_to_find_it_still_opens_close(self):
+        """Room either side of the moment, and no more. Asked for after
+        watching seventeen clips that were correct and felt clipped short."""
         heard = build((14.0, -20.0), (10.0, -8.0))
         found = clipping.find(heard, trigger_s=14.0, span_s=24.0)
-        assert found.lead_s == pytest.approx(clipping.SETUP_DEFAULT_S, abs=0.2)
+        assert found.lead_s == pytest.approx(clipping.ROOM_S, abs=0.5)
+
+    def test_the_room_is_not_the_twenty_two_second_lead_again(self):
+        """Five seconds around the whole loud stretch is a different thing
+        from twenty-two seconds before the trigger, and has to stay one."""
+        heard = build((30.0, -28.0), (6.0, -6.0), (30.0, -28.0))
+        found = clipping.find(heard, trigger_s=32.0, span_s=66.0)
+        assert found.lead_s <= clipping.ROOM_S + clipping.ROOM_SNAP_S + 1.0
+        # ...and the moment still lands in the front half of the clip.
+        assert (32.0 - found.start_s) / found.length_s < 0.5
 
     def test_a_moment_at_the_very_start_does_not_run_off_the_front(self):
         heard = build((30.0, -10.0))
