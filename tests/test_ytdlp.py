@@ -647,3 +647,37 @@ class TestImpersonation:
 
     def test_describe_carries_it_to_the_dashboard(self):
         assert "impersonation" in ytdlp.describe()
+
+
+class TestABlankSettingIsNotAnEmptyList:
+    """An unset GitHub Actions variable arrives as an empty string, not as an
+    absent one. Passing YTDLP_PLAYER_CLIENTS through from `vars` therefore
+    wiped the client list and left a single attempt on the default client,
+    which YouTube challenged - as it challenges every datacenter address.
+
+    The log said `player_clients: []` and `client None was challenged`, which
+    is the whole story if you read it and reads like an unfixable bot check if
+    you do not. Blank means "not configured", never "try nothing"."""
+
+    def test_an_empty_string_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.setattr(settings, "ytdlp_player_clients", "", raising=False)
+        assert ytdlp.player_clients(), "an empty setting left nothing to try"
+
+    def test_whitespace_counts_as_empty(self, monkeypatch):
+        monkeypatch.setattr(settings, "ytdlp_player_clients", "   ", raising=False)
+        assert ytdlp.player_clients()
+
+    def test_none_does_too(self, monkeypatch):
+        monkeypatch.setattr(settings, "ytdlp_player_clients", None, raising=False)
+        assert ytdlp.player_clients()
+
+    def test_the_fallback_is_the_configured_default(self, monkeypatch):
+        """Not a second copy of the list living in the downloader."""
+        monkeypatch.setattr(settings, "ytdlp_player_clients", "", raising=False)
+        default = type(settings).model_fields["ytdlp_player_clients"].default
+        assert ytdlp.player_clients() == [c.strip() for c in default.split(",")]
+
+    def test_a_real_setting_still_wins(self, monkeypatch):
+        monkeypatch.setattr(settings, "ytdlp_player_clients", "ios,web_safari",
+                            raising=False)
+        assert ytdlp.player_clients() == ["ios", "web_safari"]

@@ -306,7 +306,17 @@ def player_clients() -> list[str]:
     clients that ignore them, and the challenge looks unchanged - which reads
     as "cookies did not work" when they were never used.
     """
-    clients = [c.strip() for c in settings.ytdlp_player_clients.split(",") if c.strip()]
+    # Blank means "not configured", not "try nothing". An unset GitHub Actions
+    # variable arrives as an empty string rather than as an absent one, so
+    # passing YTDLP_PLAYER_CLIENTS through from `vars` wiped the list and left
+    # a single attempt on the default client - which YouTube challenged, as it
+    # challenges every datacenter address. The log said `player_clients: []`
+    # and `client None was challenged`, which is the whole story if you read
+    # it, and reads like a bot check that nothing can fix if you do not.
+    configured = (settings.ytdlp_player_clients or "").strip()
+    if not configured:
+        configured = str(type(settings).model_fields["ytdlp_player_clients"].default)
+    clients = [c.strip() for c in configured.split(",") if c.strip()]
     if cookiefile() and "web" not in clients:
         clients.insert(0, "web")
     return clients
