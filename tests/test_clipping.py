@@ -66,12 +66,28 @@ class TestTheSetupIsShort:
 
 
 class TestItEndsWhenTheMomentEnds:
-    def test_it_ends_after_the_reaction_settles(self):
+    def test_it_ends_where_the_loud_part_ends(self):
+        """A moment is a loud stretch, not a point with a decay after it.
+
+        The decay model was tried first and does not survive a real stream:
+        plotted, the envelope around a real moment runs -19, -43, -43, -22,
+        +4, +4, +1, -5, -6, -48, -14, -11, -8. The moment is the +4 run and
+        there is no decay anywhere in it - conversation swings fifty decibels
+        continuously - so "wait for it to settle" fired within a second of
+        every trigger and every clip collapsed onto the minimum length."""
         # Quiet, the moment, a long loud reaction, then back to quiet.
         heard = build((8.0, -28.0), (6.0, -6.0), (20.0, -28.0))
         found = clipping.find(heard, trigger_s=8.0, span_s=34.0)
         assert 14.0 <= found.end_s <= 22.0, found.as_dict()
-        assert "settling" in found.why["ends_on"]
+        assert "loud part" in found.why["ends_on"]
+
+    def test_it_finds_the_moment_even_when_the_trigger_lands_after_it(self):
+        """The sensors point at a reaction, and a reaction is the back half of
+        the thing - so the loud stretch often starts before the trigger."""
+        heard = build((8.0, -28.0), (5.0, -6.0), (3.0, -28.0), (10.0, -28.0))
+        found = clipping.find(heard, trigger_s=15.0, span_s=26.0)
+        assert found.start_s <= 8.5, found.as_dict()
+        assert found.why["loud_from"] <= 9.0
 
     def test_a_long_reaction_makes_a_long_clip(self):
         """The length comes from the moment, not from a constant."""

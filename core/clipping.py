@@ -55,14 +55,26 @@ SETUP_MAX_S = 6.0
 #: cut to. Short on purpose.
 SETUP_DEFAULT_S = 2.5
 
-#: How far past the trigger to look for the moment to finish.
+#: How far either side of the trigger to look for the moment itself.
 REACTION_MAX_S = 40.0
-#: How quiet, relative to the reaction's own peak, counts as "settled". Not an
-#: absolute level: a loud room settles to loud.
-SETTLED_SHARE = 0.35
-#: ...and for how long it has to stay settled before the moment is over. A
-#: breath between two halves of a laugh is not the end of the laugh.
-SETTLED_HOLD_S = 1.1
+#: How far above the stretch's own normal counts as "this is the loud part",
+#: and how long it has to hold to be a moment rather than a word.
+#:
+#: The model this replaces was "the reaction decays back to baseline", and it
+#: does not survive contact with a real stream. Plotted, the envelope around a
+#: real moment runs: -19, -43, -43, -22, +4, +4, +1, -5, -6, -48, -14, -11, -8.
+#: The moment is the +4 run. There is no decay - the signal oscillates by
+#: fifty decibels continuously, because that is what conversation looks like -
+#: so "wait for it to settle" fired within a second of every trigger and every
+#: clip collapsed onto the minimum length.
+#:
+#: A moment is a *stretch* that is loud, not a point followed by a decay. So
+#: find the stretch.
+LOUD_OVER_DB = 8.0
+LOUD_MIN_S = 1.0
+#: Two loud stretches closer together than this are one moment with a breath
+#: in the middle.
+LOUD_JOIN_S = 1.8
 #: Once it has settled, run on to the end of whatever is being said, up to
 #: this much. This is the "and then he says the thing that makes it" clause -
 #: cutting on the instant the laugh stops truncates the best line in the clip.
@@ -70,14 +82,52 @@ RESOLVE_MAX_S = 6.0
 #: A beat of air at the end, so it does not stop dead on a word.
 TAIL_S = 0.6
 
+#: How far the trigger may be moved to land on the loudest part of the moment.
+#:
+#: The sensors say roughly where something happened; they are not precise about
+#: when it peaked, and they do not have to be. But every boundary here is
+#: measured *outwards from the trigger*, so a trigger sitting on the far side
+#: of the reaction has nothing left to decay: measured on real video, triggers
+#: landed anywhere from 3 dB below the stream's median loudness to 33 dB above
+#: it, and the ones that landed late produced clips that ended immediately and
+#: were padded up to the minimum length.
+#:
+#: So the trigger is nudged to the loudest moment near it before anything else
+#: is decided. Four seconds: enough to find the peak of a reaction the sensors
+#: pointed at, too little to wander off to a different one.
+SNAP_S = 4.0
+
 #: What a clip may be, at the outside.
-MIN_CLIP_S = 8.0
+#:
+#: The floor is fifteen because that is where the guides put it and because
+#: the loud part of a real moment is short - three to five seconds, since
+#: conversation is bursty rather than sustained. A clip that is only its loud
+#: part is a fragment with no setup and no landing. When the moment comes out
+#: shorter than this the clip is grown outwards to the pauses either side,
+#: which is the difference between giving it room and padding it: the extra
+#: seconds are whole sentences, not an arbitrary number tacked on the end.
+MIN_CLIP_S = 15.0
 MAX_CLIP_S = 59.0
 
 #: A dip this far below the local speech level, held this long, is a gap
 #: between sentences rather than the gap between two words.
 PAUSE_DEPTH_DB = 6.0
 PAUSE_HOLD_S = 0.22
+
+#: How much of the envelope to smooth before comparing any part of it to any
+#: other part.
+#:
+#: Loudness per frame swings enormously - a single frame of a consonant can be
+#: forty decibels above the median of the sentence around it. Comparing a
+#: *peak* against a *median*, which is what this did, is not a comparison: one
+#: loud frame put the "settled" line twenty decibels above ordinary speech, the
+#: level fell under it within a second, and every clip ended immediately and
+#: was padded back up to the eight-second minimum. Seventeen clips, nine of
+#: them exactly eight seconds long, all of them cut in the same wrong place.
+#:
+#: Half a second, so a syllable cannot be a peak and a breath cannot be a
+#: pause, but a laugh still is one.
+SMOOTH_S = 0.5
 
 
 @dataclass
@@ -109,10 +159,32 @@ class Bounds:
 
 
 def _levels(heard) -> tuple[list[float], float]:  # noqa: ANN001 - hearing.Hearing
-    """(loudness per frame, seconds per frame)."""
+    """(loudness per frame, seconds per frame), raw.
+
+    Deliberately not smoothed here. The two things this module measures work
+    at different timescales and one smoothing serves neither: finding a gap
+    between sentences needs the fine signal, because half a second of blur is
+    longer than the gap it is looking for and erases it, while comparing how
+    loud a reaction got against how loud the room was needs the coarse one, or
+    a single consonant counts as the peak. So the envelope is smoothed at the
+    point of use, at the width that use requires.
+    """
     return list(getattr(heard, "level_db", []) or []), float(
         getattr(heard, "window_s", 0.0) or 0.0
     )
+
+
+def _smooth(values: list[float], span: int) -> list[float]:
+    """A moving average, so peaks and baselines are the same kind of number."""
+    if span <= 1:
+        return values
+    out, run = [], 0.0
+    half = span // 2
+    for i in range(len(values)):
+        lo, hi = max(0, i - half), min(len(values), i + half + 1)
+        run = sum(values[lo:hi]) / (hi - lo)
+        out.append(run)
+    return out
 
 
 def _at(levels: list[float], step: float, t: float) -> int:
@@ -157,6 +229,43 @@ def pauses(levels: list[float], step: float, *, over: tuple[float, float]) -> li
     return found
 
 
+def stretches(
+    envelope: list[float], step: float, *, over: tuple[float, float]
+) -> list[tuple[float, float]]:
+    """The loud runs in a span: (start, end) for each.
+
+    Loud against the span's own median, so this works on a shouting streamer
+    and a quiet one alike, and held long enough that a single emphatic word is
+    not a moment.
+    """
+    lo, hi = _at(envelope, step, over[0]), _at(envelope, step, over[1])
+    if hi - lo < 2:
+        return []
+    bar = _median(envelope[lo:hi]) + LOUD_OVER_DB
+    need = max(1, int(LOUD_MIN_S / step))
+
+    runs: list[tuple[float, float]] = []
+    run = 0
+    for i in range(lo, hi):
+        if envelope[i] >= bar:
+            run += 1
+        else:
+            if run >= need:
+                runs.append(((i - run) * step, i * step))
+            run = 0
+    if run >= need:
+        runs.append(((hi - run) * step, hi * step))
+
+    # A breath in the middle of a laugh is not the end of the laugh.
+    joined: list[tuple[float, float]] = []
+    for begin, finish in runs:
+        if joined and begin - joined[-1][1] <= LOUD_JOIN_S:
+            joined[-1] = (joined[-1][0], finish)
+        else:
+            joined.append((begin, finish))
+    return joined
+
+
 def find(heard, trigger_s: float, *, span_s: float) -> Bounds:  # noqa: ANN001
     """The edges of the clip around `trigger_s`.
 
@@ -166,6 +275,17 @@ def find(heard, trigger_s: float, *, span_s: float) -> Bounds:  # noqa: ANN001
     """
     levels, step = _levels(heard)
     why: dict[str, Any] = {}
+
+    if levels and step > 0:
+        # Land on the peak of the reaction before measuring outwards from it.
+        rough = trigger_s
+        envelope = _smooth(levels, max(1, int(SMOOTH_S / step)))
+        lo = _at(levels, step, max(0.0, trigger_s - SNAP_S))
+        hi = _at(levels, step, min(span_s, trigger_s + SNAP_S))
+        if hi > lo:
+            trigger_s = (lo + max(range(hi - lo), key=lambda i: envelope[lo + i])) * step
+        if abs(trigger_s - rough) > 0.25:
+            why["moved_to_the_peak_by"] = round(trigger_s - rough, 2)
 
     if not levels or step <= 0:
         # Nothing was heard. Fall back to a short setup and an ordinary length,
@@ -185,29 +305,38 @@ def find(heard, trigger_s: float, *, span_s: float) -> Bounds:  # noqa: ANN001
         why["opens_on"] = "no pause to open on"
     start = max(0.0, min(start, trigger_s - SETUP_MIN_S))
 
-    # --- the end: after the reaction has landed and settled -----------------
+    # --- the end: after the loud part of the moment has finished ------------
     look_to = min(span_s, trigger_s + REACTION_MAX_S)
-    lo, hi = _at(levels, step, trigger_s), _at(levels, step, look_to)
-    before = _median(levels[_at(levels, step, start) : lo + 1]) if lo > 0 else 0.0
-    peak = max(levels[lo:hi], default=before)
+    # Smoothed for this, and only for this: comparing how loud a moment got
+    # against how loud the room is needs both sides to be the same kind of
+    # number, or a single consonant is the peak.
+    envelope = _smooth(levels, max(1, int(SMOOTH_S / step)))
+    look_from = max(0.0, trigger_s - REACTION_MAX_S)
+    runs = stretches(envelope, step, over=(look_from, look_to))
 
-    # "Settled" is measured between what it was before and how big it got, so a
-    # small reaction is allowed to settle to a small level.
-    settled_at = before + (peak - before) * SETTLED_SHARE
-    need = max(1, int(SETTLED_HOLD_S / step))
-    end = look_to
-    run = 0
-    for i in range(lo, hi):
-        if levels[i] <= settled_at:
-            run += 1
-            if run >= need:
-                end = (i - run + 1) * step
-                why["ends_on"] = "the reaction settling"
-                break
-        else:
-            run = 0
+    here = [r for r in runs if r[0] - 1.0 <= trigger_s <= r[1] + 1.0]
+    if here:
+        moment = here[0]
+        why["ends_on"] = "the end of the loud part"
+    elif runs:
+        moment = min(runs, key=lambda r: min(abs(r[0] - trigger_s), abs(r[1] - trigger_s)))
+        why["ends_on"] = "the end of the loud part near it"
     else:
-        why["ends_on"] = "the reaction never settled"
+        moment = (trigger_s, trigger_s)
+        why["ends_on"] = "nothing loud to end on"
+
+    # The moment may well start before the trigger - the sensors point at a
+    # reaction, and a reaction is the back half of the thing.
+    start = min(start, max(0.0, moment[0] - SETUP_MIN_S))
+    if trigger_s - start > SETUP_MAX_S:
+        gaps = [
+            t for t in pauses(levels, step, over=(moment[0] - SETUP_MAX_S, moment[0]))
+            if t <= moment[0]
+        ]
+        start = gaps[-1] if gaps else max(0.0, moment[0] - SETUP_DEFAULT_S)
+    end = moment[1]
+    why["loud_from"] = round(moment[0], 1)
+    why["loud_to"] = round(moment[1], 1)
 
     # ...then run on to the end of whatever is being said. This is the clause
     # that keeps the line after the laugh - the one that adds to it.
@@ -221,11 +350,27 @@ def find(heard, trigger_s: float, *, span_s: float) -> Bounds:  # noqa: ANN001
     end += TAIL_S
 
     # --- and what a clip may be --------------------------------------------
+    # Too short: grow it outwards to the pauses either side rather than adding
+    # seconds. A moment that lasted four seconds still needs the sentence that
+    # set it up and the one that lands it.
+    if end - start < MIN_CLIP_S:
+        before = [t for t in pauses(levels, step, over=(max(0.0, start - 12.0), start))
+                  if t < start]
+        after = [t for t in pauses(levels, step, over=(end, min(span_s, end + 12.0)))
+                 if t > end]
+        why["grown"] = "the moment was shorter than a clip"
+        while end - start < MIN_CLIP_S and (before or after):
+            room_before = start - (before[-1] if before else start)
+            room_after = (after[0] if after else end) - end
+            if before and (room_before <= room_after or not after):
+                start = before.pop()
+            elif after:
+                end = after.pop(0)
+            else:
+                break
     end = min(span_s, max(end, start + MIN_CLIP_S))
     if end - start > MAX_CLIP_S:
         end = start + MAX_CLIP_S
         why["trimmed"] = "hit the maximum length"
 
-    why["peak_db"] = round(peak, 1)
-    why["before_db"] = round(before, 1)
     return Bounds(start, end, trigger_s, why)
