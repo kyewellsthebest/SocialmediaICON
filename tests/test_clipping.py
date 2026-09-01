@@ -215,3 +215,56 @@ class TestTheClipIsAboutItsOwnTrigger:
         assert "near it" in found.why["ends_on"] or found.why["ends_on"].startswith(
             "the end of the loud part")
         assert found.why["loud_to"] == pytest.approx(13.0, abs=1.0)
+
+
+class TestAMomentOnMaterialWithNoHeadroom:
+    """A produced upload is loudness-normalised, and the fixed eight-decibel
+    bar cannot fire on one.
+
+    Measured on two videos of the same streamer: the raw stream has 22 dB
+    between ordinary talking and a reaction; the uploaded cut of another
+    session has six. On the second, median-plus-eight sits above the 99th
+    percentile of the whole file - zero loud stretches in fourteen and a half
+    minutes, and every clip fell back to "nothing to end on" and grew to the
+    minimum length.
+    """
+
+    @staticmethod
+    def _envelope(heard):
+        step = heard.window_s
+        return clipping._smooth(
+            heard.level_db, max(1, int(clipping.SMOOTH_S / step))), step
+
+    def test_a_compressed_mix_still_has_a_loud_part(self):
+        # Six decibels between the talking and the moment, which is what a
+        # normalised upload actually looks like.
+        heard = build((10.0, -14.0), (4.0, -8.0), (10.0, -14.0))
+        env, step = self._envelope(heard)
+        runs = clipping.stretches(env, step, over=(0.0, 24.0))
+        assert runs, "found no moment on a compressed mix"
+        assert 9.0 <= runs[0][0] <= 11.5, runs
+
+    def test_a_stream_with_room_to_breathe_keeps_the_full_bar(self):
+        """The whole point of the cap is that it only ever loosens, and only
+        on material that needs it. Twenty-two decibels of range has to behave
+        exactly as it did before."""
+        heard = build((10.0, -32.0), (4.0, -6.0), (10.0, -32.0))
+        env, step = self._envelope(heard)
+        here = sorted(env)
+        median = here[len(here) // 2]
+        loudest = here[int(len(here) * clipping.LOUD_RANGE_TOP)]
+        over = min(clipping.LOUD_OVER_DB,
+                   clipping.LOUD_SPREAD_SHARE * (loudest - median))
+        assert over == clipping.LOUD_OVER_DB, "the cap loosened a stream that had room"
+
+    def test_ordinary_talking_is_not_a_moment_however_flat_it_is(self):
+        """The loosening must not go so far that a level room reads as loud.
+
+        This is what a percentile of the window did, and why it is not that:
+        on a flat signal the seventieth percentile is the median, so the bar
+        landed on it and the whole window came back loud."""
+        heard = build((30.0, -14.0))
+        env, step = self._envelope(heard)
+        runs = clipping.stretches(env, step, over=(0.0, 30.0))
+        loud = sum(b - a for a, b in runs)
+        assert loud < 6.0, f"{loud:.0f}s of a level room read as a moment"

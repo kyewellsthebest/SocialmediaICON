@@ -72,6 +72,44 @@ REACTION_MAX_S = 40.0
 #: find the stretch.
 LOUD_OVER_DB = 8.0
 LOUD_MIN_S = 1.0
+#: ...but eight decibels is only available on a stream that has eight
+#: decibels, and a produced upload does not.
+#:
+#: Measured over two videos of the same streamer. The raw stream sits at a
+#: median of -32 dBFS with its 95th percentile at -10: 22 dB between ordinary
+#: talking and a reaction, and the eight-decibel bar picks those reactions out
+#: cleanly - 81 loud stretches over 28 minutes. The uploaded, loudness-
+#: normalised cut of a different session sits at a median of -14 with its 95th
+#: at -8. Six decibels of headroom in total, so median-plus-eight lands above
+#: the 99th percentile of the entire file and *nothing* clears it: zero loud
+#: stretches in fourteen and a half minutes, and all sixteen clips fell back
+#: to "there is nothing to end on" and grew to the minimum length.
+#:
+#: So the bar is eight decibels or half the window's own dynamic range,
+#: whichever is smaller. Half, and measured against the 95th percentile rather
+#: than the peak, because both of those were checked rather than chosen: at
+#: half, every window of the raw stream still pins at the full eight decibels
+#: and its clips do not move at all, while the compressed one gets a bar about
+#: three decibels over its median and finds its moments again.
+#:
+#: A percentile of the window was tried first and is wrong. It collapses on
+#: anything with two levels - quiet room, loud reaction, quiet room - because
+#: when four fifths of the window sits at one level the seventieth percentile
+#: *is* the median, the bar drops to it, and the whole window reads as loud.
+LOUD_SPREAD_SHARE = 0.5
+#: ...and a floor under that, because half of nothing is nothing.
+#:
+#: A window with no dynamic range at all - a level room, a constant hum - has
+#: a spread of zero, so half of it is zero, so the bar lands exactly on the
+#: median and every frame at or above the median reads as loud. Thirty seconds
+#: of an unchanging room came back as one thirty-second moment. Two decibels
+#: is below anything a compressed mix needs (the measured one wanted three)
+#: and above the noise of a room where nothing is happening.
+LOUD_OVER_MIN_DB = 2.0
+#: The top of the range, taken off the loudest twentieth rather than the
+#: single loudest frame - one consonant should not define how much room a
+#: stream has.
+LOUD_RANGE_TOP = 0.95
 #: Two loud stretches closer together than this are one moment with a breath
 #: in the middle.
 LOUD_JOIN_S = 1.8
@@ -269,7 +307,11 @@ def stretches(
     lo, hi = _at(envelope, step, over[0]), _at(envelope, step, over[1])
     if hi - lo < 2:
         return []
-    bar = _median(envelope[lo:hi]) + LOUD_OVER_DB
+    here = sorted(envelope[lo:hi])
+    median = here[len(here) // 2]
+    loudest = here[min(len(here) - 1, int(len(here) * LOUD_RANGE_TOP))]
+    over = min(LOUD_OVER_DB, LOUD_SPREAD_SHARE * (loudest - median))
+    bar = median + max(LOUD_OVER_MIN_DB, over)
     need = max(1, int(LOUD_MIN_S / step))
 
     runs: list[tuple[float, float]] = []
