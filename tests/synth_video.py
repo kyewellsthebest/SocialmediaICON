@@ -63,6 +63,25 @@ def calm_then_chaos(at: float = 20.0, seconds: float = 30.0) -> Path:
 
 
 @functools.cache
+def frozen_then_chaos(at: float = 22.0, seconds: float = 30.0) -> Path:
+    """A room with *no* motion at all, then four seconds of chaos.
+
+    Distinct from calm_then_chaos, whose "calm" still drifts - which is enough
+    to give the baseline a non-zero median. This one is genuinely frozen until
+    the moment, which is the case that used to be discarded: no baseline to
+    divide by, so the surge was skipped entirely.
+    """
+    return _build(
+        "frozen",
+        _lum(
+            f"if(between(T,{at},{at + 4}),"
+            f" 128+120*sin(X*0.5+T*40)*sin(Y*0.4+T*33), 48)"
+        ),
+        seconds, where(),
+    )
+
+
+@functools.cache
 def club_then_surge(at: float = 20.0, seconds: float = 30.0) -> Path:
     """The same event, buried in a stream that is already moving constantly."""
     return _build(

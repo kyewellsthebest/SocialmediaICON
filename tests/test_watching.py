@@ -216,3 +216,46 @@ class TestACameraMovingIsNotAnEvent:
         found = watching.watch(clips.calm_then_chaos(at=20.0))
         assert found.surges, "the fixtures have to keep working"
         assert any(19.0 <= t <= 25.0 for t, _ in found.surges)
+
+
+class TestAStillRoomCanStillErupt:
+    """The stiller a stream had been, the less able it was to report a surge -
+    which is exactly backwards. A still room erupting is the clearest event
+    there is, and it was the one the eye was blindest to.
+
+    The cause: a surge is a ratio against the stream's own recent normal, and
+    a genuinely still stream's normal is zero. Rather than divide by it the
+    code skipped the frame, so every frame of a real eruption was discarded
+    for having nothing to compare against.
+
+    Measured on a still room with one four-second eruption: in the window
+    where the moment sat 22 seconds in, 160 frames were above the floor and
+    every one was thrown away. That window reported no surges, scored 12
+    instead of 36 - on voice alone - and failed the bar. The same moment at a
+    different offset was cut. The only difference was how still the stream had
+    been beforehand.
+    """
+
+    def test_an_eruption_out_of_nothing_is_a_surge(self):
+        found = watching.watch(clips.frozen_then_chaos(at=22.0))
+        assert found.surges, "a still room erupting reported nothing at all"
+        assert any(21.0 < t < 27.0 for t, _ in found.surges), found.surges
+
+    def test_the_still_stretch_before_it_is_not(self):
+        found = watching.watch(clips.frozen_then_chaos(at=22.0))
+        assert not [t for t, _ in found.surges if t < 20.0], "the frozen part surged"
+
+    def test_a_still_room_on_its_own_still_surges_at_nothing(self):
+        """The floor is what stops this becoming "any motion at all is an
+        event" on a stream that never does anything."""
+        assert watching.watch(clips.still_room()).surges == []
+
+    def test_a_single_changed_frame_is_still_a_cut_not_a_surge(self):
+        """With no baseline to divide by, one changed frame measured against
+        the floor alone read as a surge of 351. A surge is a stretch."""
+        assert watching.watch(clips.hard_cut(at=15.0)).surges == []
+
+    def test_a_camera_being_carried_is_still_not_an_event(self):
+        """The other direction: loosening the baseline must not resurrect the
+        handheld-camera problem."""
+        assert watching.watch(clips.nightclub()).surges == []

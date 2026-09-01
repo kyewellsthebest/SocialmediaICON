@@ -69,6 +69,11 @@ MAX_FPS = 60.0
 BASELINE_S = 30.0
 #: No verdict before there is a past to compare against.
 WARMUP_S = 5.0
+#: How long motion has to hold up to count as a surge when there is no
+#: baseline to measure it against. Half of it either side of the frame in
+#: question, so a single changed frame - which is a cut, not a surge - has
+#: still neighbours and fails, while a real move does not.
+SUSTAIN_S = 0.25
 
 
 class WatchingError(RuntimeError):
@@ -253,10 +258,40 @@ def _find_surges(
     least = max(1, int(WARMUP_S * fps))
     found: list[tuple[float, float]] = []
     for i in range(least, len(motion)):
-        usual = _median(motion[max(0, i - back) : i])
-        if usual < 1e-9 or motion[i] < floor:
+        if motion[i] < floor:
             continue
-        ratio = motion[i] / usual
+        usual = _median(motion[max(0, i - back) : i])
+        # A stream that has been genuinely still has a baseline of zero, and a
+        # ratio against zero is not a number. Skipping those frames - which is
+        # what this did - means the stiller the stream, the less able it is to
+        # report a surge, and that is exactly backwards: a still room erupting
+        # is the clearest event there is.
+        #
+        # Measured on a still room with one four-second eruption in it: in the
+        # window where the moment sat 22 seconds in, 160 frames were above the
+        # floor and every one was discarded for having a zero baseline. The
+        # window reported no surges at all and scored 12 instead of 36, on
+        # voice alone, and failed the bar. The same moment at a different
+        # offset scored 36 and was cut - the only difference being how still
+        # the stream had been beforehand.
+        #
+        # So when there is no baseline to speak of, the floor *is* the
+        # baseline: "normally still" means anything above the noise floor is a
+        # real move, and the ratio says how much of one.
+        if usual > 1e-9:
+            ratio = motion[i] / usual
+        else:
+            # ...but with no baseline there is also less to go on, so the
+            # evidence has to be sustained. A single changed frame in a still
+            # room is a *cut*, and _find_cuts already reports those; measured
+            # against the floor alone one read as a surge of 351. A surge is a
+            # stretch of raised motion, so ask the neighbourhood, not the
+            # frame: a cut has still frames either side and a real move does
+            # not.
+            near = max(1, int(SUSTAIN_S * fps))
+            if _median(motion[max(0, i - near) : i + near + 1]) < floor:
+                continue
+            ratio = motion[i] / floor
         if ratio < over:
             continue
         at = i / fps
