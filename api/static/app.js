@@ -1014,12 +1014,83 @@ async function renderClips() {
     if (err.message !== "unauthorised") toast(err.message, "critical");
     return;
   }
+  // The watcher's own tally, on this page rather than only on Live. An empty
+  // queue and a broken bot look identical from a list of clips, and the
+  // difference is the only thing worth knowing when there is nothing in it.
+  try { state.live = await api("/live"); } catch { /* the tally is a bonus */ }
+
   state.clips = rows;
   $("#nav-clips").textContent = rows.length ? String(rows.length) : "";
-  $("#clips").innerHTML = rows.length
+  $("#clips").innerHTML = clipTally(state.live || {}) + (rows.length
     ? rows.map(clipCard).join("")
-    : `<div class="card"><p class="empty-note">Nothing caught yet. The watcher cuts a clip
-        when chat spikes — at most ${state.live?.caps?.per_day ?? 10} a day, an hour apart.</p></div>`;
+    : `<div class="card"><p class="empty-note">Nothing in the queue. The tally above
+        says what the watcher did with everything it looked at.</p></div>`);
+}
+
+/* What the watcher did today, whether or not it kept anything.
+
+   Three hours of an empty queue has two completely different explanations -
+   nothing happened on the streams, or everything that happened was thrown
+   away by a threshold - and a list of clips cannot tell them apart. Every
+   number here already existed in the funnel; none of it was on this page. */
+function clipTally(live) {
+  const f = live.funnel || {};
+  const looking = live.looking || {};
+  const stages = f.stages || [];
+  const at = (name) => (stages.find((row) => row.stage === name) || {}).n || 0;
+
+  const judged = f.judged_today ?? 0;
+  const cut = f.cut_today ?? 0;
+  const dropped = at("ranked too low");
+  const declined = f.declined ?? 0;
+
+  // Ordered as the moment travels: looked at, cleared the bar, watched, kept.
+  const tiles = [
+    stat(f.scored ?? 0, "moments scored", (f.scored ?? 0) > 0),
+    stat(cut, "cut", cut > 0),
+    stat(judged, "watched by the model", judged > 0),
+    stat(declined, "it turned down"),
+    stat(dropped, "dropped as too weak"),
+    stat(f.kept_24h ?? "\u2014", "in the queue"),
+  ].join("");
+
+  const spend = looking.per_look_usd
+    ? `$${f.spent_usd} of $${f.budget_usd} spent on ${judged} looks `
+      + `($${looking.per_look_usd} each, ${looking.model}).`
+    : `$${f.spent_usd ?? 0} of $${f.budget_usd ?? 0} spent.`;
+
+  // The line that answers "why is it empty". Said plainly, in the order the
+  // causes actually matter: nothing watching, nothing cut, or everything cut
+  // then dropped.
+  let why = "";
+  if (looking.why) {
+    why = `Nothing is watching clips: ${looking.why}.`;
+  } else if ((f.scored ?? 0) === 0) {
+    why = `Nothing has been scored yet. Either the watcher is not running or `
+      + `no stream has filled its buffer - the Live page says which.`;
+  } else if (cut === 0) {
+    why = `${f.scored} moments were scored and none cleared the bar. `
+      + `${at("too weak")} were too weak, ${at("one signal only")} had only one `
+      + `kind of evidence.${f.near_misses ? ` ${f.near_misses} came close, the `
+      + `best at ${f.near_best} - if that number is large the bar is too high.` : ""}`;
+  } else if (dropped && !rowsKept(f)) {
+    why = `${cut} moments were cut and ${dropped} were dropped for ranking `
+      + `under ${live.caps?.keep_rank ?? 20}. If that keeps happening the floor `
+      + `is set too high, not the streams too quiet.`;
+  }
+
+  return `<div class="card plate">
+    <header><h3>What it did today</h3>
+      <span class="label">${f.hours_today ?? 0}h in · ${f.cut_per_day ?? 0}/day at this rate</span>
+    </header>
+    <div class="stats">${tiles}</div>
+    ${why ? `<p class="empty-note">${esc(why)}</p>` : ""}
+    <p class="muted">${esc(spend)}</p>
+  </div>`;
+}
+
+function rowsKept(f) {
+  return (f.kept_24h ?? 0) > 0;
 }
 
 function clipCard(c) {

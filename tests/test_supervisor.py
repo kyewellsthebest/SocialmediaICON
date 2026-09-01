@@ -2155,3 +2155,78 @@ class TestItSaysWhatTheMoneyBuys:
         sup.record_look(Verdict(watched=True, cost_usd=0.0))
         found = sup.looking()
         assert found["looks_a_day"] is None
+
+
+class TestADroppedClipCostsOnlyALook:
+    """A clip below the floor used to be tightened, reframed to portrait and
+    uploaded, and only then deleted. On a day when the floor was catching most
+    of them - which is a day that happens, because the floor is a number
+    somebody picked - that is most of the machine's work thrown away.
+
+    Ranking needs the evidence, the verdict and the length, all of which exist
+    before any of the pixels are touched. So the floor is checked first."""
+
+    def _sup(self, monkeypatch, *, floor=20.0):
+        from core.verdict import Verdict
+
+        sup = Supervisor()
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        monkeypatch.setattr(sup, "store", lambda record: record)
+        monkeypatch.setattr(settings, "live_keep_rank", floor)
+        monkeypatch.setattr(
+            sup, "consider", lambda *a, **k: Verdict(problems=["the day's looking is spent"]))
+        return sup
+
+    def _run(self, sup, monkeypatch, **kw):
+        framed: list = []
+        monkeypatch.setattr("core.reframe.to_portrait",
+                            lambda src, dest, **k: framed.append(dest) or dest)
+        sent: list = []
+        monkeypatch.setattr(sup, "publish_clip", lambda path: sent.append(path) or "key")
+        watched = _watched("x", messages=kw.pop("messages", _chatter()), **kw)
+        found = Found(score=46.0, why={"motion_surge": 46.0}, at_s=15.0,
+                      ago_s=90.0, chat_s=285.0)
+        candidate = sup.cut(watched, found=found, now=time.time())
+        record = sup.finish(candidate, now=time.time())
+        return record, framed, sent
+
+    def test_a_clip_under_the_floor_is_never_reframed(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        record, framed, sent = self._run(
+            sup, monkeypatch, seen=Seen(surges=[(15.0, 1.4)]), messages=[])
+        assert record is None
+        assert framed == [], "it was cropped to portrait before being deleted"
+        assert sent == []
+
+    def test_a_clip_over_it_still_is(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        record, framed, sent = self._run(
+            sup, monkeypatch,
+            heard=_laughing_at(285.0),
+            seen=Seen(surges=[(15.0, 4.2)], cuts=[14.0, 16.0]),
+            messages=_chatter(burst_at=285.0),
+        )
+        assert record is not None
+        assert len(framed) == 1
+        assert len(sent) == 1
+
+    def test_how_it_was_framed_still_reaches_the_record(self, monkeypatch):
+        """The framing report is filled in during the reframe, which now
+        happens after the record is built - so it has to be put back."""
+        sup = self._sup(monkeypatch)
+
+        def frame(src, dest, **kw):
+            (kw.get("report") if kw.get("report") is not None else {}).update(
+                {"layout": "stacked", "webcam": {"seen": 0.9}})
+            return dest
+
+        monkeypatch.setattr("core.reframe.to_portrait", frame)
+        monkeypatch.setattr(sup, "publish_clip", lambda path: "key")
+        watched = _watched("x", messages=_chatter(burst_at=285.0),
+                           heard=_laughing_at(285.0),
+                           seen=Seen(surges=[(15.0, 4.2)], cuts=[14.0, 16.0]))
+        found = Found(score=46.0, why={"motion_surge": 46.0}, at_s=15.0,
+                      ago_s=90.0, chat_s=285.0)
+        record = sup.finish(sup.cut(watched, found=found, now=time.time()),
+                            now=time.time())
+        assert record["framing"]["layout"] == "stacked"

@@ -1529,23 +1529,6 @@ class Supervisor:
                 f"({'; '.join(judged.problems) or 'no verdict'})"
             )
 
-        # The model may have found the good part inside the window it was
-        # given. Trusting it about where the moment is, is the same act as
-        # trusting it about whether there is one.
-        raw = self._tighten(candidate.raw, judged, out_dir)
-
-        # How it was framed, kept with the clip. A desk stream is stacked and
-        # everything else follows the action, and which one happened is the
-        # first thing anyone asks when a clip looks wrong.
-        framing: dict[str, Any] = {}
-        reframe.to_portrait(raw, final, work_dir=out_dir / "tmp", report=framing)
-        raw.unlink(missing_ok=True)
-
-        # The clip is written here, on the worker, and watched in a browser
-        # talking to the web service. Those are different containers with
-        # different disks, so a path is not a way to hand it over - the first
-        # catch was recorded perfectly and then could not be played, because
-        # the file it named existed only on the machine that made it.
         why = candidate.found.why
 
         record = {
@@ -1571,7 +1554,7 @@ class Supervisor:
                 "ear": _ear_said(candidate.senses),
                 "model": judged.heard,
             },
-            "framing": framing,
+            "framing": {},
             "mood": candidate.mood,
             "quotes": _top_quotes(candidate.quotes),
             "peak_viewers": candidate.viewers,
@@ -1598,7 +1581,6 @@ class Supervisor:
         approved = judged.watched and judged.worth_it
         if record["rank_score"] < floor and not approved:
             candidate.discard()
-            final.unlink(missing_ok=True)
             self._tally("ranked too low", record["rank_score"])
             self._note(
                 f"{candidate.channel}: dropping this - ranked "
@@ -1611,6 +1593,31 @@ class Supervisor:
             )
             return None
 
+        # Only now is it worth the pixels. Ranking needs the evidence, the
+        # verdict and the length - all of which exist before any of this - so
+        # a clip that is not going to be kept costs a look and nothing else.
+        # It used to be tightened, reframed to portrait and uploaded first,
+        # and then deleted, which on a day when the floor was catching most
+        # of them was most of the machine's work thrown away.
+        #
+        # The model may have found the good part inside the window it was
+        # given. Trusting it about where the moment is, is the same act as
+        # trusting it about whether there is one.
+        raw = self._tighten(candidate.raw, judged, out_dir)
+
+        # How it was framed, kept with the clip. A desk stream is stacked and
+        # everything else follows the action, and which one happened is the
+        # first thing anyone asks when a clip looks wrong.
+        framing: dict[str, Any] = {}
+        reframe.to_portrait(raw, final, work_dir=out_dir / "tmp", report=framing)
+        raw.unlink(missing_ok=True)
+        record["framing"] = framing
+
+        # The clip is written here, on the worker, and watched in a browser
+        # talking to the web service. Those are different containers with
+        # different disks, so a path is not a way to hand it over - the first
+        # catch was recorded perfectly and then could not be played, because
+        # the file it named existed only on the machine that made it.
         record["storage_key"] = self.publish_clip(final)
         self.store(record)
         log.info(
@@ -1870,6 +1877,11 @@ class Supervisor:
             "caps": {
                 "per_day": settings.live_clips_per_day,
                 "min_gap_minutes": settings.live_min_gap_minutes,
+                # The floor a finished clip has to beat. On the page beside
+                # the count of clips dropped for missing it, because "23 were
+                # dropped" only means something next to the number they
+                # were dropped against.
+                "keep_rank": settings.live_keep_rank,
                 # cap_state() already swallows its own failures; this is only
                 # here so a status read can never be the thing that throws.
                 **self._caps_quietly(),
