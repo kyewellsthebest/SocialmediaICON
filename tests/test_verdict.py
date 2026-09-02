@@ -285,3 +285,54 @@ class TestItDoesNotSendParametersTheModelRejects:
         assert not llm.thinks_adaptively("claude-haiku-4-5")
         assert not llm.thinks_adaptively("claude-sonnet-4-5")
         assert not llm.thinks_adaptively("")
+
+
+class TestActivityIsNotAMoment:
+    """Three clips of a wrestling match reached the page scored 41, 43 and 44,
+    each approved by the model as a physical event - which they were, for
+    their whole duration. None of them contained a takedown, a reaction or an
+    ending. "Something is happening" was the criterion, and continuous
+    activity satisfies it forever.
+
+    So approving a clip now means having pointed at the second it turns.
+    """
+
+    def _payload(self, **over):
+        base = {
+            "happening": "two people wrestling in a paddling pool",
+            "kind": "impressive", "worth_it": True, "confidence": 0.8,
+            "why": "physical event with a crowd", "setting": "outdoor event",
+            "moment_s": 12.0,
+        }
+        return base | over
+
+    def test_a_clip_with_a_named_moment_is_approved(self):
+        assert verdict._worth_it(self._payload()) is True
+
+    def test_approval_without_a_moment_is_not_an_approval(self):
+        """The exact shape of the failure: yes to worth_it, nothing to point
+        at. Energetic footage of an event already underway."""
+        assert verdict._worth_it(self._payload(moment_s=None)) is False
+
+    def test_a_missing_field_is_not_a_moment_either(self):
+        payload = self._payload()
+        del payload["moment_s"]
+        assert verdict._worth_it(payload) is False
+
+    def test_a_refusal_stays_a_refusal_however_precise_it_is(self):
+        assert verdict._worth_it(self._payload(worth_it=False)) is False
+
+    def test_the_second_zero_still_counts_as_a_moment(self):
+        """0.0 is a real answer and must not be read as "no moment"."""
+        assert verdict._worth_it(self._payload(moment_s=0.0)) is True
+
+    def test_the_schema_makes_the_model_answer(self):
+        assert "moment_s" in verdict.SCHEMA["required"]
+        assert "moment_s" in verdict.SCHEMA["properties"]
+
+    def test_the_prompt_names_the_failure_it_is_guarding_against(self):
+        """A prompt that only says "be hard to please" was already there and
+        approved all three. It has to name the mistake."""
+        said = verdict.SYSTEM.lower()
+        assert "activity is not a moment" in said
+        assert "before and an after" in said

@@ -132,6 +132,9 @@ class Verdict:
     #: Why it is or is not worth clipping, in the model's words.
     why: str = ""
     #: A tighter cut, if the moment turned out to sit inside the window.
+    #: The second the moment turns, as the model read it. None means it found
+    #: activity rather than a moment, which is a refusal.
+    moment_s: float | None = None
     best_start_s: float | None = None
     best_end_s: float | None = None
     #: What the model says was actually in the audio, judged independently of
@@ -153,6 +156,7 @@ class Verdict:
             "setting": self.setting,
             "faces": self.faces,
             "why": self.why,
+            "moment_s": self.moment_s,
             "best_start_s": self.best_start_s,
             "best_end_s": self.best_end_s,
             "heard": self.heard,
@@ -247,16 +251,41 @@ a car, at a desk, in a ring - the setting is why a reaction means what it
 means, and a shocked face at a roulette wheel is a different clip from a
 shocked face in a supermarket.
 
-A clip is worth posting when a stranger with no context would watch it to the
-end. That usually means something visibly or audibly happens: a reaction, a
-surprise, a physical event, a joke that lands, an argument, a genuinely
-impressive play. It is not worth posting when it is someone talking steadily,
-a menu or a game lobby, an unchanging screen, a lull, dead air, or a reaction
-to something that happened off camera and cannot be seen or heard here.
+Now the only question that matters: is there a MOMENT in this clip?
 
-Be hard to please. Refusing a mediocre moment costs one clip. Posting one
-costs the account's credibility. When you are unsure, say so with a low
-confidence rather than a confident guess.
+A moment is a point in time, not a stretch of activity. Something is different
+after it than before it. Somebody reacts. A joke lands. A fight turns. A stunt
+comes off or fails. Somebody's face changes. There is a before and an after,
+and you can name the second it happened.
+
+Activity is not a moment, and this is the mistake to guard against hardest,
+because it is the one the machine makes. A wrestling match in progress is
+activity - the takedown is the moment. A crowd being loud is activity - the
+thing they suddenly get louder about is the moment. Two people arguing for
+twenty seconds is activity - the line that stops the other person is the
+moment. If the clip is the same thing at the end as it was at the start, there
+is no moment in it however energetic it looks, and it is not worth posting.
+
+Two tests, and it has to pass both:
+
+1. **Point at it.** Say the second the moment happens. If you cannot name one -
+   if the honest answer is "it is going on throughout" - there is no moment and
+   the answer is no.
+2. **Would it make sense cold?** A stranger who has never seen this streamer
+   opens the clip with no title and no explanation. Do they understand what
+   happened and why it is worth their time? If you would need to explain the
+   setup for it to land, it does not land.
+
+Say no to: someone talking steadily, a menu or a lobby, an unchanging screen, a
+lull, dead air, a reaction to something off camera that cannot be seen or heard
+here, an event already underway that neither starts nor finishes inside the
+clip, and anything that leaves a first-time viewer asking what they just
+watched.
+
+Be hard to please. Refusing a mediocre moment costs one clip. Posting one costs
+the account's credibility, and a page of clips with no moments in them is worse
+than an empty page. When you are unsure, say so with a low confidence rather
+than a confident guess. "Something is happening" is not enough and never was.
 
 If the good part is only a slice of what you were given, say where it starts
 and ends in seconds from the beginning of the clip.
@@ -274,7 +303,14 @@ so rather than repeating what the machine claimed."""
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["happening", "kind", "worth_it", "confidence", "why", "setting"],
+    "required": [
+        "happening", "kind", "worth_it", "confidence", "why", "setting",
+        # Required so that approving a clip means having pointed at the instant
+        # it turns. A model that cannot name the second is describing activity,
+        # and activity is what filled the page with wrestling bouts that had no
+        # takedown in them.
+        "moment_s",
+    ],
     "properties": {
         "happening": {
             "type": "string",
@@ -320,6 +356,15 @@ SCHEMA = {
             },
         },
         "why": {"type": "string", "description": "Why, in one or two sentences."},
+        "moment_s": {
+            "type": ["number", "null"],
+            "description": (
+                "The second the moment happens - the point where something "
+                "turns and there is a before and an after. Null when the clip "
+                "is activity rather than a moment, which means it is not worth "
+                "posting however energetic it looks."
+            ),
+        },
         "best_start_s": {
             "type": ["number", "null"],
             "description": "Seconds from the start of the clip where the good part begins.",
@@ -463,7 +508,7 @@ def look(
             getattr(response, "model", "") or settings.verdict_model,
             getattr(response, "usage", None),
         ),
-        worth_it=bool(payload.get("worth_it")),
+        worth_it=_worth_it(payload),
         # Clamped here rather than in the schema, which cannot express a range.
         confidence=min(1.0, max(0.0, float(payload.get("confidence") or 0.0))),
         happening=str(payload.get("happening") or ""),
@@ -471,11 +516,26 @@ def look(
         setting=str(payload.get("setting") or ""),
         faces=payload.get("faces") or [],
         why=str(payload.get("why") or ""),
+        moment_s=_number(payload.get("moment_s")),
         best_start_s=_number(payload.get("best_start_s")),
         best_end_s=_number(payload.get("best_end_s")),
         heard=payload.get("heard") or {},
         problems=problems,
     )
+
+
+def _worth_it(payload: dict) -> bool:
+    """Approved, and only if it named the second the moment happens.
+
+    The prompt asks for both and a model can still answer yes to one and null
+    to the other. Belt and braces on purpose: "worth_it with no moment" is
+    precisely the shape of the failure this exists to stop - three clips of a
+    wrestling match with no takedown in any of them, each approved as a
+    physical event, which they were, for their whole duration.
+    """
+    if not bool(payload.get("worth_it")):
+        return False
+    return _number(payload.get("moment_s")) is not None
 
 
 def _number(value: Any) -> float | None:
