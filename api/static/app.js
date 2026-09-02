@@ -327,8 +327,15 @@ function paintRoster(r) {
   ]);
   const bits = [];
   if (r.refused) {
-    bits.push(`${r.refused} of ${r.considered} were refused - a competitive `
-      + `event, not in English, or nobody could find out who they were.`);
+    // The reasons it actually gave, not a guess at them. This line used to
+    // read "a competitive event, not in English, or nobody could find out who
+    // they were" whatever had happened, so a category filter set to "=irl"
+    // that refused all 62 streams on Kick looked like a research failure.
+    const why = (r.refused_why || []);
+    bits.push(why.length
+      ? `${r.refused} of ${r.considered} were refused: `
+        + why.map((w) => `${w.count} ${w.why}`).join(", ") + "."
+      : `${r.refused} of ${r.considered} were refused.`);
   }
   if (failed.length) {
     bits.push(`${failed.length} passed the gate and would not attach: `

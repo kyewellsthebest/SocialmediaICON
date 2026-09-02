@@ -2473,7 +2473,7 @@ class TestWatchingOneCategory:
         monkeypatch.setattr(settings, "live_only_categories", "irl")
         assert settings.may_watch("n3on", "IRL")[0]
         allowed, why = settings.may_watch("someone", "Slots")
-        assert not allowed and why == "not in irl"
+        assert not allowed and why == "Slots is not irl"
 
     def test_the_category_is_matched_however_kick_capitalises_it(self, monkeypatch):
         monkeypatch.setattr(settings, "live_only_channels", "")
@@ -2499,7 +2499,7 @@ class TestWatchingOneCategory:
         monkeypatch.setattr(settings, "live_only_categories", "irl")
         sup = Supervisor()
         assert sup.wanted(self._rows(("slotsguy", "Slots")), now=1_000.0) == []
-        assert sup.skipped["slotsguy"] == "not in irl"
+        assert sup.skipped["slotsguy"] == "Slots is not irl"
 
     def test_it_walks_the_directory_until_the_slots_can_be_filled(
             self, monkeypatch):
@@ -2557,3 +2557,80 @@ class TestWatchingOneCategory:
         monkeypatch.setattr("core.roster.fetch_kick_live", fetch)
         Supervisor.listing()
         assert asked == [1]
+
+
+class TestASettingTypedSlightlyWrongDoesNotSilenceTheBot:
+    """LIVE_ONLY_CATEGORIES reached production as "=irl" - the name went in
+    the name box and "=irl" in the value box. The filter then looked for a
+    category called "=irl", refused all 62 streams on Kick, and the bot
+    watched nothing for thirty-six minutes while every page said it was fine.
+
+    A setting that is one keystroke from correct must not fail totally and
+    silently.
+    """
+
+    def test_the_value_that_was_actually_deployed_works(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_only_categories", "=irl")
+        assert settings.only_categories == ["irl"]
+        assert settings.may_watch("n3on", "IRL")[0]
+
+    def test_a_whole_pasted_line_works_too(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_only_categories",
+                            "LIVE_ONLY_CATEGORIES=irl")
+        assert settings.only_categories == ["irl"]
+
+    def test_quotes_and_spacing_do_not_matter(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_categories", ' "IRL" , Slots ')
+        assert settings.only_categories == ["irl", "slots"]
+
+    def test_the_same_forgiveness_applies_to_channels(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", "=n3on, deenthegreat")
+        assert settings.only_channels == ["n3on", "deenthegreat"]
+
+    def test_an_empty_setting_is_still_no_filter_at_all(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_categories", " , ,")
+        assert settings.only_categories == []
+        assert settings.may_watch("anyone", "Slots")[0]
+
+
+class TestARefusalSaysWhatItActuallySaw:
+    """"not in irl" on all 62 streams reads the same whether the filter is
+    wrong or the listing carries no category at all, and those need opposite
+    fixes."""
+
+    def test_it_names_the_category_it_found(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_only_categories", "irl")
+        allowed, why = settings.may_watch("someone", "Slots")
+        assert not allowed and why == "Slots is not irl"
+
+    def test_a_listing_with_no_category_says_so(self, monkeypatch):
+        """The case that would otherwise look identical to a wrong filter -
+        and means the parser is not finding categories, not that the setting
+        is wrong."""
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_only_categories", "irl")
+        allowed, why = settings.may_watch("someone", "")
+        assert not allowed and "no category on the listing" in why
+
+    def test_the_page_is_told_why_they_were_refused_not_a_guess(self):
+        """The dashboard explained every refusal as "a competitive event, not
+        in English, or nobody could find out who they were" whatever the
+        reason was, so a misconfigured filter looked like a research
+        failure."""
+        sup = Supervisor()
+        sup.skipped = {f"c{i}": "Slots is not irl" for i in range(9)}
+        sup.skipped["odd"] = "on the never-watch list"
+        counted = sup.status()["roster"]["refused_why"]
+        assert counted[0] == {"why": "Slots is not irl", "count": 9}
+        assert {"why": "on the never-watch list", "count": 1} in counted
+
+    def test_the_tally_counts_every_refusal_not_the_eight_that_fit(self):
+        """`skipped` is trimmed to eight for the page; the tally must not be."""
+        sup = Supervisor()
+        sup.skipped = {f"c{i}": "Slots is not irl" for i in range(62)}
+        status = sup.status()
+        assert len(status["skipped"]) == 8, "the page list is still trimmed"
+        assert status["roster"]["refused_why"][0]["count"] == 62

@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -2026,6 +2027,19 @@ class Supervisor:
             "roster": {
                 **self.roster_count,
                 "watching": len(self.watching),
+                # The reasons it actually gave, counted over all of them
+                # rather than the eight that fit in `skipped`. The page used
+                # to explain every refusal as "a competitive event, not in
+                # English, or nobody could find out who they were" whatever
+                # had happened, so a category filter set to "=irl" that
+                # refused all 62 streams on Kick read as a research failure
+                # for thirty-six minutes.
+                "refused_why": [
+                    {"why": why, "count": count}
+                    for why, count in sorted(
+                        Counter(self.skipped.values()).items(), key=lambda kv: -kv[1]
+                    )[:4]
+                ],
                 "attach_failed": [
                     {"channel": c, "why": why}
                     for c, why in list(self.attach_failed.items())[:6]

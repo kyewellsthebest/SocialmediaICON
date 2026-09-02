@@ -17,6 +17,30 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _names(raw: str) -> list[str]:
+    """A comma-separated setting, as a list of lowercase names.
+
+    Forgiving on purpose, because the failure it prevents is total and silent.
+    LIVE_ONLY_CATEGORIES arrived in production as "=irl" - the name went in the
+    name box and "=irl" in the value box - so the filter looked for a category
+    called "=irl", refused all 62 streams on Kick, and the bot watched nothing
+    for thirty-six minutes while every page said it was fine.
+
+    So an entry is stripped of spaces and quotes, and anything up to and
+    including a "=" is dropped: "=irl", "irl", ' "IRL" ' and a whole pasted
+    LIVE_ONLY_CATEGORIES=irl all mean irl. A name cannot contain an equals
+    sign, so nothing legitimate is lost.
+    """
+    out: list[str] = []
+    for part in (raw or "").split(","):
+        name = part.strip().strip("\"'").strip()
+        if "=" in name:
+            name = name.rsplit("=", 1)[1].strip().strip("\"'").strip()
+        if name:
+            out.append(name.lower())
+    return out
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False
@@ -601,15 +625,15 @@ class Settings(BaseSettings):
     @property
     def only_channels(self) -> list[str]:
         """The allow-list, lowercased. Empty means "no allow-list"."""
-        return [c.strip().lower() for c in self.live_only_channels.split(",") if c.strip()]
+        return _names(self.live_only_channels)
 
     @property
     def never_channels(self) -> list[str]:
-        return [c.strip().lower() for c in self.live_never_channels.split(",") if c.strip()]
+        return _names(self.live_never_channels)
 
     @property
     def only_categories(self) -> list[str]:
-        return [c.strip().lower() for c in self.live_only_categories.split(",") if c.strip()]
+        return _names(self.live_only_categories)
 
     def may_watch(self, channel: str, category: str = "") -> tuple[bool, str]:
         """Whether this stream is one the bot is allowed to watch, and why not.
@@ -633,8 +657,17 @@ class Settings(BaseSettings):
                 return False, "not on the watch list"
             return True, ""
         wanted = self.only_categories
-        if wanted and (category or "").strip().lower() not in wanted:
-            return False, f"not in {' or '.join(wanted)}"
+        if wanted:
+            seen = (category or "").strip()
+            if seen.lower() not in wanted:
+                # What it *was* matters as much as what it was not. "not in
+                # irl" on all 62 streams reads the same whether the filter is
+                # wrong or the listing simply carries no category at all, and
+                # those need opposite fixes.
+                return False, (
+                    f"{seen} is not {' or '.join(wanted)}" if seen
+                    else f"no category on the listing, so not {' or '.join(wanted)}"
+                )
         return True, ""
 
     @property
