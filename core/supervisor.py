@@ -766,6 +766,14 @@ class Supervisor:
 
         kept = []
         for entry in listing:
+            # The list you chose, first and free. A channel refused here never
+            # reaches the research, so naming a handful of streamers also
+            # stops the bot paying to decide about the forty it will not
+            # watch.
+            allowed, why_not = settings.may_watch(entry.channel)
+            if not allowed:
+                self.skipped[entry.channel] = why_not
+                continue
             probe = self.probes.get(entry.channel)
             chat = [m.text for m in probe.log.recent()][-120:] if probe else None
             try:
@@ -1124,11 +1132,6 @@ class Supervisor:
             ago_s=watched.seconds_ago(best.peak_s, now=now),
             chat_s=watched.chat_offset(best.peak_s),
         )
-
-    @staticmethod
-    def event_score(why: dict[str, float]) -> float:
-        """The part of a score that came from something happening."""
-        return sum(v for k, v in why.items() if k in moments.EVENTS)
 
     def read_all_senses(self, *, now: float) -> None:
         """Listen to and look at every stream that is due, together.
@@ -1514,11 +1517,30 @@ class Supervisor:
         Tried strongest first: a candidate the model refuses is dropped and
         the next one is offered, because a refusal says this moment is not
         worth posting, not that the hour had nothing in it.
+
+        A moment has to have been held for live_review_s before a slot goes on
+        it, and that delay is the whole reason the shortlist exists. tick()
+        adds a candidate and calls this in the same pass, so without it every
+        moment was cut and spent the instant it cleared the bar, never met a
+        competitor, and "keep the best five" only ever held one. Waiting means
+        that by the time a moment is used, every other moment from its own ten
+        minutes is in the list - and sorted above it if it is better.
         """
         made: list[dict[str, Any]] = []
         self.prune_shortlist(now=now)
-        while self.shortlist and self.allowed(now=now):
-            candidate = self.shortlist.pop(0)
+        while self.allowed(now=now):
+            # The list is sorted by score, so the first ripe one is the best
+            # ripe one. A stronger moment cut later becomes ripe later and is
+            # not blocked by this one: it has already displaced the weakest on
+            # insert, which is where the choosing actually happens.
+            ripe = next(
+                (i for i, c in enumerate(self.shortlist)
+                 if now - c.cut_at >= settings.live_review_s),
+                None,
+            )
+            if ripe is None:
+                break
+            candidate = self.shortlist.pop(ripe)
             try:
                 record = self.finish(candidate, now=now)
             except Exception as exc:  # noqa: BLE001 - a failed cut is not fatal

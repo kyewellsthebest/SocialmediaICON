@@ -446,3 +446,59 @@ class TestOneSignalIsNotAgreement:
     def test_nothing_scoring_agrees_about_nothing(self):
         assert moments.agreeing({}) == []
         assert moments.families({}) == {}
+
+
+class TestChatIsIcingNotTheCake:
+    """Chat could never nominate a moment. Nothing capped how much it could
+    add to one, and the score is what has to clear live_min_score and what the
+    shortlist sorts by - so on a marginal moment a clip request, painted
+    across the ten seconds before it was typed, was most of the reason.
+    """
+
+    @staticmethod
+    def _signals(*, laughter=0.0, requests=0.0, bursts=0.0, size=60):
+        return {
+            "laughter": [laughter] * size,
+            "chat_request": [requests] * size,
+            "chat_burst": [bursts] * size,
+        }
+
+    def test_chat_alone_still_makes_no_moment_at_all(self):
+        """The rule that already held, and has to keep holding."""
+        found = moments.rank(self._signals(requests=1.0, bursts=1.0),
+                             duration_s=60.0, clip_s=12.0, top=5)
+        assert found == []
+
+    def test_chat_cannot_be_most_of_why_a_clip_exists(self):
+        loud = moments.rank(self._signals(laughter=0.2, requests=1.0, bursts=1.0),
+                            duration_s=60.0, clip_s=12.0, top=1)[0]
+        sensed = sum(v for k, v in loud.why.items() if k in moments.SENSED)
+        crowd = sum(v for k, v in loud.why.items() if k in moments.CROWD)
+        assert crowd <= sensed * moments.CROWD_CAP_SHARE + 1e-6, loud.why
+
+    def test_it_still_lifts_one_real_moment_over_a_comparable_one(self):
+        """The whole point of keeping chat at all: it breaks a tie between two
+        moments the senses rate the same."""
+        quiet = moments.rank(self._signals(laughter=0.5),
+                             duration_s=60.0, clip_s=12.0, top=1)[0]
+        cheered = moments.rank(self._signals(laughter=0.5, requests=1.0),
+                               duration_s=60.0, clip_s=12.0, top=1)[0]
+        assert cheered.score > quiet.score
+
+    def test_the_score_is_still_the_sum_of_what_explains_it(self):
+        """Capping the total but reporting chat's full contribution would put
+        a breakdown on the dashboard that does not add up."""
+        found = moments.rank(self._signals(laughter=0.3, requests=1.0, bursts=1.0),
+                             duration_s=60.0, clip_s=12.0, top=1)[0]
+        assert abs(found.score - sum(found.why.values())) < 1e-6
+
+    def test_a_spamming_chat_cannot_outrank_a_bigger_moment(self):
+        """"Chats can spam random shit that doesn't make sense." A small
+        moment under a wall of typing must not beat a large one in silence."""
+        small_loud_chat = moments.rank(
+            self._signals(laughter=0.15, requests=1.0, bursts=1.0),
+            duration_s=60.0, clip_s=12.0, top=1)[0]
+        big_no_chat = moments.rank(
+            self._signals(laughter=0.6), duration_s=60.0, clip_s=12.0, top=1)[0]
+        assert big_no_chat.score > small_loud_chat.score, (
+            big_no_chat.why, small_loud_chat.why)

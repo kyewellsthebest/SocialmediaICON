@@ -828,9 +828,23 @@ class TestItRefusesToClipNothing:
         assert not cut
         assert watched.last_reason == "nothing happened"
 
-    def test_the_event_share_is_what_is_counted(self):
-        why = {"chat_burst": 9.0, "chat_voices": 40.0, "audio_energy": 5.0}
-        assert Supervisor.event_score(why) == 9.0
+    def test_the_event_share_is_what_the_gate_counts(self):
+        """Only what was heard or seen. A chat burst is agreement about a
+        moment, never evidence that there was one - so a window carried
+        entirely by typing has an event share of nothing and is refused.
+
+        This used to assert the opposite, against a Supervisor.event_score
+        that counted chat as an event. It had no caller: the gate reads
+        Found.event_score, which is sensed-only, so the method existed solely
+        to make this test pass while contradicting the rule beside it."""
+        found = Found(score=54.0, why={"chat_burst": 9.0, "chat_voices": 40.0,
+                                       "audio_energy": 5.0})
+        assert found.event_score == 0.0
+        assert found.crowd_score == 9.0
+        from core.supervisor import gate
+
+        passed, _, reason = gate(found)
+        assert not passed and reason == "nothing happened"
 
     def test_a_level_can_lift_a_real_moment_but_not_carry_one(self, monkeypatch):
         sup = Supervisor()
@@ -1070,12 +1084,45 @@ class TestItChoosesRatherThanTakingTheFirst:
         return sup
 
     def _hold(self, sup, channel, score, *, at=None):
+        """Held, and old enough to be used.
+
+        Candidates wait live_review_s to be compared before a slot is spent on
+        one - see harvest(). These tests are about *which* moment is chosen,
+        so they start past that; the waiting itself is tested below."""
         watched = _watched(channel, messages=_chatter())
         found = Found(score=score, why={"laughter": score}, at_s=15.0,
                       ago_s=90.0, chat_s=285.0)
-        candidate = sup.cut(watched, found=found, now=at if at is not None else time.time())
+        ripe = time.time() - settings.live_review_s - 1.0
+        candidate = sup.cut(watched, found=found, now=at if at is not None else ripe)
         sup.shortlist_add(candidate)
         return candidate
+
+    def test_a_moment_is_not_used_before_it_has_met_its_competition(self, monkeypatch):
+        """The bug this delay exists for. tick() adds a candidate and calls
+        harvest() in the same pass, so without a wait every moment was cut and
+        spent the instant it cleared the bar - it never met a competitor, and
+        "keep the best five" only ever held one."""
+        sup = self._sup(monkeypatch)
+        now = time.time()
+        self._hold(sup, "just-now", 71.0, at=now)
+        assert sup.harvest(now=now) == [], "spent a slot on an unjudged moment"
+        assert len(sup.shortlist) == 1, "and it is still held"
+
+    def test_it_is_used_once_the_review_period_has_passed(self, monkeypatch):
+        sup = self._sup(monkeypatch)
+        now = time.time()
+        self._hold(sup, "waited", 71.0, at=now - settings.live_review_s - 1.0)
+        assert [r["channel"] for r in sup.harvest(now=now)] == ["waited"]
+
+    def test_a_better_moment_arriving_late_displaces_the_weakest(self, monkeypatch):
+        """Where the choosing actually happens: on insert, not on harvest."""
+        monkeypatch.setattr(settings, "live_shortlist_max", 2)
+        sup = self._sup(monkeypatch)
+        now = time.time()
+        self._hold(sup, "weak", 22.0, at=now)
+        self._hold(sup, "middling", 40.0, at=now)
+        self._hold(sup, "strong", 80.0, at=now + 60.0)
+        assert sorted(c.channel for c in sup.shortlist) == ["middling", "strong"]
 
     def test_the_best_held_moment_is_the_one_that_is_used(self, monkeypatch):
         sup = self._sup(monkeypatch)
@@ -2349,3 +2396,65 @@ class TestWhatShipsIsAClipNotTheWindow:
 class _Judged:
     best_start_s: float | None
     best_end_s: float | None
+
+
+class TestTheChannelsYouChose:
+    """The roster picks by viewers and chat rate, and the profile refuses the
+    formats that cannot produce a clip. Neither is a substitute for naming the
+    streamers you want: a watch party, a solo grind and a person being funny
+    with their friends are the same listing row, and the difference between
+    them is the whole business.
+    """
+
+    def _entry(self, name):
+        return roster.Live(channel=name, viewers=9000)
+
+    def test_with_no_list_every_channel_is_still_considered(self, monkeypatch):
+        """The behaviour this had before, and the default."""
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_never_channels", "")
+        assert settings.may_watch("anyone") == (True, "")
+
+    def test_only_the_named_channels_are_watched(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", "deenthegreat, n3on")
+        assert settings.may_watch("n3on")[0]
+        allowed, why = settings.may_watch("somebodyelse")
+        assert not allowed and "watch list" in why
+
+    def test_the_name_is_matched_however_it_is_typed(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", " DeenTheGreat , N3on ")
+        assert settings.may_watch("deenthegreat")[0]
+        assert settings.may_watch("N3ON")[0]
+
+    def test_never_beats_only(self, monkeypatch):
+        """So one name can suspend a stream without editing the list."""
+        monkeypatch.setattr(settings, "live_only_channels", "deenthegreat,n3on")
+        monkeypatch.setattr(settings, "live_never_channels", "n3on")
+        assert not settings.may_watch("n3on")[0]
+        assert settings.may_watch("deenthegreat")[0]
+
+    def test_a_refused_channel_never_reaches_the_research(self, monkeypatch):
+        """Which is the other half of the point: a narrow list also stops the
+        bot paying a model to decide about forty channels it will not watch."""
+        asked = []
+
+        def decide(channel, **kwargs):
+            asked.append(channel)
+            raise AssertionError("should not have been researched")
+
+        monkeypatch.setattr("core.profile.decide", decide)
+        monkeypatch.setattr(settings, "live_only_channels", "keepme")
+        monkeypatch.setattr(settings, "live_never_channels", "")
+        sup = Supervisor()
+        kept = sup.wanted([self._entry("dropme")], now=1_000.0)
+
+        assert kept == []
+        assert asked == []
+        assert "watch list" in sup.skipped["dropme"]
+
+    def test_it_says_why_a_channel_was_skipped(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_never_channels", "noisy")
+        sup = Supervisor()
+        sup.wanted([self._entry("noisy")], now=1_000.0)
+        assert sup.skipped["noisy"] == "on the never-watch list"

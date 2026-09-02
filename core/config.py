@@ -271,6 +271,22 @@ class Settings(BaseSettings):
     live_drop_rank: int = 16
     live_window_s: float = 300.0
     live_segment_s: float = 4.0
+    #: Which channels the bot may watch, by name, comma separated.
+    #:
+    #: The roster picks by viewers and chat rate, and the profile refuses the
+    #: formats that cannot produce a clip. Neither of those is a substitute for
+    #: naming the streamers you actually want: a watch party, a solo grind and
+    #: a person being funny with their friends all look identical to a listing
+    #: row, and the difference between them is the whole business.
+    #:
+    #: Set it and nothing else is watched, whatever the directory says. Leave
+    #: it blank and every eligible channel is fair game, which is the
+    #: behaviour this had before.
+    live_only_channels: str = ""
+    #: ...and the opposite, for when the list is open but one channel is not
+    #: worth a slot. Applies even to a channel named in live_only_channels, so
+    #: a single name can suspend a stream without editing the list.
+    live_never_channels: str = ""
     #: The clip that ships. Buffering below this caps what can ever be posted,
     #: because you cannot recover detail that was never downloaded.
     live_delivery_height: int = 1080
@@ -362,6 +378,25 @@ class Settings(BaseSettings):
     #: is an hour, so a moment that is not cut immediately is gone - holding
     #: the file is the only way to still have it when the slot opens.
     live_shortlist_max: int = 5
+    #: How long a moment waits to be compared before a slot is spent on it.
+    #:
+    #: The shortlist exists to make this a chooser rather than a watcher, and
+    #: it was not doing that: tick() added a candidate and called harvest() in
+    #: the same pass, so every moment was cut and spent the instant it cleared
+    #: the bar and never met a competitor. With a sixty-a-day cap and no gap
+    #: between clips, "keep the best five" only ever held one.
+    #:
+    #: The offline tool this is meant to match reads a whole stretch and takes
+    #: the best moments *out of it*. This is that, in a live loop: a moment
+    #: waits ten minutes, and by the time a slot is spent on it every other
+    #: moment from its own ten minutes is in the list and sorted above it if
+    #: it is better. The weakest are already dropped on insert.
+    #:
+    #: Ten minutes because the buffer is not involved - the clip is extracted
+    #: to disk when it is cut, so holding it costs a file, not a stream - and
+    #: because it has to be comfortably less than live_hold_max_s or a moment
+    #: could go stale waiting to be judged.
+    live_review_s: float = 600.0
     #: ...and how stale a held moment may be when it is finally used. A good
     #: moment is good whenever it is posted, but not indefinitely.
     live_hold_max_s: float = 2700.0
@@ -552,6 +587,31 @@ class Settings(BaseSettings):
         return bool(
             self.meta_access_token or self.instagram_access_token or self.threads_access_token
         )
+
+    @property
+    def only_channels(self) -> list[str]:
+        """The allow-list, lowercased. Empty means "no allow-list"."""
+        return [c.strip().lower() for c in self.live_only_channels.split(",") if c.strip()]
+
+    @property
+    def never_channels(self) -> list[str]:
+        return [c.strip().lower() for c in self.live_never_channels.split(",") if c.strip()]
+
+    def may_watch(self, channel: str) -> tuple[bool, str]:
+        """Whether this channel is one the bot is allowed to watch, and why not.
+
+        Deterministic and free, and asked before anything that costs: a
+        channel refused here never reaches the profile research, so a narrow
+        allow-list also cuts the model bill for deciding about channels that
+        were never going to be watched.
+        """
+        name = (channel or "").strip().lower()
+        if name in self.never_channels:
+            return False, "on the never-watch list"
+        allowed = self.only_channels
+        if allowed and name not in allowed:
+            return False, "not on the watch list"
+        return True, ""
 
     @property
     def sources(self) -> list[str]:

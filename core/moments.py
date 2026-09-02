@@ -143,6 +143,22 @@ def agreeing(why: dict[str, float]) -> list[str]:
 #: range cannot ever say "nothing here" - there is always a maximum.
 LEVELS = frozenset({"chat_voices", "audio_energy"})
 
+#: How much chat may add to a moment, as a share of what was actually heard
+#: and seen.
+#:
+#: Chat could never *nominate* a moment - rank() refuses a window with no
+#: sensed evidence, and the gate counts only sensed evidence - but nothing
+#: capped how much it could add to one, and the score is what has to clear
+#: live_min_score and what the shortlist sorts by. A clip request paints
+#: across the ten seconds before it was typed, so it accumulates about twelve
+#: points on its own, against a bar of twenty. On a marginal moment that is
+#: not a second opinion, it is most of the reason.
+#:
+#: Half, so chat is what it is worth being: it can lift a real moment above a
+#: comparable one and it can never be most of why a clip exists. No sensed
+#: evidence, no chat points at all - there is no icing without a cake.
+CROWD_CAP_SHARE = 0.5
+
 #: How much *sensed* evidence a window needs before it counts as a moment at
 #: all. In the same units as the score.
 MIN_EVENT_SCORE = 1.0
@@ -563,16 +579,29 @@ def rank(
     # from the thing that actually happened.
     firing = [name for name in parts if name in SENSED]
     events = [sum(parts[name][i] for name in firing) for i in range(len(total))]
+    typing = [name for name in parts if name in CROWD]
+    crowd = [sum(parts[name][i] for name in typing) for i in range(len(total))]
 
     # Prefix sums: every window total in one pass instead of width per window.
-    prefix = [0.0]
-    for value in total:
-        prefix.append(prefix[-1] + value)
+    # Three of them, because the crowd's share of a window has to be capped
+    # against that window's sensed evidence before anything is compared - see
+    # CROWD_CAP_SHARE. Capping after the sort would order the windows by a
+    # score none of them ends up with.
+    def running(values: list[float]) -> list[float]:
+        out = [0.0]
+        for value in values:
+            out.append(out[-1] + value)
+        return out
 
-    scored = [
-        (prefix[i + width] - prefix[i], i)
-        for i in range(len(total) - width + 1)
-    ]
+    prefix, prefix_events, prefix_crowd = running(total), running(events), running(crowd)
+
+    def window_score(i: int) -> float:
+        raw = prefix[i + width] - prefix[i]
+        sensed = prefix_events[i + width] - prefix_events[i]
+        typed = prefix_crowd[i + width] - prefix_crowd[i]
+        return raw - typed + min(typed, CROWD_CAP_SHARE * sensed)
+
+    scored = [(window_score(i), i) for i in range(len(total) - width + 1)]
     scored.sort(key=lambda x: (-x[0], x[1]))
 
     chosen: list[Moment] = []
@@ -587,6 +616,18 @@ def rank(
             name: sum(values[index : index + width])
             for name, values in parts.items()
         }
+        # The cap, applied to the parts and not only to the total, so the
+        # score is still the sum of what explains it. Reporting the full chat
+        # contribution beside a score that does not contain it would put a
+        # breakdown on the dashboard that does not add up, and the breakdown
+        # is how anyone tells a real moment from a busy one.
+        typed = sum(v for k, v in why.items() if k in CROWD)
+        allowed = min(typed, CROWD_CAP_SHARE * sum(v for k, v in why.items() if k in SENSED))
+        if typed > allowed > 0.0:
+            shrink = allowed / typed
+            why = {k: (v * shrink if k in CROWD else v) for k, v in why.items()}
+        elif allowed <= 0.0:
+            why = {k: (0.0 if k in CROWD else v) for k, v in why.items()}
         # Where inside the window the evidence actually peaks. The event is not
         # reliably at the middle or the end - a clip request paints backwards,
         # a loudness jump paints forwards - so this is measured rather than
