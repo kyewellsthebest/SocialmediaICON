@@ -47,9 +47,25 @@ log = logging.getLogger(__name__)
 #: How often to re-score what chat is doing. Chat moves in seconds, and the
 #: scoring itself is arithmetic over a few thousand numbers.
 TICK_S = 5.0
-#: Ignore a trigger this close to one already taken on the same channel: the
-#: same moment keeps scoring for as long as chat keeps talking about it.
-COOLDOWN_S = 180.0
+#: How close two triggers have to point before they are the same moment.
+#:
+#: This replaces a three-minute cooldown on the *channel*, and the difference
+#: is the whole point. The same moment really does keep scoring for as long as
+#: chat keeps talking about it - the senses run every twenty seconds, so one
+#: reaction gets nominated again and again - and a blanket timer does stop
+#: that. It also stops everything else. Measured over eleven hours: 299 cut
+#: and 1746 refused for "cooling down", and every one of those 1746 had
+#: already cleared the score bar, the event bar and the two-families bar. The
+#: timer threw away 85% of everything that passed the quality tests, and it
+#: could not tell which ones were the duplicates it existed for.
+#:
+#: A wall clock cannot make that distinction. Where the moment sits in the
+#: stream can: two triggers pointing at the same instant are one moment
+#: however far apart they were scored, and two pointing forty seconds apart
+#: are two moments however close together they arrived. Twenty seconds
+#: because that is the shortest clip that ships, so anything nearer would cut
+#: the same footage twice.
+SAME_MOMENT_S = 20.0
 
 
 class SupervisorError(RuntimeError):
@@ -150,6 +166,9 @@ class Watched:
     started_at: float = field(default_factory=time.time)
     viewers: int = 0
     last_catch_at: float = 0.0
+    #: Where in the stream the moments already cut on this channel were, as
+    #: wall-clock times. Not when they were cut - when they happened.
+    caught_moments: list[float] = field(default_factory=list)
     last_score: float = 0.0
     last_reason: str = ""
     #: The per-signal breakdown behind last_score. Without it the page can
@@ -261,6 +280,25 @@ class Watched:
             "quiet_runs": envelope.quiet_runs()[-4:],
             "has_spectrogram": spectrogram is not None,
         }
+
+    def already_caught(self, moment_at: float, *, within_s: float) -> bool:
+        """Has this instant of the stream already been cut?
+
+        The question the three-minute cooldown was trying to ask and could
+        not. A moment nominated twice is one moment; two moments a minute
+        apart are two, and both deserve to reach the shortlist.
+        """
+        return any(abs(moment_at - seen) < within_s for seen in self.caught_moments)
+
+    def remember_catch(self, moment_at: float, *, keep_s: float = 3600.0) -> None:
+        """Note where a cut moment was, and forget the ones long past.
+
+        Bounded by age rather than by count: a quiet channel should still
+        remember an hour back, and a busy one must not grow a list all night.
+        """
+        self.caught_moments.append(moment_at)
+        oldest = moment_at - keep_s
+        self.caught_moments = [t for t in self.caught_moments if t >= oldest]
 
     def window(self, wanted_s: float) -> tuple[str, float]:
         """(a path ffmpeg can read, how much of the tail it covers).
@@ -642,9 +680,28 @@ class Held:
         except OSError:
             return 0.0
 
+    @property
+    def moment_at(self) -> float:
+        """When the moment happened, not when it was cut.
+
+        found.ago_s is how far behind the live edge the peak sat at the
+        instant it was caught, so this is the same clock for two candidates
+        caught minutes apart.
+        """
+        return self.cut_at - self.found.ago_s
+
     def overlaps(self, other: Held) -> bool:
-        """Two nominations of the same moment, seconds apart."""
-        return self.channel == other.channel and abs(self.cut_at - other.cut_at) < COOLDOWN_S
+        """Two nominations of the same moment.
+
+        Compared on where the moments *were*, not on when they were cut.
+        Those are different questions and this asked the wrong one: two
+        genuinely separate moments caught in the same minute looked like
+        duplicates, and one moment caught twice four minutes apart did not.
+        """
+        return (
+            self.channel == other.channel
+            and abs(self.moment_at - other.moment_at) < SAME_MOMENT_S
+        )
 
     def discard(self) -> None:
         self.raw.unlink(missing_ok=True)
@@ -1299,8 +1356,12 @@ class Supervisor:
                 watched.last_reason = reason
                 self._tally(stage, found.score)
                 continue
-            if now - watched.last_catch_at < COOLDOWN_S:
-                self._tally("cooling down", found.score)
+            # Not "has this channel been cut recently" - "have we already cut
+            # *this moment*". Everything else goes through to the shortlist,
+            # which is the thing that decides what is worth a slot.
+            moment_at = now - found.ago_s
+            if watched.already_caught(moment_at, within_s=SAME_MOMENT_S):
+                self._tally("the same moment again", found.score)
                 continue
             self._tally("cut", found.score)
 
@@ -1312,6 +1373,7 @@ class Supervisor:
             try:
                 candidate = self.cut(watched, found=found, now=now)
                 watched.last_catch_at = now
+                watched.remember_catch(now - found.ago_s)
                 if candidate is not None:
                     self.shortlist_add(candidate)
             except Exception as exc:  # noqa: BLE001 - a failed cut is not fatal
@@ -1534,6 +1596,19 @@ class Supervisor:
         picking at random from everything that hour held; keeping several and
         taking the best is the entire difference between the two.
         """
+        # The same moment must not take two of the five places. Nothing
+        # upstream guarantees that any more: the channel cooldown that used to
+        # is gone, because it could not tell one moment nominated twice from
+        # two moments a minute apart and refused both.
+        for held in self.shortlist:
+            if held.overlaps(candidate):
+                if held.found.score >= candidate.found.score:
+                    candidate.discard()
+                    return
+                self.shortlist.remove(held)
+                held.discard()
+                break
+
         self.shortlist.append(candidate)
         self.shortlist.sort(key=lambda c: -c.found.score)
         for spare in self.shortlist[settings.live_shortlist_max :]:

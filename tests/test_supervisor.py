@@ -20,6 +20,7 @@ from core import moments, roster
 from core.config import settings
 from core.supervisor import (
     DORMANT_READINGS,
+    SAME_MOMENT_S,
     DORMANT_REST_S,
     SENSE_EVERY_S,
     SENSE_PARALLEL,
@@ -339,16 +340,37 @@ class TestScoring:
         short = _watched(messages=[chatlib.Message(float(t), "hi") for t in range(5)])
         assert not sup.score(short, now=LIVE_EDGE)
 
-    def test_the_cooldown_stops_one_moment_being_cut_repeatedly(self, monkeypatch):
+    def test_one_moment_is_not_cut_repeatedly(self, monkeypatch):
+        """Chat keeps talking about a moment long after it happened, and the
+        senses re-score every twenty seconds, so the same reaction is
+        nominated again and again."""
         sup = Supervisor()
         watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
-        watched.last_catch_at = LIVE_EDGE
+        # Already caught, at the instant this tick is about to nominate.
+        watched.remember_catch(LIVE_EDGE - 15.0)
         sup.watching["x"] = watched
         monkeypatch.setattr(sup, "allowed", lambda **k: True)
         cut = []
         monkeypatch.setattr(sup, "cut", lambda *a, **k: cut.append(1) or None)
         sup.tick(now=LIVE_EDGE)
-        assert not cut, "chat keeps talking about a moment long after it happened"
+        assert not cut, "cut the same moment twice"
+
+    def test_a_channel_cut_a_moment_ago_can_still_produce_a_moment(
+            self, monkeypatch):
+        """What the three-minute cooldown was costing. Over eleven hours it
+        refused 1746 moments that had cleared every quality bar, purely
+        because something else on that channel had been cut recently."""
+        sup = Supervisor()
+        watched = _watched(messages=_chatter(burst_at=285.0), heard=_laughing_at(285.0))
+        # Cut seconds ago, but that was a different part of the stream.
+        watched.last_catch_at = LIVE_EDGE - 5.0
+        watched.remember_catch(LIVE_EDGE - 200.0)
+        sup.watching["x"] = watched
+        monkeypatch.setattr(sup, "allowed", lambda **k: True)
+        cut = []
+        monkeypatch.setattr(sup, "cut", lambda *a, **k: cut.append(1) or None)
+        sup.tick(now=LIVE_EDGE)
+        assert cut, "refused a new moment because the channel was cut recently"
 
 
 class TestWhatTheDashboardSees:
@@ -2659,3 +2681,96 @@ class TestThePageSaysHowLongTheClipActuallyIs:
         assert abs(probe(made).duration_s - 20.0) < 1.0
         assert probe(made).duration_s < 30.0, (
             "the fixture must be shorter than the 22+8 window it stands in for")
+
+
+class TestEveryMomentGetsConsidered:
+    """A three-minute cooldown on the channel threw away 85% of everything
+    that passed the quality bars: over eleven hours, 299 cut and 1746 refused
+    for "cooling down" - and all 1746 had already cleared the score bar, the
+    event bar and the two-families bar.
+
+    It existed for a real reason - the senses run every twenty seconds, so one
+    reaction is nominated again and again - but a wall clock cannot tell one
+    moment nominated twice from two moments a minute apart, so it refused
+    both.
+    """
+
+    def _watched(self):
+        return _watched("rampagejackson", messages=_chatter())
+
+    def test_the_same_moment_nominated_twice_is_caught_once(self):
+        w = self._watched()
+        w.remember_catch(1_000.0)
+        assert w.already_caught(1_000.0, within_s=SAME_MOMENT_S)
+        assert w.already_caught(1_008.0, within_s=SAME_MOMENT_S)
+
+    def test_a_different_moment_soon_after_is_still_a_moment(self):
+        """The clips this was losing. Forty seconds later is a different
+        thing happening, not the same thing being reported again."""
+        w = self._watched()
+        w.remember_catch(1_000.0)
+        assert not w.already_caught(1_040.0, within_s=SAME_MOMENT_S)
+
+    def test_a_moment_is_not_blocked_by_how_recently_the_channel_was_cut(self):
+        """The whole difference. Two moments forty seconds apart, both cut
+        within the old three-minute window, both must get through."""
+        w = self._watched()
+        w.remember_catch(1_000.0)
+        w.remember_catch(1_040.0)
+        assert not w.already_caught(1_090.0, within_s=SAME_MOMENT_S)
+        assert len(w.caught_moments) == 2
+
+    def test_the_memory_does_not_grow_all_night(self):
+        w = self._watched()
+        for at in range(0, 20_000, 30):
+            w.remember_catch(float(at), keep_s=3600.0)
+        assert all(t >= 19_970 - 3600 for t in w.caught_moments)
+        assert len(w.caught_moments) <= 121
+
+    def test_an_hour_back_is_still_remembered(self):
+        """A quiet channel must not forget what it cut forty minutes ago and
+        cut it again."""
+        w = self._watched()
+        w.remember_catch(0.0)
+        w.remember_catch(2_400.0)
+        assert w.already_caught(0.0, within_s=SAME_MOMENT_S)
+
+
+class TestTheShortlistHoldsOneCopyOfAMoment:
+    """With the channel cooldown gone, nothing upstream stops one moment
+    reaching the shortlist twice - and it must not take two of the five
+    places."""
+
+    def _sup(self, monkeypatch):
+        sup = Supervisor()
+        monkeypatch.setattr(sup, "store", lambda record: record)
+        monkeypatch.setattr("core.reframe.to_portrait", lambda src, dest, **k: dest)
+        _approves(sup, monkeypatch)
+        return sup
+
+    def _hold(self, sup, score, *, ago_s, at):
+        watched = _watched("rampagejackson", messages=_chatter())
+        found = Found(score=score, why={"laughter": score}, at_s=15.0,
+                      ago_s=ago_s, chat_s=285.0)
+        candidate = sup.cut(watched, found=found, now=at)
+        sup.shortlist_add(candidate)
+        return candidate
+
+    def test_the_same_moment_twice_takes_one_place(self):
+        sup = self._sup(pytest.MonkeyPatch())
+        # Caught 40s apart, but both pointing at the same instant.
+        self._hold(sup, 30.0, ago_s=10.0, at=1_000.0)
+        self._hold(sup, 30.0, ago_s=50.0, at=1_040.0)
+        assert len(sup.shortlist) == 1
+
+    def test_the_better_reading_of_a_moment_is_the_one_kept(self):
+        sup = self._sup(pytest.MonkeyPatch())
+        self._hold(sup, 30.0, ago_s=10.0, at=1_000.0)
+        self._hold(sup, 70.0, ago_s=50.0, at=1_040.0)
+        assert [c.found.score for c in sup.shortlist] == [70.0]
+
+    def test_two_real_moments_both_keep_their_place(self):
+        sup = self._sup(pytest.MonkeyPatch())
+        self._hold(sup, 30.0, ago_s=10.0, at=1_000.0)
+        self._hold(sup, 40.0, ago_s=10.0, at=1_060.0)
+        assert len(sup.shortlist) == 2
