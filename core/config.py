@@ -287,6 +287,16 @@ class Settings(BaseSettings):
     #: worth a slot. Applies even to a channel named in live_only_channels, so
     #: a single name can suspend a stream without editing the list.
     live_never_channels: str = ""
+    #: Which Kick categories the bot may watch, comma separated. Blank means
+    #: any category the profile research does not refuse.
+    #:
+    #: "irl" is the one this was asked for and it is the one the material
+    #: supports: a person out in the world talking to people produces moments
+    #: the senses can find, where a watch party or a solo grind produces a
+    #: constant level and nothing to detect. This is coarser than the profile
+    #: research and it runs before it, which is the point - the research costs
+    #: a model call per channel and a category is free.
+    live_only_categories: str = ""
     #: The clip that ships. Buffering below this caps what can ever be posted,
     #: because you cannot recover detail that was never downloaded.
     live_delivery_height: int = 1080
@@ -597,20 +607,34 @@ class Settings(BaseSettings):
     def never_channels(self) -> list[str]:
         return [c.strip().lower() for c in self.live_never_channels.split(",") if c.strip()]
 
-    def may_watch(self, channel: str) -> tuple[bool, str]:
-        """Whether this channel is one the bot is allowed to watch, and why not.
+    @property
+    def only_categories(self) -> list[str]:
+        return [c.strip().lower() for c in self.live_only_categories.split(",") if c.strip()]
+
+    def may_watch(self, channel: str, category: str = "") -> tuple[bool, str]:
+        """Whether this stream is one the bot is allowed to watch, and why not.
 
         Deterministic and free, and asked before anything that costs: a
         channel refused here never reaches the profile research, so a narrow
-        allow-list also cuts the model bill for deciding about channels that
-        were never going to be watched.
+        list also cuts the model bill for deciding about channels that were
+        never going to be watched.
+
+        A named channel beats the category filter. If you have asked for
+        somebody by name you want them whatever they have loaded, and their
+        category changes through an evening without them becoming a different
+        streamer.
         """
         name = (channel or "").strip().lower()
         if name in self.never_channels:
             return False, "on the never-watch list"
-        allowed = self.only_channels
-        if allowed and name not in allowed:
-            return False, "not on the watch list"
+        named = self.only_channels
+        if named:
+            if name not in named:
+                return False, "not on the watch list"
+            return True, ""
+        wanted = self.only_categories
+        if wanted and (category or "").strip().lower() not in wanted:
+            return False, f"not in {' or '.join(wanted)}"
         return True, ""
 
     @property

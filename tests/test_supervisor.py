@@ -2458,3 +2458,102 @@ class TestTheChannelsYouChose:
         sup = Supervisor()
         sup.wanted([self._entry("noisy")], now=1_000.0)
         assert sup.skipped["noisy"] == "on the never-watch list"
+
+
+class TestWatchingOneCategory:
+    """Ten slots on IRL. The directory mixes every category by viewer count,
+    so filtering one page of forty can leave three eligible streams and seven
+    empty slots - and nothing anywhere saying why."""
+
+    def _rows(self, *pairs):
+        return [roster.Live(channel=c, viewers=9000, category=k) for c, k in pairs]
+
+    def test_only_the_named_category_is_watched(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_only_categories", "irl")
+        assert settings.may_watch("n3on", "IRL")[0]
+        allowed, why = settings.may_watch("someone", "Slots")
+        assert not allowed and why == "not in irl"
+
+    def test_the_category_is_matched_however_kick_capitalises_it(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_only_categories", " IRL , Just Chatting ")
+        assert settings.may_watch("a", "irl")[0]
+        assert settings.may_watch("b", "just chatting")[0]
+
+    def test_a_named_channel_beats_the_category(self, monkeypatch):
+        """If you asked for somebody by name you want them whatever they have
+        loaded - a streamer's category changes through an evening without
+        them becoming a different person."""
+        monkeypatch.setattr(settings, "live_only_channels", "deenthegreat")
+        monkeypatch.setattr(settings, "live_only_categories", "irl")
+        assert settings.may_watch("deenthegreat", "Grand Theft Auto V")[0]
+
+    def test_a_stream_in_the_wrong_category_never_reaches_the_research(
+            self, monkeypatch):
+        def decide(channel, **kwargs):
+            raise AssertionError("paid to research a category we do not watch")
+
+        monkeypatch.setattr("core.profile.decide", decide)
+        monkeypatch.setattr(settings, "live_only_channels", "")
+        monkeypatch.setattr(settings, "live_only_categories", "irl")
+        sup = Supervisor()
+        assert sup.wanted(self._rows(("slotsguy", "Slots")), now=1_000.0) == []
+        assert sup.skipped["slotsguy"] == "not in irl"
+
+    def test_it_walks_the_directory_until_the_slots_can_be_filled(
+            self, monkeypatch):
+        """One page of forty holding three IRL streams must not leave seven
+        slots empty."""
+        monkeypatch.setattr(settings, "live_only_categories", "irl")
+        monkeypatch.setattr(settings, "live_slots", 2)
+        pages = {
+            1: self._rows(("a", "IRL"), ("b", "Slots"), ("c", "Slots")),
+            2: self._rows(("d", "IRL"), ("e", "IRL"), ("f", "Slots")),
+            3: self._rows(("g", "IRL"), ("h", "IRL")),
+        }
+        asked = []
+
+        def fetch(limit=40, *, language="en", page=1):
+            asked.append(page)
+            return pages.get(page, [])
+
+        monkeypatch.setattr("core.roster.fetch_kick_live", fetch)
+        got = Supervisor.listing()
+        assert asked[0] == 1 and len(asked) > 1, "stopped at one page"
+        assert sum(1 for r in got if r.category == "IRL") >= 4
+
+    def test_it_stops_when_the_directory_runs_out(self, monkeypatch):
+        """A directory that repeats itself or returns nothing must not loop."""
+        monkeypatch.setattr(settings, "live_only_categories", "irl")
+        monkeypatch.setattr(settings, "live_slots", 10)
+        monkeypatch.setattr("core.roster.fetch_kick_live",
+                            lambda limit=40, *, language="en", page=1:
+                            self._rows(("same", "Slots")))
+        got = Supervisor.listing()
+        assert [r.channel for r in got] == ["same"], "paged over a repeat"
+
+    def test_a_page_that_fails_does_not_lose_the_pages_before_it(
+            self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_categories", "irl")
+        monkeypatch.setattr(settings, "live_slots", 10)
+
+        def fetch(limit=40, *, language="en", page=1):
+            if page == 1:
+                return self._rows(("a", "IRL"))
+            raise RuntimeError("the directory stopped answering")
+
+        monkeypatch.setattr("core.roster.fetch_kick_live", fetch)
+        assert [r.channel for r in Supervisor.listing()] == ["a"]
+
+    def test_with_no_category_named_it_still_asks_for_one_page(self, monkeypatch):
+        monkeypatch.setattr(settings, "live_only_categories", "")
+        asked = []
+
+        def fetch(limit=40, *, language="en", page=1):
+            asked.append(page)
+            return self._rows(("a", "Slots"))
+
+        monkeypatch.setattr("core.roster.fetch_kick_live", fetch)
+        Supervisor.listing()
+        assert asked == [1]

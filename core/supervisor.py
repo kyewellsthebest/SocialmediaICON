@@ -83,6 +83,11 @@ SENSE_EVERY_S = 20.0
 #: for about the wall time of one, and every path involved is per-channel -
 #: each reads its own buffer's segments and pipes to its own stdout.
 SENSE_PARALLEL = 4
+
+#: How many directory rows to ask for at a time, and how many pages to walk
+#: when a category filter means most of them will be thrown away.
+ROSTER_PAGE = 40
+ROSTER_MAX_PAGES = 5
 #: The width a moment is scored over. Not the clip length: scoring wants a
 #: consistent narrow window so two moments can be compared, and the clip wants
 #: to run as long as the moment does.
@@ -770,7 +775,7 @@ class Supervisor:
             # reaches the research, so naming a handful of streamers also
             # stops the bot paying to decide about the forty it will not
             # watch.
-            allowed, why_not = settings.may_watch(entry.channel)
+            allowed, why_not = settings.may_watch(entry.channel, entry.category)
             if not allowed:
                 self.skipped[entry.channel] = why_not
                 continue
@@ -867,14 +872,50 @@ class Supervisor:
 
         return roster.rank_streams(measured)
 
+    @staticmethod
+    def listing() -> list:
+        """The live directory, deep enough to fill the slots.
+
+        One page of forty is plenty when any category will do. It is not when
+        only one will: the directory mixes every category by viewer count, so
+        the top forty might hold three IRL streams and thirty-seven of
+        something else, and the bot would sit on three slots of ten with
+        nothing wrong. So when a category is named, keep asking for pages
+        until there are enough rows that clear the filter, or the directory
+        runs out.
+        """
+        wanted = settings.only_categories
+        if not wanted:
+            return roster.fetch_kick_live(limit=ROSTER_PAGE, language="en")
+
+        found: list = []
+        seen: set[str] = set()
+        for page in range(1, ROSTER_MAX_PAGES + 1):
+            try:
+                rows = roster.fetch_kick_live(
+                    limit=ROSTER_PAGE, language="en", page=page)
+            except Exception as exc:  # noqa: BLE001 - one bad page is not a listing
+                log.info("supervisor: no page %d of the directory (%s)", page, exc)
+                break
+            fresh = [r for r in rows if r.channel not in seen]
+            if not fresh:
+                break  # the directory repeated itself: there are no more pages
+            seen.update(r.channel for r in fresh)
+            found += fresh
+            enough = sum(
+                1 for r in found
+                if (r.category or "").strip().lower() in wanted
+            )
+            if enough >= settings.live_slots * 2:
+                break
+        return found
+
     def poll_roster(self, *, now: float | None = None) -> dict[str, list[str]]:
         """Refresh which channels are worth holding, and act on the change."""
         now = time.time() if now is None else now
         # Measure first, then filter: the chat probes are what tell a Hindi
         # stream from an English one, and they are opened by measure_chat.
-        listing = self.measure_chat(
-            roster.fetch_kick_live(limit=40, language="en"), now=now
-        )
+        listing = self.measure_chat(self.listing(), now=now)
         listing = self.wanted(listing, now=now)
         self.dormant_until = {c: t for c, t in self.dormant_until.items() if t > now}
 
