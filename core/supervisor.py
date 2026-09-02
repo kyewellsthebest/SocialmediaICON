@@ -1737,6 +1737,19 @@ class Supervisor:
         raw.unlink(missing_ok=True)
         record["framing"] = framing
 
+        # How long the clip *is*, not how long the window it was cut from was.
+        # duration_s is set when the moment is caught, and at that point it is
+        # live_lead_s plus the trail - thirty seconds. Everything after that
+        # shortens it: the model may name a tighter moment, and _tighten cuts
+        # to the edges the audio gives. So the page said "30s" beside three
+        # clips that were 19.6, 20.8 and 20.0 seconds long.
+        try:
+            from core.ffmpeg_ops import probe as probe_video
+
+            record["duration_s"] = round(probe_video(final).duration_s, 1)
+        except Exception as exc:  # noqa: BLE001 - a length is not worth a clip
+            log.info("supervisor: could not measure %s (%s)", final.name, exc)
+
         # The clip is written here, on the worker, and watched in a browser
         # talking to the web service. Those are different containers with
         # different disks, so a path is not a way to hand it over - the first

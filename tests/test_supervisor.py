@@ -2634,3 +2634,28 @@ class TestARefusalSaysWhatItActuallySaw:
         status = sup.status()
         assert len(status["skipped"]) == 8, "the page list is still trimmed"
         assert status["roster"]["refused_why"][0]["count"] == 62
+
+
+class TestThePageSaysHowLongTheClipActuallyIs:
+    """duration_s is set when the moment is caught, and at that point it is
+    live_lead_s plus the trail - thirty seconds. Everything after that
+    shortens it: the model may name a tighter moment, and _tighten cuts to the
+    edges the audio gives. So the page said "event - 30s" beside three clips
+    that were 19.6, 20.8 and 20.0 seconds long."""
+
+    def test_the_recorded_length_is_the_delivered_length(self, monkeypatch, tmp_path):
+        import subprocess
+
+        from core.ffmpeg_ops import probe
+
+        made = tmp_path / "final.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=64x64:r=10:d=20", "-c:v", "libx264",
+             "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(made)],
+            check=True, capture_output=True,
+        )
+        # What the record claimed before: the window, not the clip.
+        assert abs(probe(made).duration_s - 20.0) < 1.0
+        assert probe(made).duration_s < 30.0, (
+            "the fixture must be shorter than the 22+8 window it stands in for")
