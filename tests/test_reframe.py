@@ -622,7 +622,14 @@ class TestStackingNeedsAScreenNotJustAFaceInACorner:
         cy = mid([b.y for b in boxes]) + h / 2
         assert h <= reframe.CAM_MAX_H, "small enough to look like an overlay"
         assert max(abs(cx - 0.5), abs(cy - 0.5)) >= reframe.CAM_CORNER, "and cornered"
-        assert len(boxes) / len(watched.frames) >= reframe.CAM_STEADY, "and steady"
+        assert len(boxes) / len(watched.frames) >= reframe.CAM_SEEN_MIN, (
+            "found often enough to say anything")
+        spread = lambda v: (sorted(v)[int(len(v) * 0.9)]  # noqa: E731
+                            - sorted(v)[int(len(v) * 0.1)]) if len(v) >= 3 else 0.0
+        wander = max(spread([b.x + b.w / 2 for b in boxes]),
+                     spread([b.y + b.h / 2 for b in boxes]))
+        assert wander <= reframe.CAM_WANDER_MAX, (
+            f"an overlay does not move, and this one moved {wander:.3f}")
 
     def test_a_real_desk_stream_still_reads_as_a_screen(self):
         import synth_faces as people
@@ -722,3 +729,71 @@ class TestTheStillCentredFrame:
         """The whole point. No sendcmd, no per-frame expression."""
         chain = reframe.centred_filter(1920, 1080)
         assert "sendcmd" not in chain and "t)" not in chain
+
+
+class TestAnOverlayIsWhatDoesNotMove:
+    """CAM_STEADY asked how *often* a face was found and called that steady.
+    It measured the detector's luck, not the thing it was trying to detect -
+    and it was set to 0.55 while this same file records that "a face is found
+    in about a third of frames on real footage". A bar above the measured
+    rate means find_webcam almost never succeeds, and it did not: gaming
+    streams with a facecam in the corner came out centred, which crops to the
+    middle 45% of the width and throws the facecam away entirely.
+    """
+
+    class _Box:
+        def __init__(self, x, y, w=0.10, h=0.14):
+            self.x, self.y, self.w, self.h = x, y, w, h
+
+        @property
+        def area(self):
+            return self.w * self.h
+
+    class _Watched:
+        def __init__(self, frames):
+            self.frames = frames
+
+    def _found(self, monkeypatch, boxes_per_frame):
+        """find_webcam over a canned set of detections."""
+        import synth_faces as people
+
+        watched = self._Watched(boxes_per_frame)
+        monkeypatch.setattr("core.faces.watch", lambda *a, **k: watched)
+        monkeypatch.setattr(reframe, "looks_like_a_screen", lambda src: (True, {}))
+        monkeypatch.setattr(reframe, "probe_size", lambda src: (1920, 1080))
+        return reframe.find_webcam(people.screen_share())
+
+    def test_a_facecam_found_only_a_third_of_the_time_is_still_a_facecam(
+            self, monkeypatch):
+        """The case that was failing. Its owner glances away, puts a headset
+        on, turns to talk - and the box never moves an inch."""
+        frames = [[self._Box(0.03, 0.04)] if i % 3 == 0 else [] for i in range(60)]
+        cam = self._found(monkeypatch, frames)
+        assert cam is not None, "refused an overlay for being intermittent"
+        assert cam.seen == pytest.approx(1 / 3, abs=0.05)
+
+    def test_somebody_crossing_the_room_is_not_a_facecam(self, monkeypatch):
+        """What CAM_STEADY existed to stop, and could not: a face found in
+        every single frame, in a different place each time."""
+        frames = [[self._Box(0.02 + i * 0.012, 0.05)] for i in range(60)]
+        assert self._found(monkeypatch, frames) is None
+
+    def test_a_face_found_constantly_but_drifting_slowly_is_refused(
+            self, monkeypatch):
+        """Drift is the hard case - it looks steady frame to frame and is not
+        furniture. Measured end to end rather than step to step."""
+        frames = [[self._Box(0.03 + i * 0.003, 0.04)] for i in range(60)]
+        assert self._found(monkeypatch, frames) is None
+
+    def test_a_detector_jittering_around_a_still_box_is_forgiven(self, monkeypatch):
+        """The allowance CAM_WANDER_MAX exists for: the box is still, the
+        detector's idea of where the face inside it sits is not."""
+        frames = [[self._Box(0.03 + (i % 3) * 0.008, 0.04 + (i % 2) * 0.006)]
+                  for i in range(60)]
+        assert self._found(monkeypatch, frames) is not None
+
+    def test_almost_no_detections_is_still_not_enough(self, monkeypatch):
+        """A floor remains: three frames out of sixty is not evidence of
+        anything, however still those three were."""
+        frames = [[self._Box(0.03, 0.04)] if i % 20 == 0 else [] for i in range(60)]
+        assert self._found(monkeypatch, frames) is None

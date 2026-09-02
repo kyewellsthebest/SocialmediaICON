@@ -485,9 +485,33 @@ CAM_MAX_H = 0.34
 #: so this is what there is, and a channel that gets it wrong can say so: a
 #: webcam box handed to to_portrait beats anything found by looking.
 CAM_CORNER = 0.28
-#: How much of the clip a face has to be found in before it is furniture
-#: rather than somebody walking past.
-CAM_STEADY = 0.55
+#: How much of the clip a face has to be found in before there is enough
+#: evidence to say anything at all.
+#:
+#: This was 0.55, and the same file says twelve lines from the top that "a
+#: face is found in about a third of frames on real footage". Those two
+#: numbers cannot both stand: a bar above the measured detection rate means
+#: find_webcam almost never succeeds, and it did not - gaming streams with a
+#: facecam in the corner came out centred, which crops to the middle 45% of
+#: the width and throws the facecam away entirely.
+#:
+#: So this is now only a floor on evidence, not the test itself. Steadiness is
+#: a better question asked a different way - see CAM_WANDER_MAX.
+CAM_SEEN_MIN = 0.18
+#: ...and what "steady" actually means: an overlay is in the *same place*
+#: every time it is found.
+#:
+#: That is the real difference between furniture and somebody walking past,
+#: and counting detections never measured it - a face found in 60% of frames
+#: while crossing the room passed, and a facecam found in 40% while its owner
+#: glanced away failed. Position separates them without depending on how
+#: reliable the detector is having a good day.
+#:
+#: Measured as the spread between the tenth and ninetieth percentile of the
+#: box centre, so a couple of stray detections cannot condemn a still one.
+#: Six percent of the frame: a webcam box does not move at all, and the
+#: allowance is for the detector jittering around a face inside it.
+CAM_WANDER_MAX = 0.06
 #: How much bigger the overlay is than the face inside it. The detector
 #: returns the face - eyes to chin - and cropping to that fills the top third
 #: with a nose. A webcam box is head and shoulders, and a face is a bit under
@@ -613,7 +637,26 @@ def find_webcam(src: Path | str) -> Webcam | None:
     if not boxes or not watched.frames:
         return None
     steady = len(boxes) / len(watched.frames)
-    if steady < CAM_STEADY:
+    if steady < CAM_SEEN_MIN:
+        log.debug("reframe: a face in only %.0f%% of frames", steady * 100)
+        return None
+
+    # Furniture or a passer-by? An overlay is in the same place every time it
+    # is found; a person crossing a room is somewhere new each time. Counting
+    # how often a face appears never asked that question - it measured how
+    # well the detector was doing, which is a different thing.
+    def spread(values: list[float]) -> float:
+        ordered = sorted(values)
+        if len(ordered) < 3:
+            return 0.0
+        return ordered[int(len(ordered) * 0.9)] - ordered[int(len(ordered) * 0.1)]
+
+    wander = max(
+        spread([b.x + b.w / 2 for b in boxes]),
+        spread([b.y + b.h / 2 for b in boxes]),
+    )
+    if wander > CAM_WANDER_MAX:
+        log.debug("reframe: the face moved %.3f of the frame - not an overlay", wander)
         return None
 
     mid = lambda vals: sorted(vals)[len(vals) // 2]  # noqa: E731
