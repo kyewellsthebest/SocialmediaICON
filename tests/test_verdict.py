@@ -336,3 +336,43 @@ class TestActivityIsNotAMoment:
         said = verdict.SYSTEM.lower()
         assert "activity is not a moment" in said
         assert "before and an after" in said
+
+
+class TestItDoesNotNarrateWhatItCouldNotSeeOrHear:
+    """Three verdicts, all confident, all wrong the same way: a man crouching
+    to clean his kitchen floor became "executes a backflip, landing it
+    cleanly" at 92% sure; a boxing coach walking a pupil through a slip drill
+    became "an increasingly heated confrontation ... struck in the stomach";
+    joking about the shape of a watermelon became "cracks it open with his
+    bare hands".
+
+    Two causes and they compound. Twelve frames over twenty seconds is one
+    every 1.7s, and upright/bent-over/upright is identical evidence for
+    cleaning a floor and for a backflip. And every one of those three turned
+    on something audible, which it never had.
+    """
+
+    def test_it_sees_enough_frames_for_a_body_to_pass_through_a_position(self):
+        """A dozen over twenty seconds lets a person teleport between poses."""
+        assert verdict.FRAMES >= 24
+        assert 20.0 / verdict.FRAMES <= 1.0, "still more than a second between frames"
+
+    def test_the_prompt_forbids_inventing_the_sound(self):
+        said = verdict.SYSTEM.lower()
+        assert "you cannot hear anything" in said
+        assert "body language is not evidence of what was said" in said
+
+    def test_the_prompt_tells_it_to_prefer_the_plainer_reading(self):
+        said = verdict.SYSTEM.lower()
+        assert "describe only what is in the frames" in said
+        assert "say the plainer" in said
+
+    def test_a_verdict_with_no_transcript_says_it_was_deaf(self):
+        """It read exactly like one reached with sound, and nothing on the
+        page said the model never heard any of it."""
+        v = verdict.Verdict(watched=True, heard_nothing=True)
+        assert v.as_dict()["heard_nothing"] is True
+
+    def test_a_verdict_with_a_transcript_is_not_marked_deaf(self):
+        v = verdict.Verdict(watched=True, heard_nothing=False)
+        assert v.as_dict()["heard_nothing"] is False

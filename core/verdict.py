@@ -35,11 +35,33 @@ from core.ffmpeg_ops import require_binaries
 
 log = logging.getLogger(__name__)
 
-#: How many frames to look at. A moment is tens of seconds, so a dozen is one
-#: every three or four seconds - enough to see a thing start, happen and land.
-#: More is not obviously better: the model is being asked what happened, not to
-#: count frames, and each one is real money.
-FRAMES = 12
+#: How many frames to look at.
+#:
+#: This was twelve, on the reasoning that a dozen is "enough to see a thing
+#: start, happen and land". On a twenty-second clip a dozen is one frame every
+#: 1.7 seconds, and 1.7 seconds is longer than most of what these clips are
+#: about. Three real verdicts, all confidently wrong in the same way:
+#:
+#:   crouching down to clean the kitchen floor  -> "executes a backflip,
+#:                                                  landing it cleanly", 92% sure
+#:   a boxing coach walking a pupil through a
+#:     slip drill                               -> "an increasingly heated
+#:                                                  confrontation ... struck in
+#:                                                  the stomach", 75% sure
+#:   joking about the shape of a watermelon     -> "cracks it open with his
+#:                                                  bare hands", 72% sure
+#:
+#: Every one is upright, bent over, upright - which at one frame every 1.7
+#: seconds is *identical* evidence for cleaning a floor and for a backflip.
+#: The model was not hallucinating freely; it was interpolating across gaps it
+#: could not see into, and the prompt asks it for a shareable moment, so the
+#: story it reached for was the shareable one.
+#:
+#: Twenty-four is a frame every 0.8 seconds on the same clip - fast enough
+#: that a body has to pass through the in-between positions rather than
+#: teleport. It is not free, and it is much cheaper than a caption that says
+#: somebody did a backflip when they were cleaning up.
+FRAMES = 24
 #: Frame width handed to the model. Large enough to read a face and a caption,
 #: small enough that a dozen of them is a few thousand tokens.
 FRAME_W = 512
@@ -132,6 +154,14 @@ class Verdict:
     #: Why it is or is not worth clipping, in the model's words.
     why: str = ""
     #: A tighter cut, if the moment turned out to sit inside the window.
+    #: Whether it judged this with no transcript - deaf, in other words.
+    #:
+    #: A verdict reached without sound reads exactly like one reached with it,
+    #: and it should not: three confidently wrong descriptions all turned on
+    #: something audible (a joke about a watermelon, a coach talking a pupil
+    #: through a drill), and nothing on the page said the model never heard
+    #: any of it.
+    heard_nothing: bool = False
     #: The second the moment turns, as the model read it. None means it found
     #: activity rather than a moment, which is a refusal.
     moment_s: float | None = None
@@ -156,6 +186,7 @@ class Verdict:
             "setting": self.setting,
             "faces": self.faces,
             "why": self.why,
+            "heard_nothing": self.heard_nothing,
             "moment_s": self.moment_s,
             "best_start_s": self.best_start_s,
             "best_end_s": self.best_end_s,
@@ -238,6 +269,27 @@ Judge what is actually on screen. The evidence explains why the moment was
 brought to you; it is not proof that anything happened. Software hears a laugh
 and sees motion; it cannot tell a man laughing at nothing from a man falling
 off a chair, and that difference is the entire job.
+
+Describe only what is in the frames. You are shown moments seconds apart, and
+what happened between them you did not see - so do not fill the gap with the
+best story. Three verdicts got this exactly wrong and were confident about it:
+a man crouching to clean his kitchen floor became "executes a backflip,
+landing it cleanly"; a boxing coach walking a pupil through a slip drill
+became "an increasingly heated confrontation, struck in the stomach"; a man
+joking about the shape of a watermelon became "cracks it open with his bare
+hands". Upright, bent over, upright is the same picture for cleaning a floor
+and for a backflip, and the difference is not in the frames.
+
+So when two frames could be joined by more than one story, say the plainer
+one, or say you cannot tell. "A man bends down to the floor and gets up
+again" is a worse headline and a true sentence, and a caption written from
+the exciting guess is worse than no caption.
+
+**If there is no transcript, you cannot hear anything.** Do not write that
+somebody shouted, argued, laughed or joked - a raised voice is not visible,
+and body language is not evidence of what was said. Say what the bodies are
+doing and leave the sound out of it. Lower your confidence when the moment
+turns on something you would have had to hear.
 
 Read the faces. Where a frame is a close crop of somebody's face, that is
 because the machine found a face there and could not tell you what was on it.
@@ -516,6 +568,7 @@ def look(
         setting=str(payload.get("setting") or ""),
         faces=payload.get("faces") or [],
         why=str(payload.get("why") or ""),
+        heard_nothing=not (transcript or "").strip(),
         moment_s=_number(payload.get("moment_s")),
         best_start_s=_number(payload.get("best_start_s")),
         best_end_s=_number(payload.get("best_end_s")),
