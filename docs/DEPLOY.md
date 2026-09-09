@@ -456,6 +456,49 @@ works from a laptop and 403s from a server. `REDDIT_PROXY` is the other way
 out if you have a residential proxy, but credentials cost nothing and are the
 supported route.
 
+### When that door is shut
+
+The app is free and instant, but it is still one endpoint, and a page that
+stops posting because one endpoint started refusing is not worth running. So
+`core/reddit_routes.py` holds six ways in and tries them in order until one
+answers. They fail for different reasons, which is the point — one failing
+says nothing about the next:
+
+| route | what it is | fails when |
+| --- | --- | --- |
+| `oauth` | a free script app over `oauth.reddit.com` | no app, or the app is not a *script* app |
+| `json` | `www.reddit.com/….json`, no app at all | the address is a datacenter (403) |
+| `proxied` | the same JSON from a proxy in `YTDLP_PROXIES` | no proxy configured |
+| `reader` | a public reader service fetches the page for us | the service is down or rate-limited |
+| `mirror` | a Redlib front-end — a different domain entirely | every instance in the list is down |
+| `rss` | Reddit's own Atom feed, served by different infrastructure | the feed is refused too |
+
+Run this **on the host that will do the work** — a route that answers from a
+laptop says nothing about Railway, and that difference is the whole problem:
+
+```
+python scripts/reddit_ways_in.py --room gym --time day
+```
+
+It tries all six, times each, and ends with the `REDDIT_ROUTES=` line to paste
+in. Leaving `REDDIT_ROUTES` unset tries them all in order and settles on
+whichever answers; pinning it only skips the failures ahead of the one that
+works.
+
+`mirror` and `rss` return a title and a link and nothing else — no duration,
+no adult flag, no score. None of those is guessed. Duration and the adult flag
+are looked up with yt-dlp, which has to open the post to download it anyway, so
+a post it cannot read was never postable. The score genuinely cannot be
+recovered, so on those two routes `REDDIT_MIN_UPVOTES` is not applied and the
+`top`-of-window sort does that job instead — keep the window short when you are
+on them. The adult and duration checks are never skipped.
+
+Rooms are **listed**, not searched, because a listing is the one request all
+six routes can serve; search exists on the JSON routes alone. That is why
+`REDDIT_SUBREDDITS` matters: with no rooms named there is no listing to ask
+for, and discovery falls back to site-wide search, which stops working the day
+the JSON routes do.
+
 **What it gives you that YouTube does not:** the comments. A replay curve says
 people rewound to 4:12; a comment thread says *why*. That is a better
 instruction for where to cut.

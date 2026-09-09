@@ -14,9 +14,14 @@ The four things that can go wrong are separated, because they have four
 different fixes:
 
     credentials   -> the app is not a script app, or the id and secret are swapped
-    reach         -> the host is refusing this address, so a proxy is needed
+    reach         -> every way in to Reddit refused this address
     filter        -> it answers, but nothing survives the bounds
     audio         -> it downloads, and it is silent
+
+Reach is now a whole chain rather than one endpoint - six ways in, tried in
+turn - so this reports which one got through. To see all six measured side by
+side, including the ones that would never have been reached because an earlier
+one worked, run scripts/reddit_ways_in.py instead.
 
 The last one is the reason --download exists. Reddit serves video and audio as
 separate DASH files, so a silent clip downloads cleanly, plays cleanly, and is
@@ -32,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import reddit  # noqa: E402
+from core import reddit, reddit_routes  # noqa: E402
 from core.config import settings  # noqa: E402
 
 
@@ -55,14 +60,16 @@ def has_audio(path: Path) -> bool | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--term", default="fail")
+    parser.add_argument("--term", default="fail",
+                        help="only used when no subreddits are configured")
     parser.add_argument("--download", action="store_true",
                         help="also take the top result and check it has sound")
     args = parser.parse_args()
 
     rooms = settings.reddit_rooms
-    print(f"\nsearching for {args.term!r} in "
-          f"{', '.join('r/' + r for r in rooms) if rooms else 'all of Reddit'}")
+    where = (", ".join("r/" + r for r in rooms) if rooms
+             else f"all of Reddit, searching for {args.term!r}")
+    print(f"\nreading {where}")
     print(f"bounds: {settings.reddit_floor_duration_s:.0f}"
           f"-{settings.reddit_max_duration_s:.0f}s, "
           f"{settings.reddit_min_upvotes}+ upvotes, "
@@ -72,22 +79,33 @@ def main() -> int:
     print(tick(settings.has_reddit) + (
         "credentials are set" if settings.has_reddit else
         "no credentials - REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are unset. "
-        "Reddit refuses anonymous reads from a datacenter, so this will "
-        "probably 403 next."))
+        "Not fatal: Reddit refuses anonymous reads from a datacenter, but the "
+        "chain\n       has five more ways in and one of them may well answer."))
 
     # 2. reach -------------------------------------------------------------
     try:
-        posts = reddit.search(
-            args.term, sort="top", time_filter=settings.reddit_time_filter,
-            subreddit=rooms[0] if rooms else None,
-        )
+        if rooms:
+            posts, route = reddit_routes.listing(
+                rooms[0], "top", settings.reddit_time_filter)
+        else:
+            posts, route = reddit.search(
+                args.term, sort="top", time_filter=settings.reddit_time_filter,
+            ), "search"
     except reddit.RedditError as exc:
-        print(tick(False) + f"Reddit refused it: {exc}")
+        print(tick(False) + f"nothing got through: {exc}")
+        print("\n       Six ways in were tried and all six were refused. "
+              "scripts/reddit_ways_in.py\n       measures them one at a time "
+              "and says what each one needs.")
         return 1
     except Exception as exc:  # noqa: BLE001
         print(tick(False) + f"could not reach Reddit: {type(exc).__name__}: {exc}")
         return 1
-    print(tick(True) + f"Reddit answered - {len(posts)} native video posts")
+    print(tick(True) + f"Reddit answered by {route} - "
+                       f"{len(posts)} native video posts")
+    if posts and not posts[0].ups_known:
+        print("       (this route cannot see vote counts, so the upvote bound "
+              "is not being\n        applied - the window sort is doing that "
+              "job instead)")
 
     # 3. filter ------------------------------------------------------------
     keep, refused = [], {}
@@ -137,8 +155,8 @@ def main() -> int:
             if not sound:
                 return 1
 
-    print("\nThe path works. Set REDDIT_SUBREDDITS to the rooms you want and "
-          "the harvest can run.\n")
+    print(f"\nThe path works, by {route}. Set REDDIT_SUBREDDITS to the rooms "
+          f"you want and\nthe harvest can run.\n")
     return 0
 
 

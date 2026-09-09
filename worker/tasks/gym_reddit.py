@@ -28,7 +28,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from core import reddit
+from core import reddit, reddit_routes
 from core.config import settings
 from core.db import session_scope
 from core.models import TrackedVideo
@@ -44,55 +44,72 @@ TERMS = ("fail", "PR", "lift", "form check", "gym")
 
 
 def find(
-    terms: list[str] | None = None,
     rooms: list[str] | None = None,
+    terms: list[str] | None = None,
     *,
     sort: str | None = None,
     time_filter: str | None = None,
+    limit: int = 50,
 ) -> list[reddit.Post]:
-    """Every postable video the search turns up, best first, no duplicates.
+    """Every postable video the rooms are showing, best first, no duplicates.
 
-    A post can match several terms and sit in several rooms, so the same video
-    arrives more than once; the first sighting wins and the rest are dropped
-    before anything is downloaded.
+    Asks each room for its top of the window rather than searching for words
+    inside it. Two reasons. The room is already the topic filter, so a term
+    only narrows a feed that was correct to begin with - and, more to the
+    point, a listing is the one request every way in to Reddit can serve.
+    Search exists on the JSON routes alone, so a pipeline built on search
+    stops dead the day those are refused, which is the failure this whole
+    fallback chain is here to survive.
+
+    With no rooms named there is nothing to list, so it falls back to a
+    site-wide search on `terms` - and accepts that this only works while a
+    JSON route does.
     """
-    terms = terms or list(TERMS)
     rooms = rooms if rooms is not None else settings.reddit_rooms
     sort = sort or "top"
     time_filter = time_filter or settings.reddit_time_filter
 
     seen: dict[str, reddit.Post] = {}
     refused: dict[str, int] = {}
+    routes_used: set[str] = set()
+    looked_at = 0
 
-    client = reddit.make_client()
-    try:
-        for room in rooms or [None]:
-            for term in terms:
-                try:
-                    found = reddit.search(
-                        term, sort=sort, time_filter=time_filter,
-                        client=client, subreddit=room,
-                    )
-                except reddit.RedditError as exc:
-                    # One bad room or term is not the whole run. A dead
-                    # subreddit name is a typo in config, not an outage.
-                    log.warning("reddit: %s in r/%s failed (%s)", term, room, exc)
-                    continue
-                for post in found:
-                    if post.external_id in seen:
-                        continue
-                    ok, why = reddit.postable(post)
-                    if not ok:
-                        refused[why.split()[-1] if why else "?"] = (
-                            refused.get(why.split()[-1] if why else "?", 0) + 1)
-                        continue
-                    seen[post.external_id] = post
-    finally:
-        client.close()
+    def keep(found: list[reddit.Post]) -> None:
+        nonlocal looked_at
+        looked_at += len(found)
+        for post in found:
+            if post.external_id in seen:
+                continue
+            ok, why = reddit.postable(post)
+            if not ok:
+                key = why.split()[-1] if why else "?"
+                refused[key] = refused.get(key, 0) + 1
+                continue
+            seen[post.external_id] = post
+
+    if rooms:
+        for room in rooms:
+            try:
+                found, route = reddit_routes.listing(room, sort, time_filter, limit)
+            except reddit.RedditError as exc:
+                # One dead room is a typo in config, not an outage - and the
+                # chain has already tried every way in before it says this.
+                log.warning("reddit: r/%s could not be read (%s)", room, exc)
+                continue
+            routes_used.add(route)
+            keep(found)
+    else:
+        for term in terms or list(TERMS):
+            try:
+                keep(reddit.search(term, sort=sort, time_filter=time_filter))
+            except reddit.RedditError as exc:
+                log.warning("reddit: search %r failed (%s)", term, exc)
+                continue
+            routes_used.add("search")
 
     log.info(
-        "reddit: %d postable from %d rooms x %d terms (refused: %s)",
-        len(seen), len(rooms or [1]), len(terms),
+        "reddit: %d postable of %d seen, by %s (refused: %s)",
+        len(seen), looked_at, ", ".join(sorted(routes_used)) or "nothing",
         ", ".join(f"{n} {k}" for k, n in refused.items()) or "none",
     )
     return sorted(seen.values(), key=lambda p: p.ups, reverse=True)

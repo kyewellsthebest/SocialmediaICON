@@ -97,6 +97,29 @@ class Settings(BaseSettings):
     # are the better answer; this is the fallback, and defaults to reusing
     # the downloader's proxy pool.
     reddit_proxy: str | None = None
+    #: Which ways in to try, comma separated, in order. Blank tries them all
+    #: in the order core.reddit_routes lists them. Set it to pin a route once
+    #: you know which one your host can use - the others each cost a failed
+    #: request before they give up.
+    #:
+    #: oauth, json, proxied, reader, mirror, rss
+    reddit_routes: str = ""
+    #: A public reader service, which fetches a page and returns its text.
+    #: Their address does the asking, which is the point: Reddit's objection
+    #: is to ours. Free at this volume and needs no account.
+    reddit_reader: str = "https://r.jina.ai"
+    #: Optional free key for the above, which only raises the rate limit.
+    reddit_reader_key: str | None = None
+    #: Redlib front-ends, comma separated. A different domain entirely, so a
+    #: block on reddit.com does not reach them. Public instances come and go,
+    #: hence a list, and hence configuration rather than a constant.
+    reddit_mirrors: str = (
+        "https://safereddit.com,"
+        "https://redlib.catsarch.com,"
+        "https://redlib.perennialte.ch,"
+        "https://l.opnxng.com,"
+        "https://redlib.privacyredirect.com"
+    )
 
     # yt-dlp. YouTube challenges datacenter IPs, so which player client is
     # used matters, and the set that passes changes every few months -
@@ -701,6 +724,16 @@ class Settings(BaseSettings):
         """The subreddits to search inside. Empty means all of Reddit."""
         return [s.strip().lstrip("r/").strip() for s in
                 self.reddit_subreddits.split(",") if s.strip()]
+
+    @property
+    def reddit_route_names(self) -> list[str]:
+        """Which ways in to try. Empty means all of them, in the default order."""
+        return [r.strip().lower() for r in self.reddit_routes.split(",") if r.strip()]
+
+    @property
+    def reddit_mirror_list(self) -> list[str]:
+        """Redlib instances to try, in order."""
+        return [m.strip().rstrip("/") for m in self.reddit_mirrors.split(",") if m.strip()]
 
     @property
     def reddit_search_terms(self) -> list[str]:

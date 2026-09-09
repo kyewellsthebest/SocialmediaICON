@@ -69,6 +69,11 @@ class Post:
     num_comments: int
     created_utc: float
     over_18: bool
+    #: Whether `ups` is a number Reddit reported or a placeholder. The feed
+    #: routes in core.reddit_routes cannot see scores at all, and a zero that
+    #: means "not reported" must not be read as a zero that means "nobody
+    #: voted" - that would refuse every post those routes ever find.
+    ups_known: bool = True
 
     @property
     def age_hours(self) -> float:
@@ -189,6 +194,12 @@ def postable(post: Post) -> tuple[bool, str]:
     quarantined room, and a caller that forgets it publishes the result. One
     refusal in the module every path goes through is worth more than the same
     line copied into three tasks.
+
+    The vote threshold is the one bound that can be skipped, and only when the
+    route that found the post could not see votes. Sorting by top over a window
+    has already applied the same ranking the threshold was standing in for; the
+    adult and duration checks are never skipped, because nothing else in the
+    system is looking.
     """
     if post.over_18:
         return False, "adult"
@@ -200,7 +211,7 @@ def postable(post: Post) -> tuple[bool, str]:
         return False, f"{post.duration_s:.0f}s is longer than short-form"
     if post.duration_s < settings.reddit_floor_duration_s:
         return False, f"{post.duration_s:.0f}s is not a post"
-    if post.ups < settings.reddit_min_upvotes:
+    if post.ups_known and post.ups < settings.reddit_min_upvotes:
         return False, f"{post.ups} upvotes"
     return True, ""
 
