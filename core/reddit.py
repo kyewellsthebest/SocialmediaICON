@@ -176,33 +176,75 @@ def _post_from(data: dict[str, Any]) -> Post | None:
     )
 
 
+def postable(post: Post) -> tuple[bool, str]:
+    """Whether this video can go on a repost page as it stands, and why not.
+
+    Different question from the scout's `wanted`, which looked for long video
+    worth cutting down. Nothing here gets edited: what is found is what is
+    posted, so the bounds are the platform's rather than an editor's.
+
+    The adult check is here rather than in the caller on purpose. `search`
+    already sends include_over_18=false and that is not enough to rely on -
+    it is a preference on a listing, it does not cover a crosspost out of a
+    quarantined room, and a caller that forgets it publishes the result. One
+    refusal in the module every path goes through is worth more than the same
+    line copied into three tasks.
+    """
+    if post.over_18:
+        return False, "adult"
+    if post.duration_s is None:
+        # v.redd.it always reports a duration. Missing means the payload was
+        # not what it claimed, and guessing costs a download to find out.
+        return False, "no duration"
+    if post.duration_s > settings.reddit_max_duration_s:
+        return False, f"{post.duration_s:.0f}s is longer than short-form"
+    if post.duration_s < settings.reddit_floor_duration_s:
+        return False, f"{post.duration_s:.0f}s is not a post"
+    if post.ups < settings.reddit_min_upvotes:
+        return False, f"{post.ups} upvotes"
+    return True, ""
+
+
 def search(
     query: str,
     sort: str = "top",
     time_filter: str = "month",
     limit: int = 100,
     client: httpx.Client | None = None,
+    subreddit: str | None = None,
 ) -> list[Post]:
-    """Site-wide search for video posts matching `query`.
+    """Search for video posts matching `query`.
 
     `sort` is one of relevance, hot, top, new, comments. `time_filter` is
     hour, day, week, month, year, all - and only applies to top and comments.
+
+    Site-wide by default, which is what a scout hunting one good video wants.
+    Pass `subreddit` to search inside one room instead: a niche feed needs the
+    rooms named, because "gym" across all of Reddit returns memes, screenshots
+    of texts, and photographs of actual gymnasium buildings.
     """
     owns_client = client is None
     client = client or make_client()
     try:
         base, headers = _endpoint(client)
+        where = f"/r/{subreddit}" if subreddit else ""
+        params: dict[str, Any] = {
+            "q": query,
+            "sort": sort,
+            "t": time_filter,
+            "limit": min(100, limit),
+            "type": "link",
+            "include_over_18": "false",
+            "raw_json": 1,
+        }
+        if subreddit:
+            # Without this Reddit widens a subreddit search back out to the
+            # whole site and answers with everything, which looks like the
+            # filter silently doing nothing.
+            params["restrict_sr"] = 1
         response = client.get(
-            f"{base}/search{'' if base == API else '.json'}",
-            params={
-                "q": query,
-                "sort": sort,
-                "t": time_filter,
-                "limit": min(100, limit),
-                "type": "link",
-                "include_over_18": "false",
-                "raw_json": 1,
-            },
+            f"{base}{where}/search{'' if base == API else '.json'}",
+            params=params,
             headers=headers,
         )
         if response.status_code == 403:

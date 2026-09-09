@@ -77,8 +77,22 @@ class Settings(BaseSettings):
     reddit_keywords: str = ""  # comma separated; blank reuses SCOUT_KEYWORDS
     # A 20-second clip of an already-short clip is not worth a render.
     reddit_min_duration_s: float = 45.0
+    #: ...and the longest. The two bounds serve opposite jobs and both are
+    #: needed: the minimum was for finding long source video to cut down, this
+    #: is for finding video already short enough to post as it stands.
+    #:
+    #: Sixty seconds because that is where Reels, Shorts and TikTok all stop
+    #: treating a video as short-form. A two-second clip is not a post either,
+    #: hence the floor below it.
+    reddit_max_duration_s: float = 60.0
+    reddit_floor_duration_s: float = 4.0
     reddit_min_upvotes: int = 500
     reddit_time_filter: str = "month"  # hour|day|week|month|year|all
+    #: Subreddits to search inside, comma separated. Blank searches all of
+    #: Reddit, which is what the scout wanted and is too broad for a niche
+    #: page: "gym" site-wide returns memes, screenshots and gym*nasium*
+    #: architecture. Naming the rooms is what makes the feed coherent.
+    reddit_subreddits: str = ""
     # Reddit blocks unauthenticated reads from datacenter ranges. Credentials
     # are the better answer; this is the fallback, and defaults to reusing
     # the downloader's proxy pool.
@@ -681,6 +695,12 @@ class Settings(BaseSettings):
     @property
     def has_reddit(self) -> bool:
         return bool(self.reddit_client_id and self.reddit_client_secret)
+
+    @property
+    def reddit_rooms(self) -> list[str]:
+        """The subreddits to search inside. Empty means all of Reddit."""
+        return [s.strip().lstrip("r/").strip() for s in
+                self.reddit_subreddits.split(",") if s.strip()]
 
     @property
     def reddit_search_terms(self) -> list[str]:
