@@ -45,25 +45,12 @@ class Job:
 
 def _jobs() -> list[Job]:
     from worker.tasks.collect_metrics import collect_due
-    from worker.tasks.live_watch import watchdog as live_watchdog
     from worker.tasks.publish import autopost
     from worker.tasks.refresh_tokens import run as refresh_tokens
     from worker.tasks.scout import run as scout_run
     from worker.tasks.scout_reddit import run as scout_reddit
 
     return [
-        Job(
-            # First in the list because it is the only one whose failure means
-            # the product does nothing at all. Every minute: the watcher is
-            # supposed to run forever, and the gap between it dying and this
-            # noticing is the gap in which nothing is clipped.
-            name="live_watchdog",
-            queue="live",  # only nominal - it runs inline, see `inline` below
-            every_minutes=1,
-            func=live_watchdog,
-            enabled=settings.live_enabled,
-            inline=True,
-        ),
         Job(
             name="scout",
             queue="metrics",
