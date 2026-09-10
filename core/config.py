@@ -88,11 +88,20 @@ class Settings(BaseSettings):
     reddit_floor_duration_s: float = 4.0
     reddit_min_upvotes: int = 500
     reddit_time_filter: str = "month"  # hour|day|week|month|year|all
-    #: Subreddits to search inside, comma separated. Blank searches all of
-    #: Reddit, which is what the scout wanted and is too broad for a niche
-    #: page: "gym" site-wide returns memes, screenshots and gym*nasium*
-    #: architecture. Naming the rooms is what makes the feed coherent.
-    reddit_subreddits: str = ""
+    #: Subreddits to read, comma separated. Naming the rooms is what makes the
+    #: feed coherent - "gym" site-wide returns memes, screenshots of texts and
+    #: photographs of gym*nasium* architecture.
+    #:
+    #: This has a real default rather than being blank, because blank means
+    #: site-wide search, and search only exists on the JSON routes. On a host
+    #: where only the feed routes answer - which is what Railway measured -
+    #: an unset value is not "search everything", it is "find nothing".
+    #:
+    #: Cast wide to begin with: a week of numbers decides which of these earn
+    #: their place better than a guess does.
+    reddit_subreddits: str = (
+        "GYM,weightroom,bodyweightfitness,gymfails,fitness,naturalbodybuilding"
+    )
     # Reddit blocks unauthenticated reads from datacenter ranges. Credentials
     # are the better answer; this is the fallback, and defaults to reusing
     # the downloader's proxy pool.
@@ -113,6 +122,20 @@ class Settings(BaseSettings):
     #: Redlib front-ends, comma separated. A different domain entirely, so a
     #: block on reddit.com does not reach them. Public instances come and go,
     #: hence a list, and hence configuration rather than a constant.
+    #: The daily harvest: find short gym video, take it whole, file who made
+    #: it. Off by flipping this rather than by emptying the room list, so the
+    #: rooms survive being turned off and on.
+    gym_harvest_enabled: bool = True
+    #: How many to take per run. Ten a day is the stated target; the bound is
+    #: here so a busy day cannot turn into a hundred downloads.
+    gym_harvest_per_run: int = 10
+    #: How often the harvest runs. Daily: top-of-day is a settled list, so a
+    #: second pass at it mostly re-reads the same posts and skips them.
+    gym_harvest_interval_minutes: int = 24 * 60
+    #: How many downloaded files to keep on disk. Nothing posts them yet, so
+    #: without this the folder grows until the container runs out of room -
+    #: and Railway answers a full disk by failing writes, not by warning.
+    gym_harvest_keep: int = 30
     reddit_mirrors: str = (
         "https://safereddit.com,"
         "https://redlib.catsarch.com,"

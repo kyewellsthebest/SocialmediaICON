@@ -220,8 +220,33 @@ def credit(post: reddit.Post, video: Path) -> Path:
     return beside
 
 
-def harvest(limit: int = 10) -> list[dict[str, Any]]:
+def prune(into: Path, keep: int) -> int:
+    """Delete all but the newest `keep` downloads. Returns how many went.
+
+    Nothing posts these yet, so without a bound the folder grows until the
+    container runs out of room - and a full disk on Railway does not warn, it
+    fails the next write. The sidecar goes with its video: an attribution file
+    for a video that is no longer there answers a question nobody can ask.
+    """
+    if keep <= 0:
+        return 0
+    videos = sorted(
+        (p for p in into.glob("*") if p.suffix != ".json"),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    gone = 0
+    for old in videos[keep:]:
+        old.with_suffix(".json").unlink(missing_ok=True)
+        old.unlink(missing_ok=True)
+        gone += 1
+    if gone:
+        log.info("reddit: pruned %d old downloads, keeping the newest %d", gone, keep)
+    return gone
+
+
+def harvest(limit: int | None = None) -> list[dict[str, Any]]:
     """Find, download and hold. Returns what was taken."""
+    limit = settings.gym_harvest_per_run if limit is None else limit
     into = Path(settings.work_dir) / "reddit"
     taken: list[dict[str, Any]] = []
 
@@ -248,4 +273,10 @@ def harvest(limit: int = 10) -> list[dict[str, Any]]:
         log.info("reddit: took %s (%.0fs, %d ups) %s",
                  post.external_id, post.duration_s or 0, post.ups, post.title[:60])
 
+    prune(into, settings.gym_harvest_keep)
     return taken
+
+
+def run() -> list[dict[str, Any]]:
+    """Scheduler entrypoint. One pass, whatever the config says."""
+    return harvest()

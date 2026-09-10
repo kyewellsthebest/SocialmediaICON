@@ -45,6 +45,7 @@ class Job:
 
 def _jobs() -> list[Job]:
     from worker.tasks.collect_metrics import collect_due
+    from worker.tasks.gym_reddit import run as gym_harvest
     from worker.tasks.publish import autopost
     from worker.tasks.refresh_tokens import run as refresh_tokens
     from worker.tasks.scout import run as scout_run
@@ -71,6 +72,19 @@ def _jobs() -> list[Job]:
                 and settings.scouts("reddit")
                 and bool(settings.reddit_search_terms)
             ),
+        ),
+        Job(
+            name="gym_harvest",
+            # A download job, so it belongs with the other downloads rather
+            # than on the metrics queue with the things that only read.
+            queue="ingest",
+            every_minutes=settings.gym_harvest_interval_minutes,
+            func=gym_harvest,
+            # Rooms rather than credentials: the feed routes need no app, and
+            # on Railway they are the ones that answer. No rooms means no
+            # listing to ask for, which is a configuration mistake rather than
+            # a job worth running.
+            enabled=settings.gym_harvest_enabled and bool(settings.reddit_rooms),
         ),
         Job(
             name="metrics",

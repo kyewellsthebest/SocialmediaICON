@@ -132,3 +132,66 @@ class TestTheVideoHasToHaveSound:
         import inspect
         assert "post.video_url" in inspect.getsource(gym_reddit.fetch)
         assert reddit.NATIVE_DOMAIN not in inspect.getsource(gym_reddit.fetch)
+
+
+class TestTheDiskCannotFill:
+    """Nothing posts these yet, so the folder only ever grows. Railway
+    answers a full disk by failing the next write, not by warning, and a
+    worker that cannot write is a worker that stops."""
+
+    def _downloads(self, tmp_path, n):
+        import os
+        for i in range(n):
+            video = tmp_path / f"vid{i:02d}.mp4"
+            video.write_bytes(b"x" * 10)
+            video.with_suffix(".json").write_text("{}")
+            os.utime(video, (1_700_000_000 + i, 1_700_000_000 + i))
+        return tmp_path
+
+    def test_it_keeps_the_newest_and_drops_the_rest(self, tmp_path):
+        self._downloads(tmp_path, 10)
+        assert gym_reddit.prune(tmp_path, keep=3) == 7
+        left = sorted(p.name for p in tmp_path.glob("*.mp4"))
+        assert left == ["vid07.mp4", "vid08.mp4", "vid09.mp4"]
+
+    def test_the_attribution_goes_with_its_video(self, tmp_path):
+        """A sidecar for a video that is no longer there answers a question
+        nobody can ask, and looks like a video we still hold."""
+        self._downloads(tmp_path, 5)
+        gym_reddit.prune(tmp_path, keep=2)
+        assert sorted(p.stem for p in tmp_path.glob("*.json")) == ["vid03", "vid04"]
+
+    def test_it_does_nothing_when_there_is_room(self, tmp_path):
+        self._downloads(tmp_path, 3)
+        assert gym_reddit.prune(tmp_path, keep=30) == 0
+        assert len(list(tmp_path.glob("*.mp4"))) == 3
+
+    def test_keeping_nothing_is_treated_as_not_configured(self, tmp_path):
+        """Rather than as an instruction to delete the whole folder."""
+        self._downloads(tmp_path, 3)
+        assert gym_reddit.prune(tmp_path, keep=0) == 0
+        assert len(list(tmp_path.glob("*.mp4"))) == 3
+
+
+class TestTheHarvestIsOnTheClock:
+    def test_the_scheduler_runs_it_daily(self):
+        from worker.scheduler import _jobs
+
+        job = next(j for j in _jobs() if j.name == "gym_harvest")
+        assert job.every_minutes == 24 * 60 and job.enabled
+
+    def test_no_rooms_means_the_job_does_not_run(self, monkeypatch):
+        """Blank is not "search everything" any more - search lives on the
+        JSON routes, and those are the ones Railway cannot use. A run with no
+        rooms would find nothing, slowly."""
+        from worker.scheduler import _jobs
+
+        monkeypatch.setattr(settings, "reddit_subreddits", "")
+        job = next(j for j in _jobs() if j.name == "gym_harvest")
+        assert not job.enabled
+
+    def test_it_downloads_so_it_belongs_on_the_download_queue(self):
+        from worker.scheduler import _jobs
+
+        job = next(j for j in _jobs() if j.name == "gym_harvest")
+        assert job.queue == "ingest"
