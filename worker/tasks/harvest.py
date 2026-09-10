@@ -30,6 +30,7 @@ from core import brand, reddit, reddit_routes
 from core.config import settings
 from core.db import session_scope
 from core.models import Reel
+from core.storage import get_storage
 
 log = logging.getLogger(__name__)
 
@@ -211,10 +212,23 @@ def prepare(reel_id: int) -> Path:
     for stray in found:
         stray.unlink(missing_ok=True)
 
+    # Into storage, not just onto this disk. web, worker and scheduler are
+    # three separate containers with three separate filesystems, so a file the
+    # worker branded is a file the dashboard cannot open - it looks up
+    # local_path, finds nothing at it, and reports a video that was never
+    # downloaded. Storage is the only place all three can see.
+    key: str | None = f"reels/{external_id}.mp4"
+    try:
+        get_storage().put_file(branded, key)
+    except Exception as exc:  # noqa: BLE001 - the local copy still posts fine
+        log.warning("harvest: could not store %s (%s)", key, exc)
+        key = None
+
     with session_scope() as session:
         reel = session.get(Reel, reel_id)
         if reel is not None:
             reel.local_path = str(branded)
+            reel.storage_key = key
             reel.state = "ready"
     return branded
 

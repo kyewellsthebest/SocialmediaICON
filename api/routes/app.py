@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
@@ -20,6 +20,7 @@ from core import credentials
 from core.config import settings
 from core.db import session_scope
 from core.models import Account, Reel, ReelPost
+from core.storage import get_storage
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +40,9 @@ def _reel(reel: Reel, place: int | None = None) -> dict[str, Any]:
         "permalink": reel.permalink,
         "state": reel.state,
         "note": reel.note,
-        "ready": bool(reel.local_path),
+        # Either place counts: the dashboard only needs to know
+        # whether there is a file to watch somewhere.
+        "ready": bool(reel.storage_key or reel.local_path),
         "found_at": reel.created_at.isoformat() if reel.created_at else None,
         "posted_at": reel.posted_at.isoformat() if reel.posted_at else None,
     }
@@ -140,18 +143,38 @@ def beaten(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
 
 
 @router.get("/reels/{reel_id}/video")
-def video(reel_id: int) -> FileResponse:
-    """The branded file, so the dashboard can play it before it goes out."""
+def video(reel_id: int) -> Any:
+    """The branded file, so the dashboard can play it before it goes out.
+
+    Storage first, disk second. web, worker and scheduler are three separate
+    containers with three separate filesystems, so a file the worker branded
+    is not on the disk this request is being served from - and reading
+    local_path here would report "never downloaded" for a video that exists.
+    """
     with session_scope() as session:
         reel = session.get(Reel, reel_id)
         if reel is None:
             raise HTTPException(404, "no such reel")
+        key = reel.storage_key
         path = Path(reel.local_path) if reel.local_path else None
-    if path is None or not path.exists():
-        raise HTTPException(
-            404, "not downloaded yet - a reel is fetched when it is about to "
-                 "go out, so most of the queue has no file")
-    return FileResponse(path, media_type="video/mp4")
+
+    if key and settings.has_r2:
+        # A redirect rather than a proxy: the browser asks R2 for byte ranges
+        # directly, which is what makes scrubbing work, and the web service
+        # does not spend its memory relaying video.
+        return RedirectResponse(get_storage().url_for(key, expires_s=3600))
+
+    if path is not None and path.exists():
+        return FileResponse(path, media_type="video/mp4")
+
+    raise HTTPException(
+        404,
+        "no file for this reel on this service. A reel is downloaded when it "
+        "is about to go out, so most of the queue has none - and without R2 "
+        "configured, one the worker prepared is on the worker's disk, which "
+        "the dashboard cannot read." if not settings.has_r2 else
+        "no file for this reel yet - it is downloaded when it is about to go out.",
+    )
 
 
 @router.post("/run")

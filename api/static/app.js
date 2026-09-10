@@ -28,8 +28,13 @@ async function api(path, options = {}) {
     },
   });
   if (response.status === 401) {
+    // Never reload here. The first thing the page does is call /overview to
+    // find out whether the stored token still works, so reloading on 401 is a
+    // loop: load, ask, get refused, reload, ask again - several times a
+    // second, forever, against a server that is answering correctly.
     localStorage.removeItem(KEY);
-    location.reload();
+    token = "";
+    gate();
     throw new Error("unauthorised");
   }
   if (!response.ok) {
@@ -333,6 +338,7 @@ function start() {
 }
 
 function gate() {
+  $("app").hidden = true;
   $("gate").hidden = false;
   const go = async () => {
     token = $("gate-token").value.trim();
@@ -348,4 +354,6 @@ function gate() {
   $("gate-token").onkeydown = (e) => { if (e.key === "Enter") go(); };
 }
 
-api("/overview").then(start).catch(gate);
+// The stored token is checked once, on load. A failure here means the gate,
+// not a retry - there is nothing to retry against.
+api("/overview").then(start).catch(() => {});
