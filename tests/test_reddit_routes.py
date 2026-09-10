@@ -453,3 +453,25 @@ class TestTheSilentClipCheck:
         import api.routes.reddit as route
         source = inspect.getsource(route.try_one)
         assert "remember" not in source
+
+
+class TestAttributionIsNotGuessed:
+    """The sidecar written beside every download is what answers "which post
+    was this?" when somebody asks for their video to be taken down. A field in
+    it being confidently wrong is worse than it being absent."""
+
+    def test_the_room_comes_from_the_permalink(self):
+        """yt-dlp leaves `channel` unset on Reddit, and falling through to
+        `uploader` filed a post from r/GYM under r/<whoever posted it>. The
+        permalink carries the room and cannot disagree with itself."""
+        entries = reddit_routes.parse_atom(REDDIT_FEED)
+        assert all(e.subreddit == "GYM" for e in entries)
+
+    def test_a_mirrors_links_still_carry_the_room(self):
+        entries = reddit_routes.parse_atom(MIRROR_FEED)
+        assert all(e.subreddit == "GYM" for e in entries)
+
+    def test_the_author_and_the_room_are_not_the_same_field(self):
+        """The bug that made this test exist: both read u/imkiyoko."""
+        entry = reddit_routes.parse_atom(REDDIT_FEED)[0]
+        assert entry.author == "someone" and entry.subreddit == "GYM"

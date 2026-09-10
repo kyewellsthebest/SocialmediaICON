@@ -53,6 +53,8 @@ ATOM = "{http://www.w3.org/2005/Atom}"
 
 #: A reddit post id as it appears in a permalink: /comments/<id>/slug/
 PERMALINK_ID = re.compile(r"/comments/([a-z0-9]+)", re.I)
+#: ...and the room it was posted in, from the same permalink.
+PERMALINK_ROOM = re.compile(r"/r/([A-Za-z0-9_]+)/")
 
 
 class RouteFailed(RuntimeError):
@@ -67,6 +69,7 @@ class Entry:
     title: str
     permalink: str
     author: str | None = None
+    subreddit: str = ""
 
 
 # --------------------------------------------------------------------------
@@ -105,6 +108,7 @@ def parse_atom(text: str) -> list[Entry]:
         found = PERMALINK_ID.search(href)
         if not found:
             continue
+        room = PERMALINK_ROOM.search(href)
         title = (node.findtext(f"{ATOM}title") or "").strip()
         author = node.findtext(f"{ATOM}author/{ATOM}name")
         if author:
@@ -117,6 +121,7 @@ def parse_atom(text: str) -> list[Entry]:
                 # is a URL yt-dlp has no extractor for.
                 permalink="https://www.reddit.com" + _path(href),
                 author=author or None,
+                subreddit=room.group(1) if room else "",
             )
         )
     return out
@@ -375,8 +380,15 @@ def hydrate(entries: list[Entry], limit: int) -> list[reddit.Post]:
                     title=entry.title or str(info.get("title") or "").strip(),
                     url=entry.permalink,
                     video_url=entry.permalink,
-                    subreddit=str(info.get("channel") or info.get("uploader") or "")
-                    .removeprefix("r/"),
+                    # From the permalink, not from yt-dlp. Reddit's extractor
+                    # leaves `channel` unset, and falling through to `uploader`
+                    # put the *author's* name in the subreddit field - so a
+                    # post from r/gym filed itself under r/<whoever posted it>.
+                    # That value goes into the attribution sidecar, which is
+                    # the file that answers "which post was this?" when someone
+                    # asks for their video to be taken down.
+                    subreddit=entry.subreddit or str(
+                        info.get("channel_id") or "").removeprefix("r/"),
                     author=entry.author or info.get("uploader_id"),
                     duration_s=float(duration) if duration else None,
                     ups=int(info.get("like_count") or 0),
