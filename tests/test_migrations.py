@@ -77,3 +77,34 @@ def test_revision_ids_follow_the_projects_convention() -> None:
     for name, (rev, _) in _migrations().items():
         assert rev.isdigit(), f"{name}: revision {rev!r} should be a bare number like '0004'"
         assert name.startswith(rev), f"{name}: filename does not start with its revision {rev!r}"
+
+
+def test_the_retiring_migration_drops_children_before_parents():
+    """Postgres refuses to drop a table something still points at. CASCADE
+    covers it, but the order is what makes the intent readable - and if the
+    CASCADE is ever removed, the order is what keeps it working."""
+    body = (VERSIONS / "0009_reels.py").read_text(encoding="utf-8")
+    listed = body.split("RETIRED = (")[1].split(")")[0]
+    order = [line.strip().strip('",') for line in listed.splitlines() if '"' in line]
+    assert order.index("metric_snapshots") < order.index("posts")
+    assert order.index("posts") < order.index("clips")
+    assert order.index("clips") < order.index("candidates")
+    assert order.index("tracked_snapshots") < order.index("tracked_videos")
+    # niches is pointed at by several of the others, so it goes last.
+    assert order[-1] == "niches"
+
+
+def test_the_tables_that_still_have_code_are_not_retired():
+    """accounts and credentials survive: posting did not change."""
+    body = (VERSIONS / "0009_reels.py").read_text(encoding="utf-8")
+    listed = body.split("RETIRED = (")[1].split(")")[0]
+    assert '"accounts"' not in listed
+    assert '"credentials"' not in listed
+
+
+def test_the_foreign_key_name_is_looked_up_rather_than_guessed():
+    """Postgres named it, not Alembic. A wrong guess fails the deploy on a
+    line that has nothing to do with the change being made."""
+    body = (VERSIONS / "0009_reels.py").read_text(encoding="utf-8")
+    assert "get_foreign_keys" in body
+    assert "accounts_niche_id_fkey" not in body

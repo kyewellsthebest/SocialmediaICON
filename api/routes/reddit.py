@@ -130,6 +130,36 @@ def ways_in(
     return PlainTextResponse(_report(rows, room, time_filter) + "\n")
 
 
+def _fetch_once(post: reddit.Post) -> Path:
+    """Download one post to a scratch folder, without recording anything.
+
+    Deliberately not the harvest's own download: that one brands the file and
+    writes the queue row. This is a check on the plumbing, so it has to be
+    repeatable on the same post.
+    """
+    import yt_dlp
+
+    from core.ytdlp import base_options, run
+
+    into = Path(settings.work_dir) / "reddit-try"
+    into.mkdir(parents=True, exist_ok=True)
+
+    def download(options: dict[str, Any]) -> None:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            ydl.download([post.video_url])
+
+    run(download, base_options(
+        format="bestvideo*+bestaudio/best",
+        merge_output_format="mp4",
+        outtmpl=str(into / f"{post.external_id}.%(ext)s"),
+        noplaylist=True,
+    ))
+    found = sorted(into.glob(f"{post.external_id}.*"))
+    if not found:
+        raise RuntimeError(f"nothing downloaded for {post.external_id}")
+    return found[0]
+
+
 def _streams(path: Path) -> dict[str, Any]:
     """What ffprobe says is actually inside the file.
 
@@ -200,11 +230,8 @@ def try_one(
                                 "video": len(posts), "reason": why}, why)
 
     best = max(keep, key=lambda p: p.ups)
-    into = Path(settings.work_dir) / "reddit-try"
     try:
-        from worker.tasks.gym_reddit import fetch
-
-        video = fetch(best, into)
+        video = _fetch_once(best)
     except Exception as exc:  # noqa: BLE001 - the failure is the measurement
         why = f"found {best.external_id} but could not download it:\n{exc}"
         return _answer(format, {"ok": False, "stage": "download", "route": route,

@@ -17,14 +17,11 @@ from core.config import settings
 
 log = logging.getLogger(__name__)
 
+# Two queues, because there are two jobs and they have different shapes: one
+# is a long download-and-encode pass, the other is a handful of API calls.
 QUEUE_NAMES = (
-    "ingest",
-    "transcribe",
-    "detect",
-    "rank",
-    "render",
+    "harvest",
     "publish",
-    "metrics",
 )
 
 _redis: Any = None

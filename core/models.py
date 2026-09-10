@@ -1,19 +1,23 @@
-"""Postgres schema (spec section 4).
+"""The whole schema.
 
-Status/enum-ish columns are stored as plain text with the allowed values kept
-next to them as module constants — the set of platforms and statuses changes
-faster than it is worth writing migrations for native enums.
+Four tables, because the job is four things: find a video, keep the best
+fifteen, brand one, post it.
+
+`reels` is the queue and the archive at once - a row is created the moment a
+video is worth keeping and is never deleted, so a video that has been posted
+cannot be found and posted again months later. What separates the queue from
+the archive is `state`, not the table.
+
+`accounts` and `credentials` survive from the pipeline this replaced because
+posting has not changed: the same four publishers need to know which handles
+to post to and which tokens to use.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any
+from datetime import datetime
 
 from sqlalchemy import (
-    BigInteger,
-    Boolean,
-    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -23,29 +27,18 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-# --- allowed values -------------------------------------------------------
+PLATFORMS = ("youtube", "instagram", "tiktok", "facebook", "snapchat", "threads")
 
-LICENSES = ("own", "licensed", "campaign", "permitted", "none")
-SOURCE_KINDS = ("youtube", "podcast", "upload")
-SOURCE_STATUSES = (
-    "registered",
-    "downloading",
-    "downloaded",
-    "transcribing",
-    "transcribed",
-    "detecting",
-    "ranking",
-    "rendering",
-    "done",
-    "failed",
-)
-CANDIDATE_STATUSES = ("new", "ranked", "selected", "rejected", "rendered")
-CLIP_STATUSES = ("rendered", "queued", "approved", "posted", "rejected")
-PLATFORMS = ("youtube", "instagram", "tiktok", "facebook", "snapchat")
-JOB_STATES = ("queued", "running", "done", "failed")
+#: A reel's life, in order.
+#:
+#: found     in the queue, competing on upvotes for one of the fifteen slots
+#: ready     downloaded and branded, waiting its turn to be posted
+#: posted    out. Kept forever so it is never picked up a second time
+#: dropped   pushed out of the queue by better videos, or refused on the way
+#:           through. Kept for the same reason.
+REEL_STATES = ("found", "ready", "posted", "dropped")
 
 
 class Base(DeclarativeBase):
@@ -58,238 +51,89 @@ class TimestampMixin:
     )
 
 
-class Niche(TimestampMixin, Base):
-    __tablename__ = "niches"
+class Reel(TimestampMixin, Base):
+    """One Reddit video, from the moment it is worth keeping to after it posts."""
+
+    __tablename__ = "reels"
+    __table_args__ = (UniqueConstraint("external_id", name="uq_reel_external_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
-    # config: {"cadence": "2/day", "caption_style": "karaoke_bold", ...}
-    config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
-    accounts: Mapped[list[Account]] = relationship(back_populates="niche")
-    sources: Mapped[list[Source]] = relationship(back_populates="niche")
+    # --- who made it, and where it came from. This is the attribution, and
+    # it is the answer to "which post was this?" when somebody writes in
+    # asking for their video to be taken down.
+    external_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    permalink: Mapped[str] = mapped_column(Text, nullable=False)
+    subreddit: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    author: Mapped[str | None] = mapped_column(String(80))
 
+    #: The author's own words about their own video, verbatim. This is what
+    #: gets posted as the caption - not a rewrite of it.
+    caption: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
-class Account(TimestampMixin, Base):
-    __tablename__ = "accounts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    niche_id: Mapped[int | None] = mapped_column(ForeignKey("niches.id", ondelete="SET NULL"))
-    platform: Mapped[str] = mapped_column(String(32), nullable=False)
-    handle: Mapped[str] = mapped_column(String(120), nullable=False)
-    # auth_ref points at the secret store / env key holding the token, never the token itself
-    auth_ref: Mapped[str | None] = mapped_column(String(200))
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
-
-    niche: Mapped[Niche | None] = relationship(back_populates="accounts")
-
-
-class Source(TimestampMixin, Base):
-    __tablename__ = "sources"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    niche_id: Mapped[int | None] = mapped_column(ForeignKey("niches.id", ondelete="SET NULL"))
-    url: Mapped[str] = mapped_column(Text, nullable=False)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="youtube")
-    # The whole legal posture of the project hangs off this column.
-    license: Mapped[str] = mapped_column(String(32), nullable=False)
-    title: Mapped[str | None] = mapped_column(Text)
+    #: What the queue ranks on. Everything else about a video is a matter of
+    #: taste; this is the one number several thousand people already voted on.
+    ups: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duration_s: Mapped[float | None] = mapped_column(Float)
+    posted_to_reddit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="found")
+    #: Why it was dropped, when it was. A queue that silently discards things
+    #: is a queue nobody can debug.
+    note: Mapped[str | None] = mapped_column(Text)
+
+    #: Where the branded file lives. Local path on the worker, or an object
+    #: key once storage is configured.
     storage_key: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="registered")
-    error: Mapped[str | None] = mapped_column(Text)
+    local_path: Mapped[str | None] = mapped_column(Text)
 
-    niche: Mapped[Niche | None] = relationship(back_populates="sources")
-    transcript: Mapped[Transcript | None] = relationship(
-        back_populates="source", uselist=False, cascade="all, delete-orphan"
-    )
-    candidates: Mapped[list[Candidate]] = relationship(
-        back_populates="source", cascade="all, delete-orphan"
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    posts: Mapped[list[ReelPost]] = relationship(
+        back_populates="reel", cascade="all, delete-orphan"
     )
 
 
-class Transcript(TimestampMixin, Base):
-    __tablename__ = "transcripts"
+class ReelPost(TimestampMixin, Base):
+    """One attempt to put one reel on one platform."""
+
+    __tablename__ = "reel_posts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    source_id: Mapped[int] = mapped_column(
-        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False, unique=True
+    reel_id: Mapped[int] = mapped_column(
+        ForeignKey("reels.id", ondelete="CASCADE"), nullable=False
     )
-    # words: [{"w": "hello", "start": 12.34, "end": 12.55}, ...]
-    words: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
-    full_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    provider: Mapped[str] = mapped_column(String(32), nullable=False)
-
-    source: Mapped[Source] = relationship(back_populates="transcript")
-
-
-class Candidate(TimestampMixin, Base):
-    __tablename__ = "candidates"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    source_id: Mapped[int] = mapped_column(
-        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
-    )
-    start_s: Mapped[float] = mapped_column(Float, nullable=False)
-    end_s: Mapped[float] = mapped_column(Float, nullable=False)
-    hook_score: Mapped[float | None] = mapped_column(Float)
-    emotion: Mapped[str | None] = mapped_column(String(32))
-    payoff_score: Mapped[float | None] = mapped_column(Float)
-    context_ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    novelty: Mapped[float | None] = mapped_column(Float)
-    predicted_score: Mapped[float | None] = mapped_column(Float)
-    rationale: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="new")
-
-    source: Mapped[Source] = relationship(back_populates="candidates")
-    clips: Mapped[list[Clip]] = relationship(
-        back_populates="candidate", cascade="all, delete-orphan"
-    )
-
-
-class Clip(TimestampMixin, Base):
-    __tablename__ = "clips"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    candidate_id: Mapped[int] = mapped_column(
-        ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
-    )
-    storage_key: Mapped[str | None] = mapped_column(Text)
-    caption_style: Mapped[str] = mapped_column(String(64), nullable=False, default="karaoke")
-    title: Mapped[str | None] = mapped_column(Text)
-    hashtags: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    duration_s: Mapped[float | None] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="rendered")
-
-    candidate: Mapped[Candidate] = relationship(back_populates="clips")
-    posts: Mapped[list[Post]] = relationship(back_populates="clip", cascade="all, delete-orphan")
-
-
-class Post(TimestampMixin, Base):
-    __tablename__ = "posts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    clip_id: Mapped[int] = mapped_column(ForeignKey("clips.id", ondelete="CASCADE"), nullable=False)
-    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="SET NULL"))
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
     platform_post_id: Mapped[str | None] = mapped_column(String(200))
     platform_url: Mapped[str | None] = mapped_column(Text)
+    #: Kept rather than raised: one platform refusing is not the others
+    #: refusing, and a failure nobody recorded is a failure nobody fixes.
     error: Mapped[str | None] = mapped_column(Text)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
-    clip: Mapped[Clip] = relationship(back_populates="posts")
-    snapshots: Mapped[list[MetricSnapshot]] = relationship(
-        back_populates="post", cascade="all, delete-orphan"
-    )
+    reel: Mapped[Reel] = relationship(back_populates="posts")
 
 
-class MetricSnapshot(Base):
-    """One row per pull — this is the time series Phase 4 learns from."""
+class Account(TimestampMixin, Base):
+    """A handle to post to."""
 
-    __tablename__ = "metric_snapshots"
+    __tablename__ = "accounts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
-    captured_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    views: Mapped[int | None] = mapped_column(Integer)
-    likes: Mapped[int | None] = mapped_column(Integer)
-    comments: Mapped[int | None] = mapped_column(Integer)
-    shares: Mapped[int | None] = mapped_column(Integer)
-    saves: Mapped[int | None] = mapped_column(Integer)
-    avg_watch_s: Mapped[float | None] = mapped_column(Float)
-    completion_rate: Mapped[float | None] = mapped_column(Float)
-
-    post: Mapped[Post] = relationship(back_populates="snapshots")
-
-
-class Job(TimestampMixin, Base):
-    __tablename__ = "jobs"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    type: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
-    error: Mapped[str | None] = mapped_column(Text)
-
-
-# --- Phase 4: trend scouting -------------------------------------------------
-
-TRACKED_STATUSES = ("new", "queued", "clipped", "ignored")
-
-
-class TrackedVideo(TimestampMixin, Base):
-    """A public video we are watching because it is performing well.
-
-    One row per source video per platform. The performance numbers here are the
-    latest reading; the history lives in `tracked_snapshots`.
-    """
-
-    __tablename__ = "tracked_videos"
-    __table_args__ = (UniqueConstraint("platform", "external_id", name="uq_tracked_platform_id"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    niche_id: Mapped[int | None] = mapped_column(ForeignKey("niches.id", ondelete="SET NULL"))
-    platform: Mapped[str] = mapped_column(String(32), nullable=False, default="youtube")
-    external_id: Mapped[str] = mapped_column(String(120), nullable=False)
-    url: Mapped[str] = mapped_column(Text, nullable=False)
-    title: Mapped[str | None] = mapped_column(Text)
-    channel_id: Mapped[str | None] = mapped_column(String(120))
-    channel_title: Mapped[str | None] = mapped_column(Text)
-    thumbnail_url: Mapped[str | None] = mapped_column(Text)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    duration_s: Mapped[float | None] = mapped_column(Float)
-
-    views: Mapped[int | None] = mapped_column(BigInteger)
-    likes: Mapped[int | None] = mapped_column(BigInteger)
-    comments: Mapped[int | None] = mapped_column(BigInteger)
-
-    # views per hour, measured between the last two snapshots where possible
-    velocity_vph: Mapped[float | None] = mapped_column(Float)
-    like_rate: Mapped[float | None] = mapped_column(Float)
-    # composite 0-100 used to order the trending table
-    score: Mapped[float | None] = mapped_column(Float)
-
-    # raw most-replayed curve from yt-dlp: [{"start","end","value"}]
-    heatmap: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
-    # peaks worth clipping: [{"start_s","end_s","value"}]
-    hot_segments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
-
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="new")
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    snapshots: Mapped[list[TrackedSnapshot]] = relationship(
-        back_populates="video", cascade="all, delete-orphan"
-    )
-
-
-class TrackedSnapshot(Base):
-    """One reading of a tracked video's counters. Append only."""
-
-    __tablename__ = "tracked_snapshots"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tracked_video_id: Mapped[int] = mapped_column(
-        ForeignKey("tracked_videos.id", ondelete="CASCADE"), nullable=False
-    )
-    captured_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    views: Mapped[int | None] = mapped_column(BigInteger)
-    likes: Mapped[int | None] = mapped_column(BigInteger)
-    comments: Mapped[int | None] = mapped_column(BigInteger)
-
-    video: Mapped[TrackedVideo] = relationship(back_populates="snapshots")
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    handle: Mapped[str] = mapped_column(String(120), nullable=False)
+    # Points at the secret store / env key holding the token, never the token.
+    auth_ref: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
 
 class Credential(Base):
     """A token the process refreshes for itself.
 
     Meta's tokens last 60 days and can be extended indefinitely, but only by
-    calling an endpoint before they lapse - and a process cannot rewrite its own
-    environment. So the current value lives here instead: seeded from the
+    calling an endpoint before they lapse - and a process cannot rewrite its
+    own environment. So the current value lives here instead: seeded from the
     environment on first use, then replaced by the refresh job. The environment
     variable stays the fallback and the way you rotate a token by hand.
     """
@@ -297,122 +141,8 @@ class Credential(Base):
     __tablename__ = "credentials"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # The environment variable this shadows, e.g. THREADS_ACCESS_TOKEN.
     name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
-
-
-# --- Phase 5: the studio -----------------------------------------------------
-
-RENDER_STATUSES = ("queued", "running", "ready", "failed")
-
-
-class Render(TimestampMixin, Base):
-    """One video the studio made, and everything that went into it.
-
-    Kept separate from `clips` on purpose. A clip is a cut out of somebody
-    else's video and carries a licence question; a render is made here from
-    public-record audio and carries none. They travel to the same platforms but
-    they are not the same object, and collapsing them would put a licence
-    column on rows that have no licence to record.
-    """
-
-    __tablename__ = "renders"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    archive_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
-    storage_key: Mapped[str | None] = mapped_column(Text)
-    duration_s: Mapped[float | None] = mapped_column(Float)
-    #: what was asked for: voice hook, grade, overlay, stock, tape offset
-    options: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    #: what actually made it in - which is rarely all of it
-    layers: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    #: the layers that did not, in words that name the variable that fixes them
-    warnings: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    cost_usd: Mapped[float | None] = mapped_column(Float)
-    elapsed_s: Mapped[float | None] = mapped_column(Float)
-    error: Mapped[str | None] = mapped_column(Text)
-    #: nothing reaches a platform until a person has watched it
-    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-
-
-class Catch(TimestampMixin, Base):
-    """A moment caught live, and the text record that outlives the video.
-
-    Deliberately narrow. The stream it came from is gigabytes and is deleted
-    the moment the clip is cut; what stays is this row - where it happened,
-    why the bot thought so, and what chat was feeling. That record is small
-    enough to keep forever and is the only thing worth keeping forever,
-    because it is what tells you which triggers actually produced views.
-
-    No frames, no envelopes, no contact sheets, no transcripts of the whole
-    stream. Those are working data, and working data that outlives its job is
-    just a disk bill.
-    """
-
-    __tablename__ = "catches"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    platform: Mapped[str] = mapped_column(String(16), nullable=False, default="kick")
-    channel: Mapped[str] = mapped_column(String(128), nullable=False)
-    #: the page a human can open to see the source - the whole provenance
-    #: trail, in one column
-    source_url: Mapped[str] = mapped_column(Text, nullable=False)
-    #: seconds into the stream, as best it can be known live
-    at_s: Mapped[float | None] = mapped_column(Float)
-    duration_s: Mapped[float | None] = mapped_column(Float)
-    #: where the clip itself lives, once uploaded. Null while it is local.
-    storage_key: Mapped[str | None] = mapped_column(Text)
-
-    #: what fired the trigger, per signal, exactly as core.moments computed it
-    why: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    score: Mapped[float | None] = mapped_column(Float)
-    #: chat's verdict: dominant emotion, agreement, counts per feeling
-    mood: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    #: the handful of lines chat actually typed, with counts. Not the whole log.
-    quotes: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
-    peak_viewers: Mapped[int | None] = mapped_column(Integer)
-
-    #: what a model said when it watched this, before it became a clip. Once
-    #: posting stops going past a person this is the only account of who
-    #: approved it, so an empty one has to read as "nobody watched this".
-    verdict: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    #: what was said in it - half of what the verdict was reading
-    transcript: Mapped[str | None] = mapped_column(Text)
-
-    #: how good this clip is against every other clip, and the working. With no
-    #: gate between clips, the ordering is what decides which ones survive.
-    rank_score: Mapped[float | None] = mapped_column(Float, index=True)
-    rank: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    #: what was heard, seen and on whose face - kept so the ranking can be
-    #: recomputed when the weights change rather than frozen at whatever they
-    #: happened to be on the day
-    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    #: How it was cropped to portrait - stacked over a webcam, or following
-    #: the action - and the numbers behind that choice. The decision is made
-    #: from a face detection on a file that is deleted once the portrait
-    #: version exists, so it cannot be worked out afterwards.
-    framing: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="caught")
-    #: set once the buffer it came from has been deleted, so an orphaned
-    #: working directory is visible rather than silently occupying disk
-    source_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    error: Mapped[str | None] = mapped_column(Text)
-
-
-class ApiQuota(Base):
-    """Daily API spend, so a scout run can refuse to blow the free tier."""
-
-    __tablename__ = "api_quota"
-    __table_args__ = (UniqueConstraint("day", "service", name="uq_quota_day_service"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    day: Mapped[date] = mapped_column(Date, nullable=False)
-    service: Mapped[str] = mapped_column(String(32), nullable=False)
-    units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -1,9 +1,13 @@
 """Environment configuration.
 
-Everything is optional so that the Phase 1 CLI can run end-to-end with nothing
-but an Anthropic key and a transcription key: no Postgres, no Redis, no R2.
-Each subsystem exposes an `is_configured` style property that callers check
-before reaching for it.
+Everything is optional, so the app boots and tells you what is missing rather
+than refusing to start with a stack trace. Each subsystem exposes a property
+that says whether it is actually wired up, and the callers check it.
+
+What is *not* here is as deliberate as what is. There is no model key, no
+transcription key, no stock-footage key and no speech key, because nothing in
+this system reads, watches or writes anything. A finished video is downloaded,
+a badge is drawn on it, and the author's own caption goes out with it.
 """
 
 from __future__ import annotations
@@ -11,33 +15,32 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _names(raw: str) -> list[str]:
-    """A comma-separated setting, as a list of lowercase names.
+    """A comma-separated setting, as a list of names.
 
     Forgiving on purpose, because the failure it prevents is total and silent.
-    LIVE_ONLY_CATEGORIES arrived in production as "=irl" - the name went in the
-    name box and "=irl" in the value box - so the filter looked for a category
-    called "=irl", refused all 62 streams on Kick, and the bot watched nothing
-    for thirty-six minutes while every page said it was fine.
+    A dashboard variable once arrived in production as "=irl" - the name went
+    in the name box and "=irl" in the value box - so the filter looked for a
+    thing called "=irl", matched nothing, and every page said it was fine.
 
     So an entry is stripped of spaces and quotes, and anything up to and
-    including a "=" is dropped: "=irl", "irl", ' "IRL" ' and a whole pasted
-    LIVE_ONLY_CATEGORIES=irl all mean irl. A name cannot contain an equals
-    sign, so nothing legitimate is lost.
+    including a "=" is dropped: "=GYM", "GYM", ' "gym" ' and a whole pasted
+    REDDIT_SUBREDDITS=GYM all mean GYM. A name cannot contain an equals sign,
+    so nothing legitimate is lost.
     """
     out: list[str] = []
     for part in (raw or "").split(","):
         name = part.strip().strip("\"'").strip()
         if "=" in name:
             name = name.rsplit("=", 1)[1].strip().strip("\"'").strip()
+        name = name.removeprefix("r/").removeprefix("/r/").strip()
         if name:
-            out.append(name.lower())
+            out.append(name)
     return out
 
 
@@ -48,7 +51,7 @@ class Settings(BaseSettings):
 
     env: str = "dev"
 
-    # infrastructure
+    # --- infrastructure ---------------------------------------------------
     database_url: str | None = None
     redis_url: str | None = None
 
@@ -57,85 +60,59 @@ class Settings(BaseSettings):
     r2_secret_access_key: str | None = None
     r2_bucket: str | None = None
 
-    # models / providers
-    anthropic_api_key: str | None = None
-    anthropic_model: str = "claude-opus-5"
-    anthropic_effort: str | None = None
+    #: The dashboard is reachable from the public internet the moment it
+    #: deploys. Without this, so is the button that posts things.
+    dashboard_token: str | None = None
 
-    transcribe_provider: str = "assemblyai"
-    assemblyai_api_key: str | None = None
-    deepgram_api_key: str | None = None
+    work_dir: Path = REPO_ROOT / ".work"
+    local_storage_dir: Path = REPO_ROOT / ".storage"
 
-    # trend scouting
-    youtube_api_key: str | None = None
-
-    # Reddit. Free, answers from a datacenter, and its search is site-wide -
-    # one query reaches every subreddit rather than one at a time.
+    # --- where the video comes from ---------------------------------------
+    #: A free script app at reddit.com/prefs/apps. Not required - the feed
+    #: routes need no app at all - but it is the only route that can search,
+    #: and it reports vote counts even when a subreddit's feed does not.
     reddit_client_id: str | None = None
     reddit_client_secret: str | None = None
-    reddit_user_agent: str = "clip-engine/0.1 (scout)"
-    reddit_keywords: str = ""  # comma separated; blank reuses SCOUT_KEYWORDS
-    # A 20-second clip of an already-short clip is not worth a render.
-    reddit_min_duration_s: float = 45.0
-    #: ...and the longest. The two bounds serve opposite jobs and both are
-    #: needed: the minimum was for finding long source video to cut down, this
-    #: is for finding video already short enough to post as it stands.
-    #:
-    #: Sixty seconds because that is where Reels, Shorts and TikTok all stop
-    #: treating a video as short-form. A two-second clip is not a post either,
-    #: hence the floor below it.
+    reddit_user_agent: str = "putitupp/1.0 (repost queue)"
+
+    #: The rooms to read. Not optional: blank would mean site-wide search, and
+    #: search exists only on the JSON routes - the ones a cloud host is
+    #: refused from. Cast wide, because the queue only keeps fifteen and a
+    #: narrow list runs dry by Wednesday.
+    reddit_subreddits: str = (
+        "GYM,weightroom,bodyweightfitness,gymsnark,fitness,naturalbodybuilding,"
+        "powerlifting,weightlifting,calisthenics,strength_training,"
+        "Gymmotivation,gainit,swoleacceptance,formcheck,homegym,"
+        "crossfit,bodybuilding,Fitness_India,workout,physicaltherapy,"
+        "gymfails,funnyworkout,PublicFreakout,instantkarma,WinStupidPrizes"
+    )
+    #: hour | day | week | month | year | all. The window the rooms are ranked
+    #: over. Wider finds better video and finds the same video every day;
+    #: narrower keeps the queue fresh and can come up empty on a quiet room.
+    reddit_time_filter: str = "week"
+    #: Sixty seconds is where Reels, Shorts and TikTok all stop treating a
+    #: video as short-form. Two seconds is not a post, hence the floor.
     reddit_max_duration_s: float = 60.0
     reddit_floor_duration_s: float = 4.0
+    #: Only applied on routes that can see a score. The feed routes cannot, and
+    #: their top-of-window sort is standing in for it.
     reddit_min_upvotes: int = 500
-    reddit_time_filter: str = "month"  # hour|day|week|month|year|all
-    #: Subreddits to read, comma separated. Naming the rooms is what makes the
-    #: feed coherent - "gym" site-wide returns memes, screenshots of texts and
-    #: photographs of gym*nasium* architecture.
-    #:
-    #: This has a real default rather than being blank, because blank means
-    #: site-wide search, and search only exists on the JSON routes. On a host
-    #: where only the feed routes answer - which is what Railway measured -
-    #: an unset value is not "search everything", it is "find nothing".
-    #:
-    #: Cast wide to begin with: a week of numbers decides which of these earn
-    #: their place better than a guess does.
-    reddit_subreddits: str = (
-        "GYM,weightroom,bodyweightfitness,gymfails,fitness,naturalbodybuilding"
-    )
-    # Reddit blocks unauthenticated reads from datacenter ranges. Credentials
-    # are the better answer; this is the fallback, and defaults to reusing
-    # the downloader's proxy pool.
-    reddit_proxy: str | None = None
-    #: Which ways in to try, comma separated, in order. Blank tries them all
-    #: in the order core.reddit_routes lists them. Set it to pin a route once
-    #: you know which one your host can use - the others each cost a failed
-    #: request before they give up.
-    #:
-    #: oauth, json, proxied, reader, mirror, rss
+    #: How many entries to read per room per run. The feed routes look each
+    #: candidate up individually, so this multiplied by the room count is the
+    #: length of a run.
+    reddit_per_room: int = 12
+
+    #: Which ways in to try, in order. Blank tries all six. Pin it once you
+    #: know which one this host can use - the others cost a failed request
+    #: each before they give up. oauth, json, proxied, reader, mirror, rss
     reddit_routes: str = ""
+    reddit_proxy: str | None = None
     #: A public reader service, which fetches a page and returns its text.
-    #: Their address does the asking, which is the point: Reddit's objection
-    #: is to ours. Free at this volume and needs no account.
+    #: Their address does the asking, which is the point.
     reddit_reader: str = "https://r.jina.ai"
-    #: Optional free key for the above, which only raises the rate limit.
     reddit_reader_key: str | None = None
-    #: Redlib front-ends, comma separated. A different domain entirely, so a
-    #: block on reddit.com does not reach them. Public instances come and go,
-    #: hence a list, and hence configuration rather than a constant.
-    #: The daily harvest: find short gym video, take it whole, file who made
-    #: it. Off by flipping this rather than by emptying the room list, so the
-    #: rooms survive being turned off and on.
-    gym_harvest_enabled: bool = True
-    #: How many to take per run. Ten a day is the stated target; the bound is
-    #: here so a busy day cannot turn into a hundred downloads.
-    gym_harvest_per_run: int = 10
-    #: How often the harvest runs. Daily: top-of-day is a settled list, so a
-    #: second pass at it mostly re-reads the same posts and skips them.
-    gym_harvest_interval_minutes: int = 24 * 60
-    #: How many downloaded files to keep on disk. Nothing posts them yet, so
-    #: without this the folder grows until the container runs out of room -
-    #: and Railway answers a full disk by failing writes, not by warning.
-    gym_harvest_keep: int = 30
+    #: Redlib front-ends: a different domain, so a block on reddit.com does
+    #: not reach them. Public instances come and go, hence configuration.
     reddit_mirrors: str = (
         "https://safereddit.com,"
         "https://redlib.catsarch.com,"
@@ -144,43 +121,43 @@ class Settings(BaseSettings):
         "https://redlib.privacyredirect.com"
     )
 
-    # yt-dlp. YouTube challenges datacenter IPs, so which player client is
-    # used matters, and the set that passes changes every few months -
-    # hence a list to try in order rather than a value in the code.
-    ytdlp_player_clients: str = "tv,web_safari,mweb,android_vr"
-    ytdlp_cookies: str | None = None  # cookies.txt contents, pasted as-is
-    ytdlp_cookies_b64: str | None = None  # or base64, if the text gets mangled
-    ytdlp_cookiefile: str | None = None  # or a path, for local runs
-    ytdlp_proxy: str | None = None  # residential proxy, if you have one
-    # Several, tried in turn. Providers sell IPs in blocks and they are
-    # shared, so they are not equally burned - one being challenged says
-    # nothing about the next. Accepts full URLs or the ip:port:user:pass
-    # lines proxy dashboards export, separated by commas or newlines.
+    # --- yt-dlp -----------------------------------------------------------
+    #: Only needed if Reddit starts refusing this host's address. Accepts full
+    #: URLs or the ip:port:user:pass lines proxy dashboards export.
+    ytdlp_proxy: str | None = None
     ytdlp_proxies: str | None = None
-    # How many to try before giving up on a source. Twenty proxies times
-    # five clients is a hundred attempts and several minutes; a handful is
-    # enough to tell a burned IP from a burned block.
     ytdlp_max_proxies_per_run: int = 4
-    # Accept formats that would normally be skipped for lacking a proof-of-
-    # origin token. They can be selected but often 403 when actually fetched,
-    # so this is off by default: a client offering nothing is a clean failure
-    # that falls through to the next one, while a client offering something
-    # unfetchable wastes the whole attempt. Only worth enabling with no proxy,
-    # where a doomed attempt still beats no attempt.
-    ytdlp_allow_missing_pot: bool = False
-    # Residential proxies bill per gigabyte, and video is heavy: a 12 minute
-    # 1080p source is 200-400 MB, 720p roughly half that. Since the render
-    # crops 16:9 to 9:16 and upscales either way, this is the dial between
-    # a sharper clip and a smaller bill.
-    ingest_max_height: int = 1080
-    # auto  - the worker downloads the video itself (needs an IP YouTube
-    #         will serve, so a proxy or a lucky host)
-    # agent - the source waits for scripts/local_agent.py to supply the file
-    #         from a machine with an ordinary home connection
-    ingest_mode: str = "auto"
 
-    # publishing
+    # --- branding ---------------------------------------------------------
+    #: The badge's width as a share of the video's own width. A fraction
+    #: rather than pixels: the same 96px logo is a discreet mark on a
+    #: 1080-wide video and a sticker over someone's face on a 480-wide one.
+    brand_width_share: float = 0.13
+    #: How far in from the corner, same units. Generous on purpose - every
+    #: platform draws a handle or a "reposted" chip near the top-left, and a
+    #: badge tucked right into the corner ends up half underneath it.
+    brand_inset_share: float = 0.035
+    brand_opacity: float = 1.0
+    #: 18 is visually lossless for this kind of source; the file is small
+    #: because the video is short, not because it is squeezed.
+    brand_crf: int = 18
+
+    # --- the queue --------------------------------------------------------
+    harvest_enabled: bool = True
+    #: Daily. Top-of-window is a settled list, so a second pass at it mostly
+    #: re-reads posts the queue already knows about.
+    harvest_interval_minutes: int = 24 * 60
+    #: How many wait their turn. A run that finds more than this keeps the
+    #: best, and a later run with a better video pushes the weakest out.
+    queue_size: int = 15
+    #: How many go out per run.
+    post_per_run: int = 8
+
+    # --- publishing -------------------------------------------------------
     publisher: str = "manual"  # manual | upload_post | youtube | meta
+    #: Nothing is posted until this is on, whatever else is configured.
+    autopost_enabled: bool = False
+
     upload_post_api_key: str | None = None
     upload_post_user: str | None = None
     upload_post_base_url: str = "https://api.upload-post.com"
@@ -189,380 +166,31 @@ class Settings(BaseSettings):
     youtube_client_secret: str | None = None
     youtube_refresh_token: str | None = None
 
-    # Meta — Instagram Reels, Facebook Reels, Threads.
-    # Pin the Graph version: Meta retires each one roughly two years after
-    # release, and an unpinned call silently follows whatever is current.
-    meta_graph_version: str = "v23.0"
+    meta_graph_version: str = "v21.0"
     meta_app_id: str | None = None
     meta_app_secret: str | None = None
-    meta_access_token: str | None = None  # long-lived user or page token
-    instagram_user_id: str | None = None  # the IG *business* account id
-    # Set this to use Instagram Login instead of Facebook Login. That route
-    # talks to graph.instagram.com and does not care which Page the account
-    # is linked to - the way out when the Page is tied to a different
-    # Instagram account than the one you post from.
+    meta_access_token: str | None = None
+    instagram_user_id: str | None = None
     instagram_access_token: str | None = None
-    # Instagram Login and Threads each issue their own app id/secret pair,
-    # shown on their own use case page. The exchange is signed with those,
-    # not with the Meta app secret - a detail that costs an evening to find
-    # because the error it produces names the token, not the secret.
     instagram_app_id: str | None = None
     instagram_app_secret: str | None = None
     facebook_page_id: str | None = None
-    facebook_page_token: str | None = None  # falls back to meta_access_token
+    facebook_page_token: str | None = None
     threads_user_id: str | None = None
-    threads_access_token: str | None = None  # a separate token from the FB one
+    threads_access_token: str | None = None
     threads_app_id: str | None = None
     threads_app_secret: str | None = None
-    # Meta downloads and transcodes the file itself; a 60s 1080x1920 clip is
-    # usually done inside a minute, but the queue is shared and can be slow.
-    meta_publish_timeout_s: int = 420
-    # A quarter of the 60-day token life: three missed runs still leave a
-    # fortnight before anything lapses.
+    meta_publish_timeout_s: int = 300
+    #: Meta tokens die at 60 days and cannot be revived afterwards, so the
+    #: refresh runs at a quarter of that: three failed runs still leave a
+    #: fortnight of slack.
     token_refresh_interval_days: int = 14
 
-    # --- studio: original content from public-record audio ---------------
-    # The studio makes videos rather than clipping them: real archive audio,
-    # an AI narrator over the top, stock footage underneath, and a drawn
-    # instrument overlay that never changes. Nothing here is needed by the
-    # clip pipeline, so every key is optional and the studio reports what is
-    # missing rather than failing at render time.
-
-    # Narration. gpt-4o-mini-tts bills per minute of audio, not per character,
-    # and takes a plain-English `instructions` field - which is what stops it
-    # sounding like an assistant reading a script.
-    openai_api_key: str | None = None
-    # openai | elevenlabs. ElevenLabs is the better voice and costs about four
-    # pounds a month more at ten videos a day; OpenAI is the cheaper default
-    # and takes a plain-English instructions field.
-    tts_provider: str = "openai"
-    tts_model: str = "gpt-4o-mini-tts"
-    tts_voice: str = "onyx"
-
-    # ElevenLabs. The voice is named rather than an id: ids are opaque and
-    # change per account, and the client resolves a name against /v1/voices.
-    elevenlabs_api_key: str | None = None
-    elevenlabs_voice: str = "Adam"
-    # v3 is the best and dearest; turbo is half the price and close enough for
-    # narration that sits under a recording.
-    elevenlabs_model: str = "eleven_multilingual_v2"
-    tts_instructions: str = (
-        "Male, low register. Documentary narration. Measured and unhurried, "
-        "slightly weary. Do not sound impressed by what you are saying. Fall "
-        "in pitch at the end of every sentence. Leave a beat before the final "
-        "clause."
-    )
-
-    # Stock footage. Pexels is free, has a documented API, and licenses for
-    # commercial use with no attribution - the only stock source that
-    # automates cleanly. 200 requests an hour is far more than this needs.
-    pexels_api_key: str | None = None
-    # Clips are cached by search term so the same twenty downloads serve
-    # hundreds of renders. Raising this buys variety at the cost of disk.
-    stock_cache_size: int = 40
-
-    # Render shape. 24fps is deliberate: it is a third fewer overlay frames
-    # to draw than 30 and reads as film rather than video.
-    # How much of a long recording to transcribe looking for a moment. Half an
-    # hour of mono 16 kHz mp3 is about 14 MB, inside OpenAI's 25 MB limit, and
-    # costs roughly a penny to transcribe.
-    studio_scan_minutes: float = 25.0
-    studio_fps: int = 24
-    studio_crf: int = 20
-    # How hard the footage is pushed into the source's world, 0..1. At 0 the
-    # stock clip shows through untouched and looks like stock; at 1 it is
-    # crushed far enough that two clips from different shoots match.
-    studio_grade: float = 0.88
-    # How opaque the drawn instrument layer sits over it, 0..1.
-    studio_overlay: float = 0.62
-    # Approve-before-post. While this is on, a finished render waits in the
-    # studio until you have watched it; nothing reaches a platform on its own.
-    studio_manual_only: bool = True
-
-    # dashboard access (the app is public on Railway unless this is set)
-    dashboard_token: str | None = None
-
-    # automation cadence
-    scout_enabled: bool = True
-    # Which platforms the scout draws from. Comma separated; a platform
-    # left out is never searched, whatever keys are configured.
-    scout_sources: str = "youtube,reddit"
-    scout_interval_minutes: int = 360  # every 6h - hourly is a waste of quota
-    scout_keywords: str = ""  # comma separated, per niche
-    scout_region: str | None = None
-    scout_video_duration: str = "medium"  # short | medium | long
-    scout_max_keywords: int = 4
-    scout_track_limit: int = 30
-    # Quality gate. A 3k-view upload is not a trend, and a clip whose
-    # audio is in a language your audience does not speak cannot be
-    # captioned into something they will watch.
-    scout_min_views: int = 100_000
-    scout_language: str = "en"  # blank to accept any language
-    # How far back to look. Wider than the view floor suggests, because a
-    # six-month-old video with a strong replay peak is better clip material
-    # than a fresh one with none - the peak is what gets cut, not the date.
-    scout_max_age_days: int = 180
-
-    metrics_interval_minutes: int = 60
-    autopost_enabled: bool = False
-    autopost_per_day: int = 10
-
-    # pipeline defaults
-    default_niche: str = "general"
-    top_n_clips: int = 3
-    # Platforms stopped rewarding hashtag walls; a handful of specific tags
-    # outperforms thirty broad ones and does not read as automated.
-    hashtag_count: int = 4
-    min_clip_s: float = 15.0
-    max_clip_s: float = 60.0
-    window_minutes: int = 6
-
-    # Running cost estimate shown on the dashboard. Fixed is what you pay
-    # whatever happens (host, storage, proxies); per-source is the
-    # transcription and model calls one video costs to process.
-    cost_fixed_monthly: float = 20.0
-    cost_per_source: float = 0.55
-    monthly_budget: float = 100.0
-
-    # --- live capture -------------------------------------------------
-    #
-    # How many streams to hold at once. Ten, and the cost of that is real and
-    # worth knowing before the bill arrives rather than after.
-    #
-    # Each buffer is a continuous 1080p download, because the clips that ship
-    # are 1080p and detail that was never downloaded cannot be recovered
-    # later. At roughly 8Mbps that is 86GB a day per stream - 860GB a day at
-    # ten, against 260GB at three. It is inbound traffic, which Railway does
-    # not bill, so this is throughput rather than money: ten streams is a
-    # sustained 80Mbps.
-    #
-    # The CPU is the harder number. Reading the senses on one stream costs
-    # about 7 seconds per 30-second window, and every stream is read every 20
-    # seconds, so ten streams is around 3.5 cores continuously against 1 for
-    # three. Disk is not a problem: the buffer is a rolling five minutes, so
-    # ten streams hold about 3GB between them.
-    #
-    # Ten is here because the question being asked of it is "how many streams
-    # does it take to reach ten clips a day", and that is not answerable from
-    # three. The Live page reports what each stream actually yields, so the
-    # number can come down once the answer is in.
-    live_enabled: bool = False
-    live_slots: int = 10
-    #: Rank a stream must fall past before it is dropped, so two channels
-    #: trading places around the cutoff do not cause a reconnect each time.
-    #: Held well clear of the slot count: with ten slots the churn around the
-    #: cutoff is ten times more likely to happen at all.
-    live_drop_rank: int = 16
-    live_window_s: float = 300.0
-    live_segment_s: float = 4.0
-    #: Which channels the bot may watch, by name, comma separated.
-    #:
-    #: The roster picks by viewers and chat rate, and the profile refuses the
-    #: formats that cannot produce a clip. Neither of those is a substitute for
-    #: naming the streamers you actually want: a watch party, a solo grind and
-    #: a person being funny with their friends all look identical to a listing
-    #: row, and the difference between them is the whole business.
-    #:
-    #: Set it and nothing else is watched, whatever the directory says. Leave
-    #: it blank and every eligible channel is fair game, which is the
-    #: behaviour this had before.
-    live_only_channels: str = ""
-    #: ...and the opposite, for when the list is open but one channel is not
-    #: worth a slot. Applies even to a channel named in live_only_channels, so
-    #: a single name can suspend a stream without editing the list.
-    live_never_channels: str = ""
-    #: Which Kick categories the bot may watch, comma separated. Blank means
-    #: any category the profile research does not refuse.
-    #:
-    #: "irl" is the one this was asked for and it is the one the material
-    #: supports: a person out in the world talking to people produces moments
-    #: the senses can find, where a watch party or a solo grind produces a
-    #: constant level and nothing to detect. This is coarser than the profile
-    #: research and it runs before it, which is the point - the research costs
-    #: a model call per channel and a category is free.
-    live_only_categories: str = ""
-    #: The clip that ships. Buffering below this caps what can ever be posted,
-    #: because you cannot recover detail that was never downloaded.
-    live_delivery_height: int = 1080
-    #: Lead and trail around the moment. Chat reacts after the fact, so most
-    #: of the clip is what happened before the reaction.
-    live_lead_s: float = 22.0
-    live_trail_s: float = 8.0
-    #: The longest a clip may run. Short-form platforms stop rewarding much
-    #: past this, and a moment that has not ended in a minute is a segment.
-    live_max_clip_s: float = 59.0
-    #: Below this a window is not a moment, whatever else is true. The caps
-    #: cap how many clips a day; this decides whether there is one at all.
-    #: Without it the watcher cut its best five minutes of nothing every hour,
-    #: because something always scores highest.
-    live_min_score: float = 20.0
-    #: ...and this much of it has to come from something actually happening
-    #: rather than from how busy or loud the channel generally is.
-    live_min_event_score: float = 15.0
-    #: What a moment with only *one* kind of evidence has to clear instead.
-    #:
-    #: A camera carried down a street surges constantly against its own
-    #: baseline, so motion alone scores 40 all evening on an IRL stream and
-    #: every one of those readings cleared a bar of 15. None of them was a
-    #: moment. What separates a moment from a coincidence is different kinds
-    #: of evidence landing together - the picture moved AND somebody shouted -
-    #: and the ranking has always believed that; the cut did not.
-    #:
-    #: So: two families agreeing clear the bar above. One family on its own
-    #: clears this, which is high enough that it has to be something genuinely
-    #: enormous rather than a pan. Not a ban - a man falling over with the
-    #: sound muted is still a clip - a price.
-    live_lone_signal_score: float = 55.0
-    # A model looks at the frames, the transcript and the evidence and says
-    # whether anything is happening. It is the only thing that can tell a man
-    # laughing at his own joke about nothing from a man falling off a chair -
-    # they make the same envelope.
-    #
-    # Haiku, and deliberately not the best available. The job is to follow a
-    # story across a few dozen frames - he drinks something disgusting, the
-    # room laughs, he is sick - and that is perception, not reasoning. A
-    # better model finds a few more good clips out of a hundred; at five to
-    # ten posts a day, more clips *looked at* is worth more than a better
-    # opinion on a fifth of them. The measured bill per look, with the system
-    # prompt cached:
-    #
-    #     haiku-4.5   $0.008      opus-5 high    $0.074
-    #     sonnet-5    $0.016      opus-5 medium  $0.041
-    #
-    # One environment variable moves it back up. Every verdict records which
-    # model made it, so that decision can be revisited by comparing what two
-    # of them said about the same clips rather than by argument - which is
-    # what the /compare tool is for.
-    #
-    # The known weak spot, worth watching: the hard case is not "what is the
-    # story", it is noticing there is no story behind a screen full of motion.
-    # That is the betting-screen clip. If those come back, this is why.
-    verdict_model: str = "claude-haiku-4-5"
-    verdict_effort: str = "medium"
-    #: How many frames it gets to look at. One every three or four seconds.
-    verdict_frames: int = 12
-    #: Whether it may look at all, and what to do when it cannot. Refusing to
-    #: cut something nobody has watched is the right default the moment
-    #: posting stops going past a person.
-    verdict_enabled: bool = True
-    #: A clip nothing watched may not be *posted* automatically. It may still
-    #: be kept for a person to look at - those are different questions, and
-    #: conflating them cost a day of clips: this used to delete the candidate,
-    #: so once the day's look budget was spent nothing could be caught at all.
-    verdict_required_to_post: bool = True
-    #: How sure it has to be. Refusing a mediocre clip costs one clip; posting
-    #: one costs the account.
-    verdict_min_confidence: float = 0.55
-    #: What may be spent looking at clips in a day, in US dollars.
-    #:
-    #: A budget, not a count. A count of looks is a guess at a bill dressed up
-    #: as a limit, and it goes wrong in both directions: thirty Opus looks was
-    #: $2.20 a day, thirty Haiku looks is 25 cents, and neither number tells
-    #: anyone what they are spending. Priced from the usage the API actually
-    #: reports, so changing model or frame count changes how many looks fit
-    #: rather than silently changing the bill.
-    #:
-    #: $2.50 a day is $76 a month, which at Haiku is around 300 clips judged a
-    #: day - almost certainly more than the watcher cuts, so in practice
-    #: everything gets looked at. The rest of a $150-200 AUD month is Railway
-    #: and headroom. Raise this and more gets judged; there is no other cap.
-    verdict_daily_usd: float = 2.50
-    #: How many cut-but-undecided moments to hold while waiting for an output
-    #: slot. The buffer only remembers five minutes and the gap between clips
-    #: is an hour, so a moment that is not cut immediately is gone - holding
-    #: the file is the only way to still have it when the slot opens.
-    live_shortlist_max: int = 5
-    #: How long a moment waits to be compared before a slot is spent on it.
-    #:
-    #: The shortlist exists to make this a chooser rather than a watcher, and
-    #: it was not doing that: tick() added a candidate and called harvest() in
-    #: the same pass, so every moment was cut and spent the instant it cleared
-    #: the bar and never met a competitor. With a sixty-a-day cap and no gap
-    #: between clips, "keep the best five" only ever held one.
-    #:
-    #: The offline tool this is meant to match reads a whole stretch and takes
-    #: the best moments *out of it*. This is that, in a live loop: a moment
-    #: waits ten minutes, and by the time a slot is spent on it every other
-    #: moment from its own ten minutes is in the list and sorted above it if
-    #: it is better. The weakest are already dropped on insert.
-    #:
-    #: Ten minutes because the buffer is not involved - the clip is extracted
-    #: to disk when it is cut, so holding it costs a file, not a stream - and
-    #: because it has to be comfortably less than live_hold_max_s or a moment
-    #: could go stale waiting to be judged.
-    live_review_s: float = 600.0
-    #: ...and how stale a held moment may be when it is finally used. A good
-    #: moment is good whenever it is posted, but not indefinitely.
-    live_hold_max_s: float = 2700.0
-    #: Who is this streamer, and should the bot watch them at all. One call per
-    #: channel with web search, cached for a week, so the bill is a handful of
-    #: cents a day however many channels come and go.
-    profile_model: str = "claude-opus-5"
-    profile_effort: str = "medium"
-    #: How sure the research has to be. An unknown streamer is an unknown, not
-    #: an approval: being wrong here wastes days of a watch slot.
-    profile_min_confidence: float = 0.6
-    profile_enabled: bool = True
-    #: Whether a channel the research could not reach may be watched anyway.
-    #: False means a broken key stops the bot picking anybody new, which is
-    #: safer than it quietly going back to watching whatever is biggest.
-    profile_required: bool = True
-    #: Listening to the words as they are said, rather than only once a clip
-    #: has already been chosen. Off by default and metered when on, because
-    #: this is the one thing here that costs money per minute of stream rather
-    #: than per clip: three streams around the clock is 4,300 stream-minutes a
-    #: day, which at any provider's per-minute rate is more than the entire
-    #: budget for everything else together. The budget below is in minutes of
-    #: audio a day - set it to what you are willing to spend and it will stop
-    #: there rather than surprise you.
-    speech_live: bool = False
-    speech_minutes_per_day: float = 240.0
-    #: Only transcribe windows the ear can hear somebody talking in. A stream
-    #: playing music to an empty chair is not worth a penny a minute.
-    speech_min_share: float = 0.15
-    #: How long the words are kept, matching how long chat is kept.
-    speech_window_s: float = 300.0
-    #: How hard chat has to spike, as a multiple of its own recent baseline.
-    live_trigger_ratio: float = 3.0
-    #: Nothing is posted anywhere yet - clips are cut and held for review.
-    live_posting_enabled: bool = False
-    #: Caps. Ten a day is what one page can post without the median dragging
-    #: reach down; an hour apart is what stops a burst reading as automated.
-    #: How many clips a day are *kept*, not how many are cut. Everything that
-    #: clears the bar is cut and ranked; this is where the list is trimmed, and
-    #: it trims the weakest rather than the newest.
-    live_clips_per_day: int = 60
-    #: The rank a finished clip has to beat to be kept at all.
-    #:
-    #: Distinct from live_min_score, and the difference has caused real
-    #: confusion: that one is a *threshold on a moment*, scored out of the raw
-    #: evidence before anything is cut, and this is a *rank on a finished
-    #: clip*, scored out of 100 against every other clip. The two numbers
-    #: being similar is a coincidence of scale, not a relationship, so a
-    #: moment scoring 46 could and did become a clip ranked 19.
-    #:
-    #: A clip below this is not a clip somebody will scroll past - it is one
-    #: that makes the page worse by being on it. The one exception is a clip
-    #: a model watched and approved, which is kept whatever the arithmetic
-    #: says: the verdict is the only judgement here formed by something that
-    #: saw the video, and arithmetic does not get to overrule it.
-    live_keep_rank: float = 20.0
-    #: Zero. There was an hour between clips and it was the single worst rule
-    #: in the system: the buffer remembers five minutes, so a moment that was
-    #: not cut immediately was gone, and the bot ended up clipping whatever
-    #: happened to be happening when the hour turned over. Everything is cut
-    #: now and the ranking decides what survives.
-    live_min_gap_minutes: int = 0
-    #: Directory polling. The listing moves slowly and every call is a request.
-    live_roster_poll_s: float = 300.0
-
-    # local working dirs (used when R2 is not configured)
-    local_storage_dir: Path = REPO_ROOT / ".storage"
-    work_dir: Path = REPO_ROOT / ".work"
+    # --- derived ----------------------------------------------------------
 
     @property
     def is_prod(self) -> bool:
-        return self.env.lower() in {"prod", "production"}
+        return self.env.lower() in ("prod", "production")
 
     @property
     def has_db(self) -> bool:
@@ -573,170 +201,18 @@ class Settings(BaseSettings):
         return bool(self.redis_url)
 
     @property
-    def has_r2(self) -> bool:
+    def has_storage(self) -> bool:
         return all(
-            [self.r2_account_id, self.r2_access_key_id, self.r2_secret_access_key, self.r2_bucket]
+            [self.r2_account_id, self.r2_access_key_id,
+             self.r2_secret_access_key, self.r2_bucket]
         )
 
-    # --- surviving an unresolved Railway reference -------------------------
-    #
-    # A ${{Service.VAR}} reference that cannot resolve does not fail loudly -
-    # it becomes an empty string, which reads exactly like "never configured"
-    # and sends you to the wrong fix. The managed databases publish the same
-    # connection under several names, so rather than depend on one reference
-    # being typed correctly, take whichever arrived.
-    #
-    # Empty is treated as absent throughout, because that is what it means.
-
-    @staticmethod
-    def _first(*names: str) -> str | None:
-        import os
-
-        for name in names:
-            value = (os.environ.get(name) or "").strip()
-            if value and not value.startswith("${{"):
-                return value
-        return None
-
-    @staticmethod
-    def _usable(value: str | None) -> bool:
-        """A value that is empty, or still a template, is not a URL.
-
-        An unexpanded ${{...}} is worse than an empty one: it is truthy, so it
-        sails past every "is it set" check and fails much later as a DNS
-        lookup for a hostname with braces in it.
-        """
-        text = (value or "").strip()
-        return bool(text) and not text.startswith("${{")
-
-    @model_validator(mode="after")
-    def _recover_connection_urls(self) -> Settings:
-        if not self._usable(self.redis_url):
-            found = self._first("REDIS_URL", "REDIS_PRIVATE_URL", "REDIS_PUBLIC_URL")
-            if found is None:
-                found = self._assemble_redis()
-            object.__setattr__(self, "redis_url", found)
-
-        if not self._usable(self.database_url):
-            object.__setattr__(
-                self,
-                "database_url",
-                self._first("DATABASE_URL", "DATABASE_PRIVATE_URL", "DATABASE_PUBLIC_URL"),
-            )
-        return self
-
-    @classmethod
-    def _assemble_redis(cls) -> str | None:
-        """Build a URL from the parts Railway's Redis also publishes."""
-        host = cls._first("REDISHOST", "REDIS_HOST")
-        if not host:
-            return None
-        port = cls._first("REDISPORT", "REDIS_PORT") or "6379"
-        user = cls._first("REDISUSER", "REDIS_USER") or "default"
-        password = cls._first("REDISPASSWORD", "REDIS_PASSWORD")
-        credentials = f"{user}:{password}@" if password else ""
-        return f"redis://{credentials}{host}:{port}"
-
+    #: The publishers spell it this way, because R2 is the specific thing
+    #: Meta needs: it downloads the file from a URL rather than accepting an
+    #: upload, so a local disk is not a substitute.
     @property
-    def sqlalchemy_url(self) -> str:
-        """Normalise a Railway/Heroku style URL onto the psycopg 3 driver."""
-        if not self.database_url:
-            raise RuntimeError("DATABASE_URL is not set")
-        url = self.database_url
-        if url.startswith("postgres://"):
-            url = "postgresql://" + url[len("postgres://") :]
-        if url.startswith("postgresql://"):
-            url = "postgresql+psycopg://" + url[len("postgresql://") :]
-        return url
-
-    @property
-    def r2_endpoint_url(self) -> str:
-        return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
-
-    @property
-    def ingest_by_agent(self) -> bool:
-        return self.ingest_mode.strip().lower() == "agent"
-
-    @property
-    def has_instagram(self) -> bool:
-        return bool(
-            self.instagram_user_id and (self.instagram_access_token or self.meta_access_token)
-        )
-
-    @property
-    def instagram_via_instagram_login(self) -> bool:
-        """True when Instagram is reached directly rather than through a Page."""
-        return bool(self.instagram_access_token)
-
-    @property
-    def has_facebook(self) -> bool:
-        return bool(self.facebook_page_id and (self.facebook_page_token or self.meta_access_token))
-
-    @property
-    def has_threads(self) -> bool:
-        return bool(self.threads_user_id and self.threads_access_token)
-
-    @property
-    def has_meta_tokens(self) -> bool:
-        return bool(
-            self.meta_access_token or self.instagram_access_token or self.threads_access_token
-        )
-
-    @property
-    def only_channels(self) -> list[str]:
-        """The allow-list, lowercased. Empty means "no allow-list"."""
-        return _names(self.live_only_channels)
-
-    @property
-    def never_channels(self) -> list[str]:
-        return _names(self.live_never_channels)
-
-    @property
-    def only_categories(self) -> list[str]:
-        return _names(self.live_only_categories)
-
-    def may_watch(self, channel: str, category: str = "") -> tuple[bool, str]:
-        """Whether this stream is one the bot is allowed to watch, and why not.
-
-        Deterministic and free, and asked before anything that costs: a
-        channel refused here never reaches the profile research, so a narrow
-        list also cuts the model bill for deciding about channels that were
-        never going to be watched.
-
-        A named channel beats the category filter. If you have asked for
-        somebody by name you want them whatever they have loaded, and their
-        category changes through an evening without them becoming a different
-        streamer.
-        """
-        name = (channel or "").strip().lower()
-        if name in self.never_channels:
-            return False, "on the never-watch list"
-        named = self.only_channels
-        if named:
-            if name not in named:
-                return False, "not on the watch list"
-            return True, ""
-        wanted = self.only_categories
-        if wanted:
-            seen = (category or "").strip()
-            if seen.lower() not in wanted:
-                # What it *was* matters as much as what it was not. "not in
-                # irl" on all 62 streams reads the same whether the filter is
-                # wrong or the listing simply carries no category at all, and
-                # those need opposite fixes.
-                return False, (
-                    f"{seen} is not {' or '.join(wanted)}" if seen
-                    else f"no category on the listing, so not {' or '.join(wanted)}"
-                )
-        return True, ""
-
-    @property
-    def sources(self) -> list[str]:
-        return [s.strip().lower() for s in self.scout_sources.split(",") if s.strip()]
-
-    def scouts(self, name: str) -> bool:
-        """Whether `name` is a source this deployment draws from."""
-        return name.lower() in self.sources
+    def has_r2(self) -> bool:
+        return self.has_storage
 
     @property
     def has_reddit(self) -> bool:
@@ -744,66 +220,69 @@ class Settings(BaseSettings):
 
     @property
     def reddit_rooms(self) -> list[str]:
-        """The subreddits to search inside. Empty means all of Reddit."""
-        return [s.strip().lstrip("r/").strip() for s in
-                self.reddit_subreddits.split(",") if s.strip()]
+        return _names(self.reddit_subreddits)
 
     @property
     def reddit_route_names(self) -> list[str]:
-        """Which ways in to try. Empty means all of them, in the default order."""
-        return [r.strip().lower() for r in self.reddit_routes.split(",") if r.strip()]
+        return [r.lower() for r in _names(self.reddit_routes)]
 
     @property
     def reddit_mirror_list(self) -> list[str]:
-        """Redlib instances to try, in order."""
-        return [m.strip().rstrip("/") for m in self.reddit_mirrors.split(",") if m.strip()]
+        return [m.rstrip("/") for m in (self.reddit_mirrors or "").split(",") if m.strip()]
 
     @property
-    def reddit_search_terms(self) -> list[str]:
-        raw = self.reddit_keywords or self.scout_keywords
-        return [k.strip() for k in raw.split(",") if k.strip()]
+    def sqlalchemy_url(self) -> str:
+        """DATABASE_URL, spelled the way SQLAlchemy wants it.
 
-    @property
-    def has_youtube_read(self) -> bool:
-        return bool(self.youtube_api_key)
-
-    @property
-    def keywords(self) -> list[str]:
-        return [k.strip() for k in self.scout_keywords.split(",") if k.strip()]
-
-    @property
-    def tts_backend(self) -> str:
-        return self.tts_provider.strip().lower()
-
-    @property
-    def has_tts(self) -> bool:
-        if self.tts_backend == "elevenlabs":
-            return bool(self.elevenlabs_api_key)
-        return bool(self.openai_api_key)
-
-    @property
-    def has_whisper(self) -> bool:
-        """Whether the recording can be transcribed with the keys present."""
-        return bool(self.openai_api_key or self.transcription_key)
-
-    @property
-    def has_stock(self) -> bool:
-        return bool(self.pexels_api_key)
-
-    @property
-    def studio_ready(self) -> bool:
-        """Enough to render something worth watching.
-
-        Narration is the one part with no free fallback: without it a video is
-        archive audio and captions, which works but is not the format.
+        Railway and Heroku both hand out postgres:// and SQLAlchemy 2 only
+        answers to postgresql://, which fails at connect time with a message
+        about a missing dialect rather than about the URL.
         """
-        return self.has_tts
+        if not self.database_url:
+            raise RuntimeError("DATABASE_URL is not set")
+        url = self.database_url
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://"):]
+        return url
 
     @property
-    def transcription_key(self) -> str | None:
-        if self.transcribe_provider == "deepgram":
-            return self.deepgram_api_key
-        return self.assemblyai_api_key
+    def instagram_via_instagram_login(self) -> bool:
+        """True when Instagram is reached directly rather than through a Page."""
+        return bool(self.instagram_access_token)
+
+    @property
+    def has_instagram(self) -> bool:
+        return bool(
+            self.instagram_user_id
+            and (self.instagram_access_token or self.meta_access_token)
+        )
+
+    @property
+    def has_threads(self) -> bool:
+        return bool(self.threads_user_id and self.threads_access_token)
+
+    @property
+    def has_facebook(self) -> bool:
+        return bool(self.facebook_page_id and (self.facebook_page_token or self.meta_access_token))
+
+    @property
+    def has_meta_tokens(self) -> bool:
+        return bool(
+            self.meta_access_token
+            or self.instagram_access_token
+            or self.threads_access_token
+            or self.facebook_page_token
+        )
+
+    @property
+    def has_upload_post(self) -> bool:
+        return bool(self.upload_post_api_key and self.upload_post_user)
+
+    @property
+    def has_youtube_write(self) -> bool:
+        return bool(
+            self.youtube_client_id and self.youtube_client_secret and self.youtube_refresh_token
+        )
 
 
 @lru_cache

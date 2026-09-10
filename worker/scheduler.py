@@ -11,7 +11,6 @@ schedulers cannot double-fire the same job.
 from __future__ import annotations
 
 import logging
-import math
 import signal
 import sys
 import time
@@ -44,71 +43,30 @@ class Job:
 
 
 def _jobs() -> list[Job]:
-    from worker.tasks.collect_metrics import collect_due
-    from worker.tasks.gym_reddit import run as gym_harvest
-    from worker.tasks.publish import autopost
+    from worker.tasks.harvest import run as daily_run
     from worker.tasks.refresh_tokens import run as refresh_tokens
-    from worker.tasks.scout import run as scout_run
-    from worker.tasks.scout_reddit import run as scout_reddit
 
     return [
         Job(
-            name="scout",
-            queue="metrics",
-            every_minutes=settings.scout_interval_minutes,
-            func=scout_run,
-            enabled=(
-                settings.scout_enabled and settings.scouts("youtube") and settings.has_youtube_read
-            ),
-        ),
-        Job(
-            name="scout_reddit",
-            queue="metrics",
-            every_minutes=settings.scout_interval_minutes,
-            func=scout_reddit,
-            # No credentials needed: the public endpoint answers without an app.
-            enabled=(
-                settings.scout_enabled
-                and settings.scouts("reddit")
-                and bool(settings.reddit_search_terms)
-            ),
-        ),
-        Job(
-            name="gym_harvest",
-            # A download job, so it belongs with the other downloads rather
-            # than on the metrics queue with the things that only read.
-            queue="ingest",
-            every_minutes=settings.gym_harvest_interval_minutes,
-            func=gym_harvest,
+            name="harvest",
+            queue="harvest",
+            every_minutes=settings.harvest_interval_minutes,
+            func=daily_run,
             # Rooms rather than credentials: the feed routes need no app, and
-            # on Railway they are the ones that answer. No rooms means no
-            # listing to ask for, which is a configuration mistake rather than
-            # a job worth running.
-            enabled=settings.gym_harvest_enabled and bool(settings.reddit_rooms),
-        ),
-        Job(
-            name="metrics",
-            queue="metrics",
-            every_minutes=settings.metrics_interval_minutes,
-            func=collect_due,
+            # on a cloud host they are usually the ones that answer. No rooms
+            # means no listing to ask for, which is a configuration mistake
+            # rather than a job worth running.
+            enabled=settings.harvest_enabled and bool(settings.reddit_rooms),
         ),
         Job(
             name="refresh_tokens",
-            queue="metrics",
+            queue="publish",
             # Meta tokens die at 60 days and cannot be revived afterwards, so
             # refresh at a quarter of that: three failed runs still leave a
             # fortnight of slack.
             every_minutes=settings.token_refresh_interval_days * 24 * 60,
             func=refresh_tokens,
             enabled=settings.has_meta_tokens,
-        ),
-        Job(
-            name="autopost",
-            queue="publish",
-            # Spread the daily allowance across the day rather than dumping it.
-            every_minutes=max(30, math.floor(24 * 60 / max(1, settings.autopost_per_day))),
-            func=autopost,
-            enabled=settings.autopost_enabled,
         ),
     ]
 

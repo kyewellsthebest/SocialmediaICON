@@ -21,8 +21,8 @@ from core.db import session_scope
 from core.storage import get_storage
 
 from .deps import require_token
+from .routes import app as app_routes
 from .routes import reddit as reddit_routes_api
-from .routes import settings as settings_routes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(
-    title="clip-engine",
+    title="putitupp",
     version="0.2.0",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
@@ -46,7 +46,7 @@ app.add_middleware(
 # Every data route sits behind the dashboard token.
 protected = [Depends(require_token)]
 for router in (
-    settings_routes.router,
+    app_routes.router,
     reddit_routes_api.router,
 ):
     app.include_router(router, prefix="/api", dependencies=protected)

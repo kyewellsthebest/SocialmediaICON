@@ -14,7 +14,6 @@ import httpx
 
 from core.config import settings
 from core.publishers import PublishRequest, PublishResult
-from core.youtube import COST_UPLOAD, _spend
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +85,11 @@ class YouTubePublisher:
             },
         }
 
-        _spend(COST_UPLOAD)
+        # The daily-quota ledger went with the trend scout that needed it.
+        # Uploads cost 1600 units of the 10,000 a day, so eight posts is 12,800
+        # and YouTube starts refusing partway through - which it says plainly
+        # in the response, and there is no longer a local counter to disagree
+        # with it. Ask Google to raise the quota if you want all eight there.
 
         with httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
             start = client.post(

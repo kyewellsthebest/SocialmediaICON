@@ -1,12 +1,11 @@
 [project]
-name = "clip-engine"
-version = "0.1.0"
-description = "Autonomous short-form clip engine: ingest -> transcribe -> detect -> rank -> render"
+name = "putitupp"
+version = "1.0.0"
+description = "Finds short gym video on Reddit, brands it, posts it with the author's own caption"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
-  "python-multipart>=0.0.9",  # file uploads into the pipeline
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
   "sqlalchemy>=2.0",
@@ -15,46 +14,17 @@ dependencies = [
   "redis>=5.0",
   "rq>=1.16",
   "boto3>=1.34",
-  "anthropic>=0.40",
   "httpx>=0.27",
   "yt-dlp>=2024.8.6",
-  # Browser TLS impersonation. Kick sits behind Cloudflare, which rejects
-  # Python's TLS fingerprint outright; yt-dlp's Kick extractor asks for
-  # impersonation and cannot get it without this. Without curl_cffi every
-  # Kick request is a 403 that looks like the site being closed.
-  "curl_cffi>=0.7",
-  # Kick chat arrives over a Pusher websocket - the same public feed a
-  # logged-out viewer gets. Replay polling is the wrong shape for live.
-  "websockets>=13.0",
-  "pillow>=10.3",  # draws the studio's instrument overlay frame by frame
-  # Voicing is an autocorrelation over every pitch lag of every frame - about
-  # a million multiply-adds a second of audio. In Python that is minutes; in
-  # numpy it is a second, which is the difference between a measurement the
-  # watcher can afford on a timer and one it cannot.
-  "numpy>=1.26",
-  # The eye that finds faces, and the one thing that decides whether a clip is
-  # a desk stream to be stacked or something to be followed. core.faces and
-  # core.reframe both import it.
-  #
-  # It was missing from here for the life of the project, and because the
-  # Dockerfile installs exactly this list, the deployed image had no cv2 at
-  # all. Both callers swallow the ImportError - a missed face is not an
-  # outage, and a blind guess is no layout - so nothing crashed and nothing
-  # said why. What actually happened, every day, on every clip: the FACES
-  # family scored zero on every stream, and find_webcam returned None on every
-  # desk stream, so every clip was framed "followed" and none was ever
-  # stacked. Both of those were reported as bugs in the detector and tuned
-  # against for days. The detector was fine. It was not installed.
-  "opencv-python-headless>=4.9",
+  # The badge is a circular PNG with an alpha channel, and the tests that
+  # prove it landed in the corner compare frames pixel by pixel.
+  "pillow>=10.3",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
   "ruff>=0.5",
-  # There is no corpus of streamer footage here, so the face tests move a real
-  # photograph around a real H.264 video. scikit-image bundles the photograph.
-  "scikit-image>=0.22",
 ]
 
 [build-system]

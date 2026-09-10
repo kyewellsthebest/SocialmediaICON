@@ -3,185 +3,94 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
-<title>Clip engine</title>
+<meta name="color-scheme" content="dark">
+<title>PutItUpp</title>
 <link rel="stylesheet" href="/static/app.css?v=__V__">
 </head>
 <body>
 
-<!-- token gate -->
 <div class="gate" id="gate" hidden>
-  <h2>Clip engine</h2>
-  <p class="muted">Enter your dashboard token — the <code>DASHBOARD_TOKEN</code> set in Railway.</p>
+  <div class="mark">PUT<em>IT</em>UPP</div>
+  <p class="muted">Enter the <code>DASHBOARD_TOKEN</code> you set in Railway.</p>
   <div class="field">
-    <input type="password" id="gate-token" placeholder="dashboard token" autocomplete="current-password" enterkeyhint="go">
+    <input type="password" id="gate-token" placeholder="dashboard token"
+           autocomplete="current-password" enterkeyhint="go">
   </div>
-  <button class="btn btn-primary" id="gate-go">Unlock</button>
-  <p class="muted" id="gate-error" hidden style="color:var(--critical)">That token was rejected.</p>
+  <button class="btn primary" id="gate-go">Unlock</button>
+  <p class="err" id="gate-error" hidden>That token was rejected.</p>
 </div>
 
 <div id="app" hidden>
-
   <header class="top">
-    <button class="burger" id="burger" aria-label="Menu" aria-expanded="false">
-      <span></span><span></span><span></span>
-    </button>
-    <h1 id="title">Live</h1>
-    <span class="pill" id="top-state" data-state="warning">idle</span>
+    <div class="mark">PUT<em>IT</em>UPP</div>
+    <nav class="tabs">
+      <button class="tab on" data-view="queue">Queue</button>
+      <button class="tab" data-view="posted">Posted</button>
+      <button class="tab" data-view="setup">Setup</button>
+    </nav>
+    <button class="btn primary" id="run-now">Run now</button>
   </header>
 
-  <div class="drawer-scrim" id="scrim" data-open="false"></div>
-  <aside class="drawer" id="drawer" data-open="false">
-    <header>
-      <h2>Clip engine</h2>
-      <p class="label" id="drawer-sub">watching kick</p>
-    </header>
-    <nav>
-      <a href="#/live" data-view="live">Live<span class="label" id="nav-live"></span></a>
-      <a href="#/clips" data-view="clips">Clips<span class="label" id="nav-clips"></span></a>
-      <a href="#/settings" data-view="settings">Settings</a>
-    </nav>
-    <footer>
-      <button class="btn btn-quiet" id="theme">Switch theme</button>
-    </footer>
-  </aside>
+  <div class="banner" id="banner" hidden></div>
 
   <main>
-
-    <!-- ============ LIVE ============ -->
-    <!-- No controls. It watches on its own; the top bar says how many. -->
-    <section class="view" id="view-live">
-      <div id="streams"></div>
-      <div class="card plate" id="funnel" hidden>
-        <header><h3>Where today's moments went</h3>
-          <span class="label" id="funnel-label"></span></header>
-        <div id="funnel-body"></div>
-        <p class="muted" id="funnel-note"></p>
-      </div>
-      <div class="card" id="roster" hidden>
-        <header><h3>Why it is holding this many</h3>
-          <span class="label" id="roster-label"></span></header>
-        <div id="roster-body"></div>
-        <p class="muted" id="roster-note"></p>
-      </div>
-      <div class="card plate" id="yield" hidden>
-        <header><h3>What each stream is worth</h3>
-          <span class="label" id="yield-label"></span></header>
-        <div id="yield-body"></div>
-        <p class="muted" id="yield-note"></p>
-      </div>
-      <div class="card" id="skipped" hidden>
-        <header><h3>Streams it will not watch</h3><span class="label">and why</span></header>
-        <pre class="raw" id="skipped-body"></pre>
-      </div>
-      <div class="card" id="holding" hidden>
-        <header><h3>Waiting for a slot</h3><span class="label">best one wins</span></header>
-        <div class="bars" id="holding-body"></div>
-        <p class="muted" id="holding-note"></p>
-      </div>
-      <div class="card" id="live-errors" hidden>
-        <header><h3>Recent problems</h3></header>
-        <pre class="raw" id="live-errors-body"></pre>
-      </div>
+    <!-- QUEUE ------------------------------------------------------------ -->
+    <section class="view" id="view-queue">
+      <div class="stats" id="stats"></div>
+      <div class="flow" id="flow"></div>
+      <h2>Waiting <span class="muted" id="queue-sub"></span></h2>
+      <div id="queue-list" class="list"></div>
     </section>
 
-    <!-- ============ CLIPS ============ -->
-    <section class="view" id="view-clips" hidden>
-      <div class="view-head spread">
-        <div>
-          <h2>Clips</h2>
-          <p>Caught and held. Nothing is posted anywhere.</p>
-        </div>
-        <button class="btn btn-quiet" id="clips-rerank">Re-score queue</button>
-        <button class="btn btn-quiet" id="clips-clear">Clear queue</button>
-      </div>
-      <div id="clips"></div>
+    <!-- POSTED ----------------------------------------------------------- -->
+    <section class="view" id="view-posted" hidden>
+      <h2>Posted</h2>
+      <div id="posted-list" class="list"></div>
+      <h2>Beaten <span class="muted">— pushed out by something better, kept so it is never picked up again</span></h2>
+      <div id="beaten-list" class="list"></div>
     </section>
 
-    <!-- ============ ONE STREAM ============ -->
-    <section class="view" id="view-stream" hidden>
-      <a href="#/live" class="label" style="text-decoration:none">&larr; Back to live</a>
-
-      <!-- Kept out of #stream-detail on purpose. This view repaints every five
-           seconds, and re-inserting an iframe anywhere in the document makes
-           the browser reload it - so a player inside the repainted region
-           restarts from black twice a minute however carefully it is moved. -->
-      <div class="card">
-        <div class="stream-row">
-          <img class="pfp" id="stream-pfp" alt="" hidden referrerpolicy="no-referrer"
-               onerror="this.hidden = true">
-          <span class="who"><b id="stream-name"></b><small id="stream-title"></small></span>
-          <span id="stream-pill"></span>
-        </div>
-        <div class="player" id="stream-player"></div>
-        <div class="row">
-          <a class="btn btn-quiet" id="stream-open" target="_blank" rel="noopener">Open on Kick</a>
-          <span class="muted" id="stream-meta"></span>
-        </div>
+    <!-- SETUP ------------------------------------------------------------ -->
+    <section class="view" id="view-setup" hidden>
+      <h2>Accounts</h2>
+      <p class="muted">Where reels go. Nothing is posted while autopost is off.</p>
+      <div id="accounts" class="list"></div>
+      <div class="row">
+        <select id="acc-platform">
+          <option value="instagram">instagram</option>
+          <option value="tiktok">tiktok</option>
+          <option value="youtube">youtube</option>
+          <option value="facebook">facebook</option>
+          <option value="threads">threads</option>
+          <option value="snapchat">snapchat</option>
+        </select>
+        <input id="acc-handle" placeholder="@putitupp">
+        <button class="btn" id="acc-add">Add</button>
       </div>
 
-      <div id="stream-detail"></div>
+      <h2>Reddit</h2>
+      <p class="muted">Which door into Reddit this deployment can use, measured
+        from here rather than guessed. Slow — it makes real requests.</p>
+      <div class="row">
+        <button class="btn" id="ways-in">Test every route</button>
+        <button class="btn" id="try-one">Download one and check the sound</button>
+      </div>
+      <pre id="diag" hidden></pre>
+
+      <h2>Config</h2>
+      <div id="config" class="grid"></div>
     </section>
-
-    <!-- ============ SETTINGS ============ -->
-    <section class="view" id="view-settings" hidden>
-      <div class="view-head">
-        <h2>Settings</h2>
-        <p>Secrets live in Railway. This only reports what is present.</p>
-      </div>
-
-      <div class="card">
-        <header><h3>Capture</h3></header>
-        <div class="stats" id="capture-config"></div>
-      </div>
-
-      <div class="card">
-        <header><h3>The watcher</h3><span class="label">runs on its own</span></header>
-        <p class="muted" id="live-sub">It restarts itself after a deploy or a crash.</p>
-        <label class="check">
-          <input type="checkbox" id="pref-video" checked>
-          <span>Play the streams on the Live page<small>Off shows a still instead. Three live players is a lot of mobile data.</small></span>
-        </label>
-        <div class="stats" id="live-caps"></div>
-        <p class="muted" id="cap-detail"></p>
-        <div class="row">
-          <button class="btn btn-quiet" id="live-why">Diagnose</button>
-          <button class="btn btn-quiet" id="live-start">Start it again</button>
-          <button class="btn btn-quiet" id="live-stop">Stop watching</button>
-        </div>
-        <div id="live-why-out"></div>
-      </div>
-
-      <div class="card">
-        <header><h3>Kick reachability</h3><span class="label">does this server get served</span></header>
-        <p class="muted">Paste anyone live on kick.com. Ladder is instant; buffer really holds the stream for 30 seconds.</p>
-        <div class="field">
-          <label class="label" for="probe-channel">Channel name</label>
-          <input type="text" id="probe-channel" placeholder="DeenTheGreat" autocapitalize="off" autocorrect="off" spellcheck="false">
-        </div>
-        <div class="row">
-          <button class="btn btn-primary" id="probe-ladder">Check ladder</button>
-          <button class="btn" id="probe-buffer">Test buffer (30s)</button>
-        </div>
-        <div id="probe-verdict"></div>
-      </div>
-
-      <div class="card">
-        <header><h3>Connections</h3></header>
-        <div class="stats" id="connections"></div>
-      </div>
-    </section>
-
   </main>
 </div>
 
-<!-- inspect sheet -->
-<div class="sheet-scrim" id="sheet-scrim" hidden></div>
-<aside class="sheet" id="sheet" hidden>
-  <div class="sheet-body" id="sheet-body"></div>
-</aside>
+<div class="player" id="player" hidden>
+  <div class="player-inner">
+    <video id="player-video" controls playsinline></video>
+    <p class="muted" id="player-caption"></p>
+    <button class="btn" id="player-close">Close</button>
+  </div>
+</div>
 
-<div class="toast" id="toast" hidden></div>
 <script src="/static/app.js?v=__V__"></script>
 </body>
 </html>

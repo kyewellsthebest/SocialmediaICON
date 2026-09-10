@@ -1,527 +1,286 @@
-/* Clip engine — the instrument panel.
-   Sharp corners, hairline rules, mono micro-labels and one amber accent. The
-   dashboard is read at arm's length on a phone while something is rendering,
-   so state has to be legible as shape and colour before it is read as words:
-   a lit left rail means active, a red rail means broken, and the numbers are
-   tabular so a column of them lines up.
-   No webfonts — the panel must come up instantly on a bad connection. */
+/* PutItUpp dashboard.
+   Dark only, on purpose: the brand is a green mark on black, and a light
+   theme would be a different product wearing the same logo. */
 
 :root {
-  color-scheme: light dark;
-
-  --ground: #E7E3D9;
-  --surface: #F4F1E9;
-  --surface-2: #DEDACE;
-  --sunken: #D6D1C2;
-  --ink: #191C1E;
-  --ink-2: #4A5155;
-  --ink-3: #79807F;
-  --rule: #C9C4B6;
-  --rule-hard: #A7A192;
-
-  --accent: #A85512;
-  --accent-soft: #C8873F;
-  --good: #2F6F69;
-  --warning: #B4762F;
-  --serious: #A2571C;
-  --critical: #8E2A20;
-
-  --heat-100: #DCEDE9; --heat-250: #A9D3CC; --heat-400: #6FB3AA;
-  --heat-550: #3E8C86; --heat-700: #245E5C;
-
-  --lamp: rgba(168, 85, 18, .10);
-  --shadow: 0 1px 2px rgba(25, 28, 30, .06), 0 8px 24px -12px rgba(25, 28, 30, .18);
-
-
-  /* Chart series. Five slots, in fixed order, assigned to a role and never
-     cycled: event, verdict, reaction, production, reach. Validated against
-     this surface rather than chosen by eye - worst adjacent pair 9.1 deltaE
-     under protanopia, 19.6 for normal vision, both clear of the floors. The
-     light steps fall under 3:1 against the cream surface, so every one of
-     them is directly labelled wherever it appears; none of them carries
-     identity on colour alone. */
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
-  --grid: rgba(25, 28, 30, .10);
-  --grid-hard: rgba(25, 28, 30, .18);
-  --plate: rgba(25, 28, 30, .04);
-  --glow: rgba(168, 85, 18, .18);
-
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-
-  --r: 3px;
-  --gap: 14px;
-  --topbar-h: 58px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --ground: #0B0F11;
-    --surface: #121A1D;
-    --surface-2: #1A2428;
-    --sunken: #0D1416;
-    --ink: #E9E5DC;
-    --ink-2: #A9B0B2;
-    --ink-3: #737C80;
-    --rule: #223035;
-    --rule-hard: #35454B;
-
-    --accent: #E08B3A;
-    --accent-soft: #B4762F;
-    --good: #5FB3A8;
-    --warning: #D9A055;
-    --serious: #C87F3C;
-    --critical: #C4483A;
-
-    --heat-100: #17302E; --heat-250: #1F4A45; --heat-400: #2E6B63;
-    --heat-550: #45938A; --heat-700: #6FC4B8;
-
-    --lamp: rgba(224, 139, 58, .13);
-    --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 14px 34px -16px rgba(0, 0, 0, .7);
-
-    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
-    --grid: rgba(233, 229, 220, .10);
-    --grid-hard: rgba(233, 229, 220, .20);
-    --plate: rgba(233, 229, 220, .04);
-    --glow: rgba(224, 139, 58, .22);
-  }
-}
-
-:root[data-theme="dark"] {
-  --ground: #0B0F11;
-  --surface: #121A1D;
-  --surface-2: #1A2428;
-  --sunken: #0D1416;
-  --ink: #E9E5DC;
-  --ink-2: #A9B0B2;
-  --ink-3: #737C80;
-  --rule: #223035;
-  --rule-hard: #35454B;
-
-  --accent: #E08B3A;
-  --accent-soft: #B4762F;
-  --good: #5FB3A8;
-  --warning: #D9A055;
-  --serious: #C87F3C;
-  --critical: #C4483A;
-
-  --heat-100: #17302E; --heat-250: #1F4A45; --heat-400: #2E6B63;
-  --heat-550: #45938A; --heat-700: #6FC4B8;
-
-  --lamp: rgba(224, 139, 58, .13);
-  --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 14px 34px -16px rgba(0, 0, 0, .7);
-
-  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
-  --grid: rgba(233, 229, 220, .10);
-  --grid-hard: rgba(233, 229, 220, .20);
-  --plate: rgba(233, 229, 220, .04);
-  --glow: rgba(224, 139, 58, .22);
+  --bg: #0a0c0a;
+  --panel: #121612;
+  --panel-2: #171d17;
+  --line: #232b23;
+  --ink: #e8f0e8;
+  --muted: #7e8c7e;
+  --green: #55e520;
+  --green-dim: #3aa815;
+  --warn: #e5b020;
+  --bad: #e5533d;
+  --radius: 12px;
+  --pad: 16px;
 }
 
 * { box-sizing: border-box; }
 
-
-/* ------------------------------------------------------------------------ *
-   Clip engine — read on a phone, one thumb, while three streams run.
-
-   The panel answers one question at a glance: is it watching, and has it
-   caught anything. Everything else is detail you scroll to. Three views, a
-   drawer instead of a tab bar, and no chart that needs a wide screen.
- * ------------------------------------------------------------------------ */
-
-html { -webkit-text-size-adjust: 100%; }
-
-/* The `hidden` attribute is only a UA-stylesheet `display: none`, so any rule
-   here that sets display - and the gate, the drawer and every view do - wins
-   against it and the element stays on screen while the code believes it is
-   gone. Every panel in this file is display-typed, so this has to be global. */
-[hidden] { display: none !important; }
-
-/* Grid and flex children default to min-width: auto, which is "never smaller
-   than my content" - so one long word, one wide row of bars or one number
-   with no break in it pushes the whole page wider than the phone and the
-   layout slides sideways under the top bar. Every container in this file is
-   grid or flex, so the floor comes off all of them at once. */
-main > *, .view > *, .card > *, .stats > *, .row > *, .spread > * { min-width: 0; }
-
 body {
   margin: 0;
-  overflow-x: hidden;
-  background: var(--ground);
+  background: var(--bg);
   color: var(--ink);
-  font-family: var(--sans);
-  font-size: 15px;
-  line-height: 1.5;
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
-  padding-bottom: calc(24px + env(safe-area-inset-bottom));
 }
 
-h1, h2, h3 { margin: 0; font-weight: 700; letter-spacing: -.018em; }
-h1 { font-size: 16px; }
-h2 { font-size: 20px; }
-h3 { font-size: 14px; }
-p { margin: 0; }
-a { color: var(--accent); }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h2 {
+  font-size: 15px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 28px 0 12px;
+  font-weight: 600;
+}
+h2 .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
 
-.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.err { color: var(--bad); }
 
-/* micro-label */
-.label {
-  font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
-  text-transform: uppercase; color: var(--ink-3);
+code {
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: .9em;
 }
 
-/* ---------- top bar + drawer ---------- */
+/* --- the mark ----------------------------------------------------------- */
+.mark {
+  font-weight: 800;
+  letter-spacing: .06em;
+  font-size: 19px;
+  white-space: nowrap;
+}
+.mark em { color: var(--green); font-style: normal; }
 
+/* --- gate --------------------------------------------------------------- */
+.gate {
+  max-width: 380px;
+  margin: 18vh auto;
+  padding: 28px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  text-align: center;
+}
+.gate .mark { font-size: 26px; margin-bottom: 10px; }
+.field { margin: 16px 0; }
+
+input, select {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+input:focus, select:focus { outline: 2px solid var(--green-dim); outline-offset: 1px; }
+
+/* --- chrome ------------------------------------------------------------- */
 .top {
-  position: sticky; top: 0; z-index: 40;
-  display: flex; align-items: center; gap: 12px;
-  height: var(--topbar-h); padding: 0 14px;
-  background: var(--surface); border-bottom: 1px solid var(--rule);
-}
-.top h1 { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* The three-line button. 44px square because it is the one control that is
-   always on screen and always tapped with a thumb. */
-.burger {
-  width: 44px; height: 44px; flex: none;
-  display: grid; place-content: center; gap: 5px;
-  background: none; border: 1px solid var(--rule); border-radius: var(--r);
-  cursor: pointer; padding: 0;
-}
-.burger span { display: block; width: 20px; height: 2px; background: var(--ink); border-radius: 2px; }
-
-.drawer-scrim {
-  position: fixed; inset: 0; z-index: 50;
-  background: rgba(0, 0, 0, .45);
-  opacity: 0; pointer-events: none; transition: opacity .18s ease;
-}
-.drawer-scrim[data-open="true"] { opacity: 1; pointer-events: auto; }
-
-.drawer {
-  position: fixed; inset: 0 auto 0 0; z-index: 51;
-  width: min(78vw, 300px);
-  background: var(--surface); border-right: 1px solid var(--rule);
-  transform: translateX(-100%); transition: transform .2s ease;
-  display: flex; flex-direction: column;
-  padding: 14px 0 calc(14px + env(safe-area-inset-bottom));
-}
-.drawer[data-open="true"] { transform: none; }
-.drawer header { padding: 6px 18px 14px; border-bottom: 1px solid var(--rule); }
-.drawer nav { display: flex; flex-direction: column; padding: 8px 0; }
-.drawer nav a {
-  display: flex; align-items: center; gap: 12px;
-  padding: 14px 18px; color: var(--ink-2); text-decoration: none;
-  font-size: 15px; border-left: 3px solid transparent;
-}
-.drawer nav a[aria-current="page"] {
-  color: var(--ink); border-left-color: var(--accent);
-  background: var(--lamp); font-weight: 600;
-}
-.drawer nav a .label { margin-left: auto; }
-.drawer footer { margin-top: auto; padding: 14px 18px 0; border-top: 1px solid var(--rule); }
-
-/* ---------- layout ---------- */
-
-main { padding: 14px; display: grid; gap: 12px; max-width: 720px; margin: 0 auto; }
-.view[hidden] { display: none; }
-.view { display: grid; gap: 12px; }
-.view-head { display: grid; gap: 3px; }
-.view-head p { color: var(--ink-3); font-size: 13px; }
-
-.card {
-  background: var(--surface); border: 1px solid var(--rule);
-  border-radius: var(--r); padding: 14px;
-  display: grid; gap: 10px;
-}
-.card > header { display: flex; align-items: center; gap: 10px; }
-.card > header h3 { flex: 1 1 auto; min-width: 0; }
-
-.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.spread { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.muted { color: var(--ink-3); font-size: 13px; }
-
-/* ---------- pills and state ---------- */
-
-.pill {
-  font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
-  text-transform: uppercase; padding: 4px 8px; border-radius: 999px;
-  border: 1px solid var(--rule-hard); color: var(--ink-2); white-space: nowrap;
-}
-.pill[data-state="good"] { color: var(--good); border-color: var(--good); }
-.pill[data-state="warning"] { color: var(--warning); border-color: var(--warning); }
-.pill[data-state="critical"] { color: var(--critical); border-color: var(--critical); }
-.pill[data-state="live"] { color: var(--accent); border-color: var(--accent); background: var(--lamp); }
-
-/* ---------- buttons ---------- */
-
-.btn {
-  appearance: none; font: inherit; font-size: 14px; font-weight: 600;
-  padding: 11px 16px; min-height: 44px;
-  background: var(--surface-2); color: var(--ink);
-  border: 1px solid var(--rule-hard); border-radius: var(--r); cursor: pointer;
-}
-.btn:disabled { opacity: .45; cursor: default; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #FFF7EE; }
-.btn-quiet { background: none; }
-.btn-danger { color: var(--critical); border-color: var(--critical); background: none; }
-
-.field { display: grid; gap: 5px; }
-.field input {
-  font: inherit; padding: 11px 12px; min-height: 44px;
-  background: var(--ground); color: var(--ink);
-  border: 1px solid var(--rule-hard); border-radius: var(--r);
-}
-
-/* ---------- the numbers a stream card shows ---------- */
-
-/* Two columns on a phone, four once there is room. Every signal the bot is
-   scoring is on this grid, so "what is it looking at" is answerable without
-   opening anything. */
-.stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
-@media (min-width: 520px) { .stats { grid-template-columns: repeat(4, 1fr); } }
-.stat { background: var(--surface); padding: 9px 10px; display: grid; gap: 2px; min-width: 0; }
-.stat b { font-family: var(--mono); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stat span { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stat[data-hot="true"] b { color: var(--accent); }
-
-/* ---------- live chat ---------- */
-
-/* Capped and scrolling: chat is the loudest thing on the page and would
-   otherwise push everything else off the screen. */
-.chat {
-  background: var(--ground); border: 1px solid var(--rule); border-radius: var(--r);
-  max-height: 190px; overflow-y: auto; padding: 8px 10px;
-  display: flex; flex-direction: column; gap: 4px;
-  font-size: 13px; line-height: 1.35; overflow-wrap: anywhere;
-}
-.chat .line { display: flex; gap: 7px; }
-.chat .who { color: var(--accent-soft); flex: none; max-width: 32%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat .said { color: var(--ink-2); min-width: 0; }
-.chat .empty { color: var(--ink-3); font-style: italic; }
-
-.bars { display: grid; gap: 5px; }
-/* The first column is a signal name and some of them are long ("chat_requests"),
-   so it is a fraction rather than a fixed width and clips rather than pushing. */
-.bar { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 9fr) 42px;
-  align-items: center; gap: 8px; font-size: 12px; }
-.bar .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Both are spans, and height does not apply to an inline box - without the
-   display these render as an empty track with no fill at all. */
-.bar .track { display: block; height: 6px; background: var(--sunken); border-radius: 3px; overflow: hidden; }
-.bar .fill { display: block; height: 100%; background: var(--accent); }
-.bar .n { font-family: var(--mono); font-size: 11px; text-align: right; color: var(--ink-2); }
-
-/* ---------- how a clip ranks ---------- */
-
-/* One bar, five segments, widths in proportion. The number is the answer and
-   the shape is why - a clip carried by one enormous part looks different from
-   one that scored on everything, and that difference is worth seeing before
-   any of it is read. */
-.rankbar { display: flex; align-items: center; gap: 2px; }
-.rankbar b { font-size: 20px; margin-right: 8px; color: var(--accent); }
-.rankbar .seg { height: 10px; border-radius: 2px; background: var(--rule-hard); min-width: 2px; }
-.rankbar .seg[data-part="event"] { background: var(--accent); }
-.rankbar .seg[data-part="verdict"] { background: var(--accent-soft); }
-.rankbar .seg[data-part="reaction"] { background: var(--good); }
-.rankbar .seg[data-part="production"] { background: var(--warning); }
-.rankbar .seg[data-part="reach"] { background: var(--ink-3); }
-
-/* ---------- clips ---------- */
-
-/* A clip is judged as a phone sees it, so it is shown at the shape it will
-   be posted in rather than letterboxed into a card. */
-.portrait {
-  width: 100%; max-width: 280px; margin: 0 auto; display: block;
-  background: #000; border-radius: var(--r); aspect-ratio: 9 / 16;
-}
-.portrait.missing {
-  display: grid; place-content: center; padding: 20px; text-align: center;
-  background: var(--sunken); color: var(--ink-3); font-size: 13px;
-}
-.quotes { display: flex; flex-wrap: wrap; gap: 6px; }
-.quotes .q {
-  font-size: 12.5px; padding: 4px 9px; border-radius: 999px;
-  background: var(--surface-2); color: var(--ink-2);
-}
-.quotes .q b { font-family: var(--mono); color: var(--accent); margin-left: 5px; }
-
-/* ---------- misc ---------- */
-
-.gate { position: fixed; inset: 0; z-index: 60; display: grid; place-content: center; gap: 12px; padding: 28px; background: var(--ground); text-align: center; }
-.gate .field { text-align: left; min-width: min(88vw, 320px); }
-
-.toast {
-  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
-  z-index: 70; max-width: 92vw;
-  background: var(--ink); color: var(--ground);
-  padding: 11px 15px; border-radius: var(--r); font-size: 14px;
-}
-.toast[hidden] { display: none; }
-.toast[data-tone="critical"] { background: var(--critical); color: #fff; }
-
-.empty-note { color: var(--ink-3); font-size: 13.5px; padding: 6px 0; }
-/* A fault has to be louder than a hint. The two read identically for eight
-   hours while nothing was being watched. */
-.empty-note-card.bad { border-color: var(--critical); }
-.empty-note-card.bad .empty-note { color: var(--critical); }
-pre.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; color: var(--ink-3); max-height: 280px; overflow: auto; }
-.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* ---------- a stream at a glance ---------- */
-
-/* The Live page is three of these and nothing else. A name and a number does
-   not tell three streams apart at arm's length; a face and a picture of what
-   is on screen does. */
-.stream-row { display: flex; gap: 12px; align-items: center; text-decoration: none; color: inherit; }
-.stream-row .pfp {
-  width: 46px; height: 46px; flex: none; border-radius: 50%;
-  background: var(--surface-2); object-fit: cover; border: 1px solid var(--rule);
-}
-.stream-row .who { flex: 1 1 auto; min-width: 0; }
-.stream-row .who b { display: block; font-size: 16px; }
-.stream-row .who small { display: block; color: var(--ink-3); font-size: 12.5px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stream-row .go { color: var(--ink-3); font-size: 20px; flex: none; }
-
-.shot {
-  width: 100%; height: 100%; aspect-ratio: 16 / 9; object-fit: cover;
-  background: var(--sunken); border-radius: var(--r); display: block;
-}
-
-/* ---------- the stream itself ---------- */
-
-/* Kick's own player, embedded. The bot watches a copy on the worker's disk in
-   another container; showing that here would mean serving every byte twice,
-   so the page watches the stream the same way a person would. */
-.player {
-  position: relative; width: 100%; aspect-ratio: 16 / 9;
-  background: #000; border: 1px solid var(--rule); border-radius: var(--r);
-  overflow: hidden; display: grid; place-items: center;
-}
-.player iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
-.player .off { color: var(--ink-3); font-size: 13px; }
-
-/* Three players cannot all talk at once, so sound is a per-stream toggle and
-   the page only ever unmutes one. */
-.player .sound {
-  position: absolute; right: 8px; bottom: 8px; z-index: 2;
-  width: 40px; height: 40px; display: grid; place-content: center;
-  font-size: 17px; line-height: 1; cursor: pointer;
-  background: rgba(0, 0, 0, .62); color: #fff;
-  border: 1px solid rgba(255, 255, 255, .25); border-radius: var(--r);
-}
-.player .sound[data-on="true"] { background: var(--accent); border-color: var(--accent); }
-
-/* ---------- a preference with an explanation ---------- */
-
-.check { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
-.check input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
-.check span { font-size: 14px; }
-.check small { display: block; color: var(--ink-3); font-size: 12.5px; margin-top: 2px; }
-
-/* ---------- live audio ---------- */
-
-/* One bar per sample of the loudness curve. Loud is amber, quiet fades toward
-   the rule colour, so the shape reads before any number does. */
-/* min-width on the bars plus a gap gives this a minimum width of its own -
-   a few hundred samples cannot be squeezed below a few hundred pixels - which
-   is what was carrying the sound card off the side of a phone. The count is
-   capped in fitBars(); overflow: hidden is the belt to that pair of braces. */
-.wave { display: flex; align-items: flex-end; gap: 1px; height: 74px; overflow: hidden;
-  background: var(--ground); border: 1px solid var(--rule); border-radius: var(--r); padding: 5px; }
-.wave i { flex: 1 1 0; min-width: 0; background: var(--accent); border-radius: 1px; display: block; }
-.spectro { width: 100%; border: 1px solid var(--rule); border-radius: var(--r); background: #000; display: block; }
-
-/* ---------- inspect sheet ---------- */
-
-.sheet-scrim { position: fixed; inset: 0; z-index: 55; background: rgba(0, 0, 0, .5); }
-.sheet {
-  position: fixed; inset: auto 0 0 0; z-index: 56;
-  max-height: 88vh; overflow-y: auto;
-  background: var(--surface); border-top: 1px solid var(--rule-hard);
-  border-radius: var(--r) var(--r) 0 0;
-  padding: 16px 14px calc(24px + env(safe-area-inset-bottom));
-}
-.sheet-body { display: grid; gap: 12px; max-width: 720px; margin: 0 auto; }
-@media (min-width: 640px) {
-  .sheet { inset: 50% auto auto 50%; transform: translate(-50%, -50%);
-           width: min(620px, 92vw); border-radius: var(--r); border: 1px solid var(--rule-hard); }
-}
-
-/* ---------- charts ----------
-   The frames carry the depth; the data stays flat. A bar drawn in perspective
-   is shorter at the back than the front for the same value, and a tilted pie
-   gives the near slice more area than the far one - the picture stops being
-   readable as a number. So: layered plates, an offset shadow plane and a
-   recessive grid around encodings that are strictly two-dimensional. */
-
-.card.plate {
-  position: relative;
-  background:
-    linear-gradient(180deg, var(--plate), transparent 42%),
-    var(--surface);
-  border-color: var(--rule-hard);
-}
-/* The second plane, a few pixels down and behind. Depth as a frame rather
-   than as a distortion of anything that encodes a value. */
-.card.plate::after {
-  content: "";
-  position: absolute;
-  inset: auto 8px -5px 8px;
-  height: 5px;
-  border: 1px solid var(--rule);
-  border-top: 0;
-  background: var(--sunken);
-  z-index: -1;
-}
-
-.vz { display: block; width: 100%; height: auto; overflow: visible; }
-.vz-pair {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-bottom: 10px;
+  gap: 18px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
-.vz-pair .vz-gauge,
-.vz-pair .vz-meter { flex: 0 0 34%; max-width: 132px; }
-.vz-pair .vz + .vz { flex: 1 1 auto; }
+.tabs { display: flex; gap: 4px; flex: 1; }
+.tab {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  padding: 7px 13px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.tab:hover { color: var(--ink); background: var(--panel-2); }
+.tab.on { color: var(--bg); background: var(--green); font-weight: 600; }
 
-.vz-ax {
-  font: 500 9.5px/1 var(--mono);
-  fill: var(--ink-3);
-  letter-spacing: .06em;
+.btn {
+  background: var(--panel-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { border-color: var(--green-dim); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--green); color: #06170a; border-color: var(--green); font-weight: 600; }
+.btn.primary:hover { background: #6bf03a; }
+.btn.small { padding: 5px 10px; font-size: 13px; }
+.btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+main { max-width: 940px; margin: 0 auto; padding: 8px 20px 80px; }
+
+.banner {
+  margin: 12px auto;
+  max-width: 940px;
+  padding: 11px 14px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border-left: 3px solid var(--green);
+}
+.banner.bad { border-left-color: var(--bad); }
+
+.row { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+.row input, .row select { width: auto; flex: 1; min-width: 140px; }
+
+/* --- stats -------------------------------------------------------------- */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 20px;
+}
+.stat {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px var(--pad);
+}
+.stat .n { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.stat .n.green { color: var(--green); }
+.stat .k {
+  font-size: 11px;
   text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  margin-top: 4px;
 }
-.vz-val {
-  font: 600 11px/1 var(--mono);
-  fill: var(--ink-2);
+
+/* --- the flow strip ----------------------------------------------------- */
+.flow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 12px var(--pad);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--muted);
+}
+.flow b { color: var(--ink); font-weight: 600; }
+.flow .arrow { color: var(--green-dim); }
+
+/* --- lists -------------------------------------------------------------- */
+.list { display: flex; flex-direction: column; gap: 8px; }
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px var(--pad);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.item.next { border-color: var(--green-dim); }
+
+.place {
+  min-width: 34px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-.vz-hero {
-  font: 600 27px/1 var(--sans);
-  fill: var(--ink);
-  font-variant-numeric: tabular-nums;
+.item.next .place { color: var(--green); }
+
+.body { flex: 1; min-width: 0; }
+.cap {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.meta a { color: var(--muted); }
+.ups { color: var(--green); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.pill {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.pill.ok { color: var(--green); border-color: var(--green-dim); }
+.pill.bad { color: var(--bad); border-color: var(--bad); }
+
+.actions { display: flex; gap: 6px; }
+
+.empty {
+  padding: 26px var(--pad);
+  text-align: center;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
 }
 
-/* Touch targets: the ticks are 3px wide because that is the honest width of
-   an instant, so the whole lane row takes the press instead. */
-.vz line, .vz circle { transition: opacity .12s ease; }
-.vz:hover line[stroke-width="3"] { opacity: .55; }
-.vz line[stroke-width="3"]:hover { opacity: 1; }
+/* --- config grid -------------------------------------------------------- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+}
+.kv {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px var(--pad);
+}
+.kv .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.kv .v { margin-top: 2px; overflow-wrap: anywhere; }
 
-@media (prefers-reduced-motion: reduce) {
-  .vz line, .vz circle { transition: none; }
+pre {
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--pad);
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
-/* One column on a phone: a radar beside a gauge at 375px leaves the radar
-   130px wide, which is smaller than its own axis labels. */
-@media (max-width: 460px) {
-  .vz-pair { flex-direction: column; gap: 0; }
-  .vz-pair .vz-gauge,
-  .vz-pair .vz-meter { flex: none; width: 100%; max-width: 190px; }
+/* --- player ------------------------------------------------------------- */
+.player {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .86);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  padding: 20px;
+}
+.player-inner { max-width: 380px; width: 100%; text-align: center; }
+.player video {
+  width: 100%;
+  border-radius: var(--radius);
+  background: #000;
+  max-height: 70vh;
+}
+.player p { margin: 12px 0; }
+
+@media (max-width: 640px) {
+  .top { flex-wrap: wrap; gap: 10px; }
+  .tabs { order: 3; width: 100%; }
+  .item { flex-wrap: wrap; }
+  .actions { width: 100%; justify-content: flex-end; }
 }

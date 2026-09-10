@@ -48,7 +48,7 @@ def _describe() -> int:
         print(f"{name:<10} {state}")
 
     if not any(configured for _, configured, _ in rows):
-        print("\nNothing to check. See docs/DEPLOY.md for which keys to set.")
+        print("\nNothing to check. See .env.example for which keys to set.")
         return 1
 
     # The part worth checking before you trust the queue: an id is just digits,

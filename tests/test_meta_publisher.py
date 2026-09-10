@@ -464,7 +464,7 @@ def test_meta_status_endpoint_never_returns_a_token(meta_env, monkeypatch):
     monkeypatch.setattr(settings, "instagram_access_token", "ig-secret-token", raising=False)
     monkeypatch.setattr(settings, "database_url", None, raising=False)
 
-    import api.routes.settings as settings_routes
+    import api.routes.app as settings_routes
 
     monkeypatch.setattr(
         settings_routes,
@@ -491,7 +491,7 @@ def test_meta_status_says_so_when_nothing_is_configured(monkeypatch):
     for key in ("instagram_user_id", "threads_user_id", "facebook_page_id"):
         monkeypatch.setattr(settings, key, None, raising=False)
 
-    import api.routes.settings as settings_routes
+    import api.routes.app as settings_routes
 
     payload = settings_routes.meta_status()
 
@@ -506,7 +506,7 @@ def test_meta_status_survives_a_dead_token(meta_env, monkeypatch):
         lambda: (_ for _ in ()).throw(RuntimeError("Session has expired")),
     )
 
-    import api.routes.settings as settings_routes
+    import api.routes.app as settings_routes
 
     payload = settings_routes.meta_status()
 
@@ -519,7 +519,7 @@ def test_meta_status_flags_missing_storage(meta_env, monkeypatch):
     monkeypatch.setattr(settings, "database_url", None, raising=False)
     monkeypatch.setattr("core.publishers.meta.describe_accounts", dict)
 
-    import api.routes.settings as settings_routes
+    import api.routes.app as settings_routes
 
     payload = settings_routes.meta_status()
 
@@ -533,7 +533,7 @@ def test_meta_status_names_the_variables_that_are_missing(monkeypatch):
         monkeypatch.setattr(settings, key, None, raising=False)
     monkeypatch.setattr(settings, "meta_app_id", "app-1", raising=False)
 
-    import api.routes.settings as settings_routes
+    import api.routes.app as settings_routes
 
     payload = settings_routes.meta_status()
 
@@ -547,7 +547,7 @@ def test_variables_lists_never_carry_a_value(meta_env, monkeypatch):
     monkeypatch.setattr(settings, "database_url", None, raising=False)
     monkeypatch.setattr("core.publishers.meta.describe_accounts", dict)
 
-    import api.routes.settings as settings_routes
+    import api.routes.app as settings_routes
 
     payload = settings_routes.meta_status()
     listed = payload["variables_set"] + payload["variables_missing"]

@@ -1,12 +1,14 @@
-"""Stage 7 - post an approved clip.
+"""Send the top of the queue out.
 
-Which backend actually runs is `PUBLISHER` in the environment: manual (default,
-nothing is posted), youtube (your own OAuth app, free), meta (your own Meta app
-- Instagram Reels, Threads, Facebook Reels, free), or upload_post (a reseller,
-the only route to Snapchat and the way past TikTok's audit).
+The caption is the Reddit title, verbatim. Not summarised, not rewritten, not
+"improved" - it is the author's own words about their own video, and a repost
+page that rewrites them is doing something meaningfully worse than one that
+copies them.
 
-Nothing is posted unless a human approved the clip first, and the approval flow
-does not change when you switch backends.
+Which backend actually runs is `PUBLISHER`: manual (default - nothing goes
+out), youtube, meta, or upload_post. And nothing goes out at all unless
+AUTOPOST_ENABLED is on, whatever else is configured: an accidental deploy that
+starts posting is not a mistake you can take back.
 """
 
 from __future__ import annotations
@@ -14,130 +16,129 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy import select
 
 from core.config import settings
 from core.db import session_scope
-from core.models import Account, Clip, Post
+from core.models import Account, Reel, ReelPost
 from core.publishers import PublishRequest, get_publisher
 from core.storage import get_storage
-from worker.tasks.common import work_dir_for
 
 log = logging.getLogger(__name__)
 
 
-def platforms_for(clip_id: int) -> list[str]:
+def platforms() -> list[str]:
     """Every active account's platform, deduped, in a stable order."""
     with session_scope() as session:
-        rows = (
-            session.query(Account.platform)
-            .filter(Account.status == "active")
+        rows = session.execute(
+            select(Account.platform)
+            .where(Account.status == "active")
             .distinct()
             .order_by(Account.platform)
-            .all()
-        )
-    return [row[0] for row in rows]
+        ).scalars()
+        return list(rows)
 
 
-def run(clip_id: int, platforms: list[str] | None = None) -> list[int]:
-    """Publish one approved clip. Returns the post ids created."""
+def publish_one(reel_id: int, only: list[str] | None = None) -> list[ReelPost]:
+    """Put one prepared reel on every account. Returns the attempts recorded.
+
+    A platform refusing is recorded, not raised: one refusal is not the others
+    refusing, and a run that gives up on the first error posts nothing on a day
+    when three of four would have worked.
+    """
+    from worker.tasks.harvest import prepare
+
     with session_scope() as session:
-        clip = session.get(Clip, clip_id)
-        if clip is None:
-            raise ValueError(f"no clip {clip_id}")
-        if clip.status not in ("approved", "posted"):
-            raise ValueError(
-                f"clip {clip_id} is {clip.status}, not approved - publishing needs a human first"
-            )
-        storage_key = clip.storage_key
-        title = clip.title or f"clip-{clip_id}"
-        hashtags = list(clip.hashtags or [])
-        candidate_id = clip.candidate_id
+        reel = session.get(Reel, reel_id)
+        if reel is None:
+            raise ValueError(f"no reel {reel_id}")
+        if reel.state == "posted":
+            raise ValueError(f"reel {reel_id} has already gone out")
+        caption, external_id = reel.caption, reel.external_id
+        local = Path(reel.local_path) if reel.local_path else None
 
-    if not storage_key:
-        raise ValueError(f"clip {clip_id} has no stored file")
+    # The download is deliberately late, so a reel beaten before its turn was
+    # never fetched at all.
+    if local is None or not local.exists():
+        local = prepare(reel_id)
 
-    targets = platforms or platforms_for(clip_id)
-    if not targets:
-        log.warning("clip %s has no target platforms - add an account first", clip_id)
-        return []
+    key = f"reels/{external_id}.mp4"
+    storage = get_storage()
+    try:
+        storage.put_file(local, key)
+        public_url = storage.url_for(key)
+    except Exception as exc:  # noqa: BLE001 - local files still post fine
+        log.warning("publish: could not store %s (%s)", key, exc)
+        key, public_url = None, None
 
-    local = work_dir_for(candidate_id) / Path(storage_key).name
-    if not local.exists():
-        get_storage().get_file(storage_key, local)
-
-    publisher = get_publisher()
-    log.info("publishing clip %s to %s via %s", clip_id, ", ".join(targets), publisher.name)
-
-    results = publisher.publish(
-        PublishRequest(
-            clip_path=local,
-            title=title,
-            description=title,
-            hashtags=hashtags,
-            platforms=targets,
-            storage_key=storage_key,
-        )
+    request = PublishRequest(
+        clip_path=local,
+        title=caption[:100],
+        # Verbatim. The author wrote this about their own video.
+        description=caption,
+        hashtags=[],
+        platforms=only or platforms(),
+        storage_key=key,
+        public_url=public_url,
     )
+    results = get_publisher().publish(request)
 
-    post_ids: list[int] = []
-    now = datetime.now(UTC)
+    recorded: list[ReelPost] = []
     with session_scope() as session:
+        reel = session.get(Reel, reel_id)
         for result in results:
-            account = (
-                session.query(Account)
-                .filter(Account.platform == result.platform, Account.status == "active")
-                .first()
-            )
-            post = Post(
-                clip_id=clip_id,
-                account_id=account.id if account else None,
+            row = ReelPost(
+                reel_id=reel_id,
                 platform=result.platform,
                 platform_post_id=result.post_id,
                 platform_url=result.url,
-                posted_at=now if result.ok else None,
-                status="posted" if result.ok else "failed",
                 error=result.error,
+                status="posted" if result.ok else "failed",
+                posted_at=datetime.now(UTC) if result.ok else None,
             )
-            session.add(post)
-            session.flush()
-            post_ids.append(post.id)
+            session.add(row)
+            recorded.append(row)
+        if reel is not None:
+            reel.storage_key = key
+            if any(r.ok for r in results):
+                reel.state = "posted"
+                reel.posted_at = datetime.now(UTC)
+            else:
+                reel.note = "; ".join(r.error or "refused" for r in results)[:400]
+        session.flush()
+        for row in recorded:
+            session.expunge(row)
+    return recorded
 
-        if any(r.ok for r in results):
-            session.get(Clip, clip_id).status = "posted"
 
-    for result in results:
-        if result.ok:
-            log.info("posted clip %s to %s (%s)", clip_id, result.platform, result.post_id)
-        else:
-            log.warning("clip %s failed on %s: %s", clip_id, result.platform, result.error)
-
-    return post_ids
-
-
-def autopost(limit: int | None = None) -> list[int]:
-    """Publish up to `limit` approved clips. Called by the scheduler.
-
-    Off unless AUTOPOST_ENABLED is set: posting on a schedule is a decision about
-    account risk, not a default.
-    """
+def post_due(limit: int | None = None) -> dict[str, Any]:
+    """Send out the best `limit` waiting reels, strongest first."""
+    limit = settings.post_per_run if limit is None else limit
     if not settings.autopost_enabled:
-        return []
-    limit = limit or settings.autopost_per_day
+        log.info("publish: AUTOPOST_ENABLED is off, nothing sent")
+        return {"posted": 0, "failed": 0, "skipped": "autopost disabled"}
 
-    with session_scope() as session:
-        clip_ids = [
-            row[0]
-            for row in session.query(Clip.id)
-            .filter(Clip.status == "approved")
-            .order_by(Clip.id.asc())
-            .limit(limit)
-            .all()
-        ]
+    from worker.tasks.harvest import queued
 
-    published: list[int] = []
-    for clip_id in clip_ids:
+    posted = failed = 0
+    for reel in queued(limit=limit):
         try:
-            published.extend(run(clip_id))
-        except Exception as exc:  # noqa: BLE001 - one clip must not stop the batch
-            log.exception("autopost failed for clip %s: %s", clip_id, exc)
-    return published
+            results = publish_one(reel.id)
+        except Exception as exc:  # noqa: BLE001 - one bad reel is not the run
+            log.warning("publish: reel %s failed (%s)", reel.external_id, exc)
+            with session_scope() as session:
+                row = session.get(Reel, reel.id)
+                if row is not None:
+                    row.note = str(exc)[:400]
+            failed += 1
+            continue
+        if any(r.status == "posted" for r in results):
+            posted += 1
+            log.info("publish: %s out (%d ups) %s",
+                     reel.external_id, reel.ups, reel.caption[:60])
+        else:
+            failed += 1
+
+    return {"posted": posted, "failed": failed}

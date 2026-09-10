@@ -161,7 +161,8 @@ def _q(params: dict[str, Any]) -> str:
 # the routes themselves
 
 
-def by_oauth(room: str | None, sort: str, time_filter: str, limit: int) -> list[reddit.Post]:
+def by_oauth(room: str | None, sort: str, time_filter: str, limit: int,
+             skip: set[str] | None = None) -> list[reddit.Post]:
     """The supported route: a free script app, over oauth.reddit.com."""
     if not settings.has_reddit:
         raise RouteFailed("no REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET")
@@ -181,10 +182,11 @@ def by_oauth(room: str | None, sort: str, time_filter: str, limit: int) -> list[
         )
     if response.status_code >= 400:
         raise RouteFailed(f"{response.status_code} from oauth.reddit.com")
-    return _posts(response.json())
+    return _posts(response.json(), skip)
 
 
-def _plain_json(room, sort, time_filter, limit, *, proxy: str | None) -> list[reddit.Post]:
+def _plain_json(room, sort, time_filter, limit, *, proxy: str | None,
+                skip: set[str] | None = None) -> list[reddit.Post]:
     path, params = _listing_path(room, sort, time_filter, limit)
     kwargs: dict[str, Any] = {"timeout": 30.0, "follow_redirects": True}
     if proxy:
@@ -203,15 +205,17 @@ def _plain_json(room, sort, time_filter, limit, *, proxy: str | None) -> list[re
         payload = response.json()
     except ValueError:
         raise RouteFailed("answered with a page, not JSON (usually a block page)") from None
-    return _posts(payload)
+    return _posts(payload, skip)
 
 
-def by_json(room: str | None, sort: str, time_filter: str, limit: int) -> list[reddit.Post]:
+def by_json(room: str | None, sort: str, time_filter: str, limit: int,
+            skip: set[str] | None = None) -> list[reddit.Post]:
     """No app at all. Works from a laptop, 403s from most clouds."""
-    return _plain_json(room, sort, time_filter, limit, proxy=None)
+    return _plain_json(room, sort, time_filter, limit, proxy=None, skip=skip)
 
 
-def by_proxied_json(room: str | None, sort: str, time_filter: str, limit: int) -> list[reddit.Post]:
+def by_proxied_json(room: str | None, sort: str, time_filter: str, limit: int,
+                    skip: set[str] | None = None) -> list[reddit.Post]:
     """The same request from a different address, which is what it objected to."""
     proxy = settings.reddit_proxy
     if not proxy:
@@ -221,10 +225,11 @@ def by_proxied_json(room: str | None, sort: str, time_filter: str, limit: int) -
         if not pool:
             raise RouteFailed("no proxy configured (REDDIT_PROXY / YTDLP_PROXIES)")
         proxy = pool[int(time.time() // 600) % len(pool)]
-    return _plain_json(room, sort, time_filter, limit, proxy=proxy)
+    return _plain_json(room, sort, time_filter, limit, proxy=proxy, skip=skip)
 
 
-def by_reader(room: str | None, sort: str, time_filter: str, limit: int) -> list[reddit.Post]:
+def by_reader(room: str | None, sort: str, time_filter: str, limit: int,
+              skip: set[str] | None = None) -> list[reddit.Post]:
     """Have a public reader service fetch the JSON, so their address asks.
 
     These exist to make pages readable by machines and are free at this
@@ -248,7 +253,7 @@ def by_reader(room: str | None, sort: str, time_filter: str, limit: int) -> list
         response = client.get(prefix.rstrip("/") + "/" + target, headers=headers)
     if response.status_code >= 400:
         raise RouteFailed(f"{response.status_code} from the reader service")
-    return _posts(_json_inside(response.text))
+    return _posts(_json_inside(response.text), skip)
 
 
 def _json_inside(text: str) -> Any:
@@ -276,7 +281,8 @@ def _feed(url: str, headers: dict[str, str], timeout: float = 30.0) -> list[Entr
     return parse_atom(response.text)
 
 
-def by_mirror(room: str | None, sort: str, time_filter: str, limit: int) -> list[reddit.Post]:
+def by_mirror(room: str | None, sort: str, time_filter: str, limit: int,
+              skip: set[str] | None = None) -> list[reddit.Post]:
     """A Redlib front-end: a different domain, so Reddit's block is not in play.
 
     Public instances come and go, which is why the list is configuration with
@@ -308,12 +314,13 @@ def by_mirror(room: str | None, sort: str, time_filter: str, limit: int) -> list
                 continue
             if entries:
                 log.info("reddit: mirror %s answered with %d entries", base, len(entries))
-                return hydrate(entries, limit)
+                return hydrate(entries, limit, skip)
             problems.append(f"{base}: empty feed")
     raise RouteFailed("; ".join(problems[:4]))
 
 
-def by_rss(room: str | None, sort: str, time_filter: str, limit: int) -> list[reddit.Post]:
+def by_rss(room: str | None, sort: str, time_filter: str, limit: int,
+           skip: set[str] | None = None) -> list[reddit.Post]:
     """Reddit's own Atom feed. Same host, different door, refused less often."""
     if not room:
         raise RouteFailed("the feed route needs a named subreddit")
@@ -327,21 +334,22 @@ def by_rss(room: str | None, sort: str, time_filter: str, limit: int) -> list[re
         raise RouteFailed(str(exc)) from exc
     if not entries:
         raise RouteFailed("empty feed")
-    return hydrate(entries, limit)
+    return hydrate(entries, limit, skip)
 
 
 # --------------------------------------------------------------------------
 
 
-def _posts(payload: Any) -> list[reddit.Post]:
+def _posts(payload: Any, skip: set[str] | None = None) -> list[reddit.Post]:
     found = [reddit._post_from(data) for data in _children(payload)]
-    posts = [p for p in found if p]
+    posts = [p for p in found if p and p.external_id not in (skip or set())]
     if not posts and not _children(payload):
         raise RouteFailed("answered, but with an empty listing")
     return posts
 
 
-def hydrate(entries: list[Entry], limit: int) -> list[reddit.Post]:
+def hydrate(entries: list[Entry], limit: int,
+            skip: set[str] | None = None) -> list[reddit.Post]:
     """Fill in what a feed cannot say, by asking yt-dlp about each post.
 
     A feed gives a title and a link. Duration, the adult flag and whether the
@@ -352,8 +360,13 @@ def hydrate(entries: list[Entry], limit: int) -> list[reddit.Post]:
     postable in the first place.
 
     The cost is one network round trip per candidate, which is why this only
-    runs on the routes that have no cheaper way to know.
+    runs on the routes that have no cheaper way to know - and why `skip` earns
+    its place. A queue that has been running a week already knows most of what
+    a feed shows it, and looking those up again is the difference between a
+    run that takes one minute and one that takes ten.
     """
+    skip = skip or set()
+    entries = [e for e in entries if e.external_id not in skip]
     import yt_dlp
 
     from core.ytdlp import base_options
@@ -411,7 +424,7 @@ def hydrate(entries: list[Entry], limit: int) -> list[reddit.Post]:
 class Route:
     name: str
     why: str
-    fetch: Callable[[str | None, str, str, int], list[reddit.Post]]
+    fetch: Callable[..., list[reddit.Post]]
     #: Feed routes pay a round trip per candidate, so they go last and are
     #: worth marking rather than leaving the ordering to carry the meaning.
     thin: bool = field(default=False)
@@ -448,6 +461,7 @@ def listing(
     sort: str = "top",
     time_filter: str | None = None,
     limit: int = 50,
+    skip: set[str] | None = None,
 ) -> tuple[list[reddit.Post], str]:
     """Posts from `room`, by whichever route answers. Also says which one did.
 
@@ -461,7 +475,7 @@ def listing(
 
     for route in routes():
         try:
-            posts = route.fetch(room, sort, time_filter, limit)
+            posts = route.fetch(room, sort, time_filter, limit, skip)
         except RouteFailed as exc:
             problems.append(f"{route.name}: {exc}")
             continue

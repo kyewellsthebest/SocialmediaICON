@@ -1,26 +1,18 @@
-"""Reddit as a source of clippable video.
+"""Reddit as the source of finished video.
 
-Reddit's search is site-wide, so one query reaches every subreddit at once -
-which matters here, because the good metal detecting video is scattered across
-r/metaldetecting, r/Damnthatsinteresting, r/interestingasfuck and a dozen
-others rather than sitting in one place.
+Nothing here is edited. Somebody already decided the moment was worth posting,
+framed it, chose where it starts and stops, and several thousand people agreed
+by upvoting it. The video arrives under a minute long with a title its author
+wrote - which is why this path needs no model, no transcript, and no key beyond
+a free Reddit app it can also do without.
 
-Two things make it worth the trouble over YouTube:
+What it does need is discipline about two things, because there is no editor
+downstream to catch either: nothing adult, and nothing longer than short-form.
+Both live in `postable`, the one function every path goes through.
 
-* It answers from a datacenter. No proxy, no cookies, no bot check.
-* The comments say *why* a video is good. A replay curve tells you people
-  rewound to 4:12; a comment thread tells you they rewound because of what he
-  said when the coil went over it. That is a better instruction for where to
-  cut.
-
-Two things are worse: there are no view counts, only votes, and much of what
-is posted is a crosspost to YouTube, which is the door we already found shut.
-Both are handled by filtering rather than hoping.
-
-One thing turned out the same: Reddit refuses unauthenticated requests from
-datacenter ranges with a 403, exactly as YouTube does. Credentials avoid that -
-the OAuth host serves cloud hosts happily - and failing those, the request goes
-out through the same proxy pool the downloader uses.
+Reddit refuses unauthenticated reads from datacenter ranges with a 403.
+Credentials avoid that, and failing those, core.reddit_routes has five other
+ways in - the feeds among them, which is what a cloud host usually ends up on.
 """
 
 from __future__ import annotations
@@ -271,52 +263,6 @@ def search(
         posts = [p for p in (_post_from(c.get("data") or {}) for c in children) if p]
         log.info("reddit %r -> %d posts, %d native video", query, len(children), len(posts))
         return posts
-    finally:
-        if owns_client:
-            client.close()
-
-
-def top_comments(
-    post_id: str, limit: int = 25, client: httpx.Client | None = None
-) -> list[dict[str, Any]]:
-    """The highest-voted comments on a post.
-
-    This is the part a replay curve cannot give you: not where people reacted,
-    but what they said about it. Returned oldest-field-first so the caller can
-    hand them to a model without reshaping.
-    """
-    owns_client = client is None
-    client = client or make_client()
-    try:
-        base, headers = _endpoint(client)
-        response = client.get(
-            f"{base}/comments/{post_id}{'' if base == API else '.json'}",
-            params={"sort": "top", "limit": limit, "depth": 1, "raw_json": 1},
-            headers=headers,
-        )
-        if response.status_code >= 400:
-            raise RedditError(f"comments failed ({response.status_code})")
-
-        payload = response.json()
-        # [0] is the post itself, [1] is the comment tree.
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        out: list[dict[str, Any]] = []
-        for child in (payload[1].get("data") or {}).get("children") or []:
-            data = child.get("data") or {}
-            body = (data.get("body") or "").strip()
-            if not body or body in ("[deleted]", "[removed]"):
-                continue
-            out.append(
-                {
-                    "body": body,
-                    "ups": int(data.get("ups") or 0),
-                    "author": data.get("author"),
-                }
-            )
-        out.sort(key=lambda c: c["ups"], reverse=True)
-        return out[:limit]
     finally:
         if owns_client:
             client.close()

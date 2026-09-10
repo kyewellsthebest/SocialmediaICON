@@ -111,7 +111,7 @@ class TestOneRouteFailingIsNotRedditFailing:
         answering(handler)
         monkeypatch.setattr(
             reddit_routes, "hydrate",
-            lambda entries, limit: [_a_post(e.external_id) for e in entries])
+            lambda entries, limit, skip=None: [_a_post(e.external_id) for e in entries])
 
         posts, route = reddit_routes.listing("GYM")
         assert route == "rss"
@@ -144,7 +144,7 @@ class TestOneRouteFailingIsNotRedditFailing:
 
         answering(handler)
         monkeypatch.setattr(reddit_routes, "hydrate",
-                            lambda entries, limit: [_a_post("abc123")])
+                            lambda entries, limit, skip=None: [_a_post("abc123")])
 
         reddit_routes.listing("GYM")
         tried.clear()
@@ -310,8 +310,8 @@ class TestTheMirrorRoute:
 
         answering(handler)
         monkeypatch.setattr(reddit_routes, "hydrate",
-                            lambda entries, limit: [_a_post(e.external_id)
-                                                    for e in entries])
+                            lambda entries, limit, skip=None:
+                            [_a_post(e.external_id) for e in entries])
         posts = reddit_routes.by_mirror("GYM", "top", "day", 25)
         # Both URL shapes are tried on the dead one before moving on: RSS is
         # opt-in on a Redlib instance and lives on two different routes
@@ -352,7 +352,7 @@ class TestAskingTheDeploymentItself:
         useless as a diagnostic: the point is to see all six."""
         monkeypatch.setattr(
             "api.routes.reddit._try",
-            lambda route, *a: {"route": route.name, "ok": route.name == "rss",
+            lambda route, *a, **k: {"route": route.name, "ok": route.name == "rss",
                                "seconds": 0.1, "reason": "403", "video": 1,
                                "postable": 1, "sees_scores": False, "sample": []})
         body = self._app(monkeypatch).get("/api/reddit/ways-in").text
@@ -362,7 +362,7 @@ class TestAskingTheDeploymentItself:
     def test_a_total_failure_says_what_the_three_causes_are(self, monkeypatch):
         monkeypatch.setattr(
             "api.routes.reddit._try",
-            lambda route, *a: {"route": route.name, "ok": False,
+            lambda route, *a, **k: {"route": route.name, "ok": False,
                                "seconds": 0.1, "reason": "403 Forbidden"})
         body = self._app(monkeypatch).get("/api/reddit/ways-in").text
         assert "Nothing got through" in body and "egress policy" in body
@@ -371,7 +371,7 @@ class TestAskingTheDeploymentItself:
             self, monkeypatch):
         monkeypatch.setattr(
             "api.routes.reddit._try",
-            lambda route, *a: {"route": route.name, "ok": route.name in ("rss", "json"),
+            lambda route, *a, **k: {"route": route.name, "ok": route.name in ("rss", "json"),
                                "seconds": 1.0 if route.name == "json" else 2.0,
                                "reason": "403", "video": 2, "postable": 2,
                                "sees_scores": route.name == "json", "sample": []})
@@ -405,7 +405,7 @@ class TestTheSilentClipCheck:
                                                       ups_known=True)], "rss"))
         video = tmp_path / "abc123.mp4"
         video.write_bytes(b"x" * 1000)
-        monkeypatch.setattr("worker.tasks.gym_reddit.fetch", lambda p, into: video)
+        monkeypatch.setattr(route, "_fetch_once", lambda p: video)
         monkeypatch.setattr(route, "_streams", lambda p: {
             "probed": True, "has_audio": False, "has_video": True,
             "size": "720x1280", "duration_s": 20.0})
@@ -423,7 +423,7 @@ class TestTheSilentClipCheck:
                             lambda *a, **k: ([_a_post("abc123")], "rss"))
         video = tmp_path / "abc123.mp4"
         video.write_bytes(b"x" * 1000)
-        monkeypatch.setattr("worker.tasks.gym_reddit.fetch", lambda p, into: video)
+        monkeypatch.setattr(route, "_fetch_once", lambda p: video)
         monkeypatch.setattr(route, "_streams", lambda p: {
             "probed": True, "has_audio": True, "has_video": True,
             "size": "720x1280", "duration_s": 20.0})
