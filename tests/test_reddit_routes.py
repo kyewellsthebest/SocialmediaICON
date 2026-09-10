@@ -313,8 +313,11 @@ class TestTheMirrorRoute:
                             lambda entries, limit: [_a_post(e.external_id)
                                                     for e in entries])
         posts = reddit_routes.by_mirror("GYM", "top", "day", 25)
-        assert seen == ["dead.example", "alive.example"]
-        assert len(posts) == 2
+        # Both URL shapes are tried on the dead one before moving on: RSS is
+        # opt-in on a Redlib instance and lives on two different routes
+        # depending on version, so a 404 is not proof the instance is gone.
+        assert seen[0] == "dead.example" and seen[-1] == "alive.example"
+        assert "alive.example" in seen and len(posts) == 2
 
     def test_it_cannot_serve_the_whole_site(self):
         with pytest.raises(reddit_routes.RouteFailed):
@@ -382,3 +385,71 @@ class TestAskingTheDeploymentItself:
         monkeypatch.setattr(settings, "dashboard_token", "secret")
         client = TestClient(api.main.app)
         assert client.get("/api/reddit/ways-in").status_code == 401
+
+
+class TestTheSilentClipCheck:
+    """Reddit serves video and audio as two separate files. A download that
+    fetched only the video half plays perfectly, opens in any player, and is
+    silent - and there is no editor downstream to notice before it is posted.
+    So the check is a real download and a real probe, not a format string that
+    looked right."""
+
+    def test_a_silent_file_is_reported_as_a_failure(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+
+        import api.main
+        import api.routes.reddit as route
+        monkeypatch.setattr(settings, "dashboard_token", None)
+        monkeypatch.setattr(reddit_routes, "listing",
+                            lambda *a, **k: ([_a_post("abc123", ups=900,
+                                                      ups_known=True)], "rss"))
+        video = tmp_path / "abc123.mp4"
+        video.write_bytes(b"x" * 1000)
+        monkeypatch.setattr("worker.tasks.gym_reddit.fetch", lambda p, into: video)
+        monkeypatch.setattr(route, "_streams", lambda p: {
+            "probed": True, "has_audio": False, "has_video": True,
+            "size": "720x1280", "duration_s": 20.0})
+
+        body = TestClient(api.main.app).get("/api/reddit/try-one").text
+        assert "SILENT" in body
+
+    def test_a_good_file_says_the_path_works(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+
+        import api.main
+        import api.routes.reddit as route
+        monkeypatch.setattr(settings, "dashboard_token", None)
+        monkeypatch.setattr(reddit_routes, "listing",
+                            lambda *a, **k: ([_a_post("abc123")], "rss"))
+        video = tmp_path / "abc123.mp4"
+        video.write_bytes(b"x" * 1000)
+        monkeypatch.setattr("worker.tasks.gym_reddit.fetch", lambda p, into: video)
+        monkeypatch.setattr(route, "_streams", lambda p: {
+            "probed": True, "has_audio": True, "has_video": True,
+            "size": "720x1280", "duration_s": 20.0})
+
+        answer = TestClient(api.main.app).get("/api/reddit/try-one?format=json")
+        assert answer.json()["ok"] is True
+        assert "has an audio track" in answer.json()["report"]
+
+    def test_nothing_postable_is_not_reported_as_a_broken_download(
+            self, monkeypatch):
+        """A quiet day in one room is a bounds problem. Reporting it as a
+        download fault sends you to read the wrong code."""
+        from fastapi.testclient import TestClient
+
+        import api.main
+        monkeypatch.setattr(settings, "dashboard_token", None)
+        monkeypatch.setattr(reddit_routes, "listing",
+                            lambda *a, **k: ([_a_post("x", over_18=True)], "rss"))
+        body = TestClient(api.main.app).get("/api/reddit/try-one").text
+        assert "not necessarily a fault" in body
+
+    def test_it_records_nothing_so_it_can_be_run_again(self):
+        """The harvest remembers what it took, on purpose. A diagnostic that
+        did the same could be run exactly once per post."""
+        import inspect
+
+        import api.routes.reddit as route
+        source = inspect.getsource(route.try_one)
+        assert "remember" not in source

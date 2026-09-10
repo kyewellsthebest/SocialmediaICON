@@ -286,20 +286,26 @@ def by_mirror(room: str | None, sort: str, time_filter: str, limit: int) -> list
     path, params = _listing_path(room, sort, time_filter, limit)
     problems = []
     for base in instances:
-        try:
-            entries = _feed(
-                f"{base.rstrip('/')}{path}.rss?{_q(params)}",
-                {"User-Agent": settings.reddit_user_agent},
-                timeout=20.0,
-            )
-        except (RouteFailed, httpx.HTTPError) as exc:
-            problems.append(f"{base}: {exc}")
-            continue
-        if entries:
-            log.info("reddit: mirror %s answered with %d entries", base, len(entries))
-            return hydrate(entries, limit)
-        problems.append(f"{base}: empty feed")
-    raise RouteFailed("; ".join(problems[:3]))
+        base = base.rstrip("/")
+        # Two shapes, because Redlib serves RSS off two different routes
+        # depending on version, and RSS is opt-in on an instance rather than
+        # always on - so a 404 here means "not enabled", not "wrong URL", and
+        # both shapes are worth one try before moving to the next instance.
+        for url in (
+            f"{base}{path}.rss?{_q(params)}",
+            f"{base}/r/{room}.rss?{_q(dict(params, sort=sort))}",
+        ):
+            try:
+                entries = _feed(
+                    url, {"User-Agent": settings.reddit_user_agent}, timeout=20.0)
+            except (RouteFailed, httpx.HTTPError) as exc:
+                problems.append(f"{base}: {exc}")
+                continue
+            if entries:
+                log.info("reddit: mirror %s answered with %d entries", base, len(entries))
+                return hydrate(entries, limit)
+            problems.append(f"{base}: empty feed")
+    raise RouteFailed("; ".join(problems[:4]))
 
 
 def by_rss(room: str | None, sort: str, time_filter: str, limit: int) -> list[reddit.Post]:

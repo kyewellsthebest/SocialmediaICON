@@ -15,7 +15,10 @@ the dashboard polls.
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query
@@ -125,3 +128,130 @@ def ways_in(
         return JSONResponse({"room": room, "sort": sort, "time": time_filter,
                              "routes": rows, "report": _report(rows, room, time_filter)})
     return PlainTextResponse(_report(rows, room, time_filter) + "\n")
+
+
+def _streams(path: Path) -> dict[str, Any]:
+    """What ffprobe says is actually inside the file.
+
+    The audio track is the point. Reddit serves video and audio as two
+    separate DASH files, so a download that fetched only the video half plays
+    perfectly, opens in any player, and is silent - and there is no editor
+    downstream to notice before it is posted.
+    """
+    if not shutil.which("ffprobe"):
+        return {"probed": False, "why": "ffprobe is not installed"}
+    try:
+        found = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "stream=codec_type,codec_name,width,height:format=duration",
+             "-of", "default=noprint_wrappers=1", str(path)],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return {"probed": False, "why": "ffprobe timed out"}
+
+    kinds, size, duration = [], None, None
+    for line in found.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key == "codec_type":
+            kinds.append(value)
+        elif key == "width":
+            size = f"{value}x"
+        elif key == "height" and size:
+            size += value
+        elif key == "duration":
+            try:
+                duration = round(float(value), 1)
+            except ValueError:
+                pass
+    return {"probed": True, "has_audio": "audio" in kinds,
+            "has_video": "video" in kinds, "size": size, "duration_s": duration}
+
+
+@router.get("/try-one")
+def try_one(
+    room: str | None = Query(default=None),
+    sort: str = Query(default="top"),
+    time_filter: str = Query(default="day", alias="time"),
+    format: str = Query(default="text"),
+) -> Any:
+    """Download one real video and say what actually came down.
+
+    A diagnostic, not the harvest: it records nothing, so it can be run again
+    and again on the same post. What it is checking is the failure that cannot
+    be caught by looking - a silent clip - and it downloads a real file rather
+    than trusting that the format string was right.
+    """
+    room = room or (settings.reddit_rooms[0] if settings.reddit_rooms else "gym")
+    began = time.time()
+
+    try:
+        posts, route = reddit_routes.listing(room, sort, time_filter, limit=8)
+    except reddit.RedditError as exc:
+        return _answer(format, {"ok": False, "stage": "listing", "reason": str(exc)},
+                       f"could not read r/{room}:\n{exc}")
+
+    keep = [p for p in posts if reddit.postable(p)[0]]
+    if not keep:
+        why = (f"r/{room} answered by {route}, but none of its {len(posts)} "
+               f"videos are postable. Widen the window or try a busier room - "
+               f"not necessarily a fault.")
+        return _answer(format, {"ok": False, "stage": "filter", "route": route,
+                                "video": len(posts), "reason": why}, why)
+
+    best = max(keep, key=lambda p: p.ups)
+    into = Path(settings.work_dir) / "reddit-try"
+    try:
+        from worker.tasks.gym_reddit import fetch
+
+        video = fetch(best, into)
+    except Exception as exc:  # noqa: BLE001 - the failure is the measurement
+        why = f"found {best.external_id} but could not download it:\n{exc}"
+        return _answer(format, {"ok": False, "stage": "download", "route": route,
+                                "post": best.external_id, "reason": str(exc)[:400]}, why)
+
+    probe = _streams(video)
+    payload = {
+        "ok": bool(probe.get("has_audio")),
+        "stage": "downloaded", "route": route,
+        "post": best.external_id, "url": best.url,
+        "caption": best.title,
+        "author": f"u/{best.author}" if best.author else None,
+        "subreddit": f"r/{best.subreddit}",
+        "ups": best.ups if best.ups_known else None,
+        "reddit_says_duration_s": best.duration_s,
+        "megabytes": round(video.stat().st_size / 1e6, 1),
+        "seconds_taken": round(time.time() - began, 1),
+        **probe,
+    }
+
+    lines = [
+        f"r/{room} read by {route}, {len(keep)} of {len(posts)} postable",
+        "",
+        f"  took       {best.external_id}  ({payload['megabytes']} MB in "
+        f"{payload['seconds_taken']}s)",
+        f"  caption    {best.title[:88]}",
+        f"  by         {payload['author']} in {payload['subreddit']}",
+        f"  duration   reddit said {best.duration_s or 0:.0f}s, "
+        f"file is {probe.get('duration_s') or 0:.0f}s",
+        f"  picture    {probe.get('size') or 'unknown'}",
+        "",
+    ]
+    if not probe.get("probed"):
+        lines.append(f"  ?  the audio was not checked: {probe.get('why')}")
+    elif probe.get("has_audio"):
+        lines.append("  OK it has an audio track. The download path works.")
+    else:
+        lines += [
+            "  NO SILENT. It fetched the video half of the DASH pair only.",
+            "     That is the trap: it plays fine and nobody notices until it",
+            "     is on the page. The format string in gym_reddit.fetch is",
+            "     what to look at.",
+        ]
+    return _answer(format, payload, "\n".join(lines))
+
+
+def _answer(format: str, payload: dict[str, Any], report: str) -> Any:
+    if format == "json":
+        return JSONResponse(payload | {"report": report})
+    return PlainTextResponse(report + "\n")
