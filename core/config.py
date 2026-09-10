@@ -234,16 +234,27 @@ class Settings(BaseSettings):
     def sqlalchemy_url(self) -> str:
         """DATABASE_URL, spelled the way SQLAlchemy wants it.
 
-        Railway and Heroku both hand out postgres:// and SQLAlchemy 2 only
-        answers to postgresql://, which fails at connect time with a message
-        about a missing dialect rather than about the URL.
+        Two rewrites, and both are needed. Railway and Heroku hand out
+        postgres://, which SQLAlchemy 2 does not answer to at all; and plain
+        postgresql:// makes it reach for psycopg2, which is not what is
+        installed. Neither failure names the URL as the problem.
         """
         if not self.database_url:
             raise RuntimeError("DATABASE_URL is not set")
         url = self.database_url
         if url.startswith("postgres://"):
             url = "postgresql://" + url[len("postgres://"):]
+        if url.startswith("postgresql://"):
+            # ...and onto psycopg 3, which is what is installed. Without this
+            # SQLAlchemy reaches for psycopg2, is not given it, and reports
+            # "No module named 'psycopg2'" - which reads as a missing
+            # dependency rather than as a URL that names the wrong driver.
+            url = "postgresql+psycopg://" + url[len("postgresql://"):]
         return url
+
+    @property
+    def r2_endpoint_url(self) -> str:
+        return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
 
     @property
     def instagram_via_instagram_login(self) -> bool:
