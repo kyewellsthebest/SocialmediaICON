@@ -182,6 +182,14 @@ function play(reel) {
   $("player").hidden = false;
 }
 
+function closePlayer() {
+  const video = $("player-video");
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  $("player").hidden = true;
+}
+
 /* --- posted ------------------------------------------------------------- */
 
 async function loadPosted() {
@@ -328,16 +336,13 @@ function start() {
   $("try-one").onclick = (e) =>
     diagnose("/reddit/try-one", e.currentTarget, "Download one and check the sound");
 
-  $("player-close").onclick = () => {
-    $("player-video").pause();
-    $("player-video").removeAttribute("src");
-    $("player").hidden = true;
-  };
-
   showView("queue");
 }
 
 function gate() {
+  // A refused token can arrive while the player is open, and a modal left
+  // over a password box is one nothing can be done about.
+  closePlayer();
   $("app").hidden = true;
   $("gate").hidden = false;
   const go = async () => {
@@ -353,6 +358,18 @@ function gate() {
   $("gate-go").onclick = go;
   $("gate-token").onkeydown = (e) => { if (e.key === "Enter") go(); };
 }
+
+// Bound here rather than inside start(), so the overlay can always be closed
+// - including when the token was refused and the dashboard never started.
+$("player-close").onclick = closePlayer;
+$("player").onclick = (event) => {
+  // The backdrop, not the video inside it.
+  if (event.target === $("player")) closePlayer();
+};
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closePlayer();
+});
+closePlayer();
 
 // The stored token is checked once, on load. A failure here means the gate,
 // not a retry - there is nothing to retry against.

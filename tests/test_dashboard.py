@@ -150,3 +150,58 @@ class TestTheTokenGateStillHolds:
         # 503 rather than 401: past the gate, and failing on the database it
         # has not got, which is the correct next failure.
         assert client.get("/api/reels/1/video?token=sekrit").status_code == 503
+
+
+class TestTheVideoOverlayCanAlwaysBeClosed:
+    """It could not be. `.player` sets `display: flex`, and any author rule
+    that sets display beats the browser's own `[hidden] { display: none }` -
+    so the overlay was permanently visible, sitting on top of the password
+    box, with a Close button that set an attribute nothing was reading.
+
+    Two faults in one: the attribute did nothing, and the handler was bound
+    inside start(), which never runs when the token has been refused. So the
+    one screen where you most need to dismiss it was the one screen where the
+    button had never been wired up.
+    """
+
+    CSS = Path(__file__).resolve().parent.parent / "api" / "static" / "app.css"
+
+    def test_hidden_beats_any_display_rule(self):
+        css = self.CSS.read_text(encoding="utf-8")
+        assert "[hidden] { display: none !important; }" in css
+
+    def test_the_rule_comes_before_the_components_that_need_it(self):
+        """Same specificity would otherwise be settled by source order."""
+        css = self.CSS.read_text(encoding="utf-8")
+        assert css.index("[hidden]") < css.index(".player {")
+
+    def test_closing_is_bound_at_load_not_inside_start(self):
+        """start() does not run when the token was refused, which is exactly
+        when an overlay stuck over the password box cannot be dismissed."""
+        js = APP_JS.read_text(encoding="utf-8")
+        start = js.index("function start()")
+        binding = js.index('$("player-close").onclick')
+        assert binding > js.index("function gate()"), (
+            "the close handler must be bound at the top level, not inside start()")
+        assert binding > start or "closePlayer" in js[start:binding]
+
+    def test_there_are_three_ways_out(self):
+        """A button, the backdrop, and Escape. A modal with one way out is a
+        modal that traps someone the moment that one way breaks."""
+        js = APP_JS.read_text(encoding="utf-8")
+        assert '$("player-close").onclick = closePlayer' in js
+        assert 'event.target === $("player")' in js
+        assert '"Escape"' in js
+
+    def test_the_gate_dismisses_it(self):
+        """A refused token can arrive while the player is open."""
+        js = APP_JS.read_text(encoding="utf-8")
+        gate = js.split("function gate()")[1].split("\n}")[0]
+        assert "closePlayer()" in gate
+
+    def test_closing_actually_stops_the_download(self):
+        """Removing src without load() leaves the browser streaming a video
+        nobody is watching."""
+        js = APP_JS.read_text(encoding="utf-8")
+        body = js.split("function closePlayer()")[1].split("\n}")[0]
+        assert "pause()" in body and "removeAttribute" in body and "load()" in body

@@ -19,6 +19,14 @@
 
 * { box-sizing: border-box; }
 
+/* The browser's own [hidden] rule is a UA style, and any author rule that
+   sets `display` beats it - so `.player { display: flex }` made the video
+   overlay permanently visible, sitting on top of the password box with a
+   Close button that set an attribute nothing was reading. Anything toggled
+   with `hidden` needs this, and it is easier to state once than to remember
+   per component. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
