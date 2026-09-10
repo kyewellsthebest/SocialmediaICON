@@ -13,13 +13,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
-from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from core import credentials
 from core.config import settings
 from core.db import session_scope
-from core.models import Account, Reel, ReelPost
+from core.models import Reel, ReelPost
+from core.publishers import destinations
 from core.storage import get_storage
 
 log = logging.getLogger(__name__)
@@ -60,10 +60,6 @@ def overview() -> dict[str, Any]:
         weakest = session.execute(
             select(func.min(Reel.ups)).where(Reel.state.in_(("found", "ready")))
         ).scalar()
-        accounts = session.execute(
-            select(func.count(Account.id)).where(Account.status == "active")
-        ).scalar()
-
     waiting = int(counts.get("found", 0)) + int(counts.get("ready", 0))
     return {
         "waiting": waiting,
@@ -73,7 +69,10 @@ def overview() -> dict[str, Any]:
         "bar": weakest if waiting >= settings.queue_size else None,
         "posted": int(counts.get("posted", 0)),
         "beaten": int(counts.get("dropped", 0)),
-        "accounts": int(accounts or 0),
+        # Derived from the credentials, not from a table of handles typed
+        # in beside them. An empty list means nothing is configured to
+        # receive a post, which is a different problem from autopost off.
+        "destinations": destinations(),
         "posts_per_run": settings.post_per_run,
         "rooms": len(settings.reddit_rooms),
         "window": settings.reddit_time_filter,
@@ -82,7 +81,16 @@ def overview() -> dict[str, Any]:
         "routes": settings.reddit_route_names or ["all six, in order"],
         "storage": "r2" if settings.has_storage else "local disk",
         "queued_jobs": settings.has_redis,
+        # So that "still running" and "did nothing" stop looking the same. A
+        # full pass reads every room and takes minutes.
+        "last_run": _last_run(),
     }
+
+
+def _last_run() -> dict[str, Any] | None:
+    from worker.tasks.harvest import last_run
+
+    return last_run()
 
 
 @router.get("/queue")
@@ -314,37 +322,51 @@ def meta_status() -> dict[str, Any]:
     return payload
 
 
-class AccountIn(BaseModel):
-    platform: str
-    handle: str
-    status: str = "active"
+@router.get("/services")
+def services() -> dict[str, Any]:
+    """Where reels will go, and whether those credentials actually work.
 
+    Not a list of handles somebody typed: the ids in the environment are the
+    accounts, and this asks Meta to name each one rather than reporting that a
+    variable is non-empty. Posting to the wrong Instagram account is the
+    failure nothing else catches until after it has happened.
+    """
+    where = destinations()
+    payload: dict[str, Any] = {
+        "publisher": settings.publisher,
+        "autopost": settings.autopost_enabled,
+        "destinations": where,
+        "resolved": {},
+        "blocked": [],
+    }
 
-@router.get("/accounts")
-def list_accounts() -> dict[str, Any]:
-    with session_scope() as session:
-        rows = list(session.execute(select(Account).order_by(Account.platform)).scalars())
-        return {"items": [
-            {"id": a.id, "platform": a.platform, "handle": a.handle, "status": a.status}
-            for a in rows
-        ]}
+    if not where:
+        payload["blocked"].append(
+            f"PUBLISHER={settings.publisher} has no credentials set, so there "
+            f"is nowhere for a reel to go."
+        )
+    if not settings.autopost_enabled:
+        payload["blocked"].append("AUTOPOST_ENABLED is off, so nothing will be sent.")
+    if settings.publisher == "meta" and not settings.has_r2:
+        payload["blocked"].append(
+            "Meta downloads the file from a URL rather than accepting an "
+            "upload, so R2 must be configured before it can post."
+        )
 
+    if settings.publisher in ("meta", "manual") and where:
+        from core.publishers.meta import describe_accounts
 
-@router.post("/accounts")
-def add_account(body: AccountIn) -> dict[str, Any]:
-    with session_scope() as session:
-        account = Account(platform=body.platform.lower().strip(),
-                          handle=body.handle.strip(), status=body.status)
-        session.add(account)
-        session.flush()
-        return {"id": account.id}
+        try:
+            payload["resolved"] = describe_accounts()
+        except Exception as exc:  # noqa: BLE001 - a dead token must not 500 the page
+            payload["error"] = str(exc)[:300]
 
-
-@router.delete("/accounts/{account_id}")
-def remove_account(account_id: int) -> dict[str, Any]:
-    with session_scope() as session:
-        account = session.get(Account, account_id)
-        if account is None:
-            raise HTTPException(404, "no such account")
-        session.delete(account)
-    return {"ok": True}
+    payload["tokens"] = [
+        {
+            "name": row["name"],
+            "days_left": row["days_left"],
+            "last_error": row["last_error"],
+        }
+        for row in credentials.status()
+    ]
+    return payload

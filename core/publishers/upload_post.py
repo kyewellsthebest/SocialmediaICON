@@ -32,6 +32,10 @@ PLATFORM_NAMES = {
     "x": "x",
     "linkedin": "linkedin",
     "pinterest": "pinterest",
+    # The reason to use a reseller at all: there is no practical public
+    # posting API for Snapchat, and TikTok's own one only posts drafts until
+    # an app has been through audit.
+    "snapchat": "snapchat",
 }
 
 

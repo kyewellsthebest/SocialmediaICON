@@ -107,6 +107,20 @@ async function loadQueue() {
     flow.append(el("b", null, step));
   });
 
+  const ran = over.last_run;
+  if (ran) {
+    const when = new Date(ran.at);
+    const mins = Math.round((Date.now() - when.getTime()) / 60000);
+    flow.append(el("span", "arrow", "·"));
+    flow.append(el("span", null,
+      `last run ${mins < 1 ? "just now" : mins + "m ago"}: ` +
+      `${ran.found} found, ${ran.added} added, ${ran.pushed_out} pushed out, ` +
+      `${ran.posted} posted (${ran.seconds}s)`));
+  } else {
+    flow.append(el("span", "arrow", "·"));
+    flow.append(el("span", null, "no run has finished yet"));
+  }
+
   $("queue-sub").textContent = queue.items.length
     ? `— the top ${Math.min(queue.goes_out_next, queue.items.length)} go out next run`
     : "";
@@ -231,30 +245,49 @@ async function loadPosted() {
 /* --- setup -------------------------------------------------------------- */
 
 async function loadSetup() {
-  const [accounts, over] = await Promise.all([api("/accounts"), api("/overview")]);
+  const [where, over] = await Promise.all([api("/services"), api("/overview")]);
 
-  const list = $("accounts");
+  const list = $("destinations");
   list.replaceChildren();
-  if (!accounts.items.length) {
-    list.append(el("div", "empty",
-      "No accounts yet. Nothing can be posted until one exists."));
+
+  for (const problem of where.blocked || []) {
+    const row = el("div", "item");
+    row.append(el("span", "pill bad", "blocked"), el("div", "body", problem));
+    list.append(row);
   }
-  for (const account of accounts.items) {
+
+  if (!where.destinations.length) {
+    list.append(el("div", "empty",
+      `PUBLISHER=${where.publisher} has no credentials set. Nothing can be ` +
+      `posted until it does.`));
+  }
+
+  for (const platform of where.destinations) {
     const row = el("div", "item");
     const body = el("div", "body");
-    body.append(el("span", "cap", `${account.handle}`));
-    body.append(el("div", "meta", account.platform));
-    row.append(body, el("span", "pill" + (account.status === "active" ? " ok" : ""),
-      account.status));
-    const remove = el("button", "btn small danger", "Remove");
-    remove.onclick = async () => {
-      await api(`/accounts/${account.id}`, { method: "DELETE" });
-      loadSetup();
-    };
-    const actions = el("div", "actions");
-    actions.append(remove);
-    row.append(actions);
+    // The name Meta gave back, not one anybody typed. If this is not the
+    // account you expected, the ids are pointing somewhere else.
+    const named = (where.resolved || {})[platform];
+    body.append(el("span", "cap", named || platform));
+    body.append(el("div", "meta", named ? platform : "credentials set, name not resolved"));
+    row.append(body, el("span", "pill" + (named ? " ok" : ""),
+      where.autopost ? "live" : "ready"));
     list.append(row);
+  }
+
+  if (where.error) {
+    const row = el("div", "item");
+    row.append(el("span", "pill bad", "token"), el("div", "body", where.error));
+    list.append(row);
+  }
+
+  for (const tokenRow of where.tokens || []) {
+    if (tokenRow.days_left !== null && tokenRow.days_left < 14) {
+      const row = el("div", "item");
+      row.append(el("span", "pill bad", `${tokenRow.days_left}d`),
+        el("div", "body", `${tokenRow.name} expires soon`));
+      list.append(row);
+    }
   }
 
   const config = $("config");
@@ -318,17 +351,6 @@ function start() {
     }
     button.disabled = false;
     button.textContent = "Run now";
-  };
-
-  $("acc-add").onclick = async () => {
-    const handle = $("acc-handle").value.trim();
-    if (!handle) return say("A handle is needed.", true);
-    await api("/accounts", {
-      method: "POST",
-      body: JSON.stringify({ platform: $("acc-platform").value, handle }),
-    });
-    $("acc-handle").value = "";
-    loadSetup();
   };
 
   $("ways-in").onclick = (e) =>

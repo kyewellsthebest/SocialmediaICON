@@ -72,6 +72,23 @@ through, because there is no editor downstream to catch either:
 - **Nothing over 60 seconds**, which is where Reels, Shorts and TikTok all stop
   treating a video as short-form. And nothing under 4, which is not a post.
 
+## Where reels go
+
+There is no list of accounts to fill in. The destinations are derived from
+whichever credentials are set — `INSTAGRAM_USER_ID` *is* the Instagram
+account — because two records of one fact is one too many, and the way the
+second one goes wrong is by naming an account the credentials cannot reach.
+That reads as "the post failed" rather than "those are two different
+accounts".
+
+The Setup tab asks Meta to name each account rather than reporting that a
+variable is non-empty, since posting to the wrong Instagram is the failure
+nothing else catches until after it has happened.
+
+Two switches gate everything: `PUBLISHER` picks the backend, and
+`AUTOPOST_ENABLED` has to be on. An accidental deploy that starts posting is
+not a mistake you can take back.
+
 ## Attribution
 
 Every reel keeps its permalink, subreddit and author for as long as the row
@@ -107,7 +124,7 @@ Gated behind `DASHBOARD_TOKEN` — set it, or anyone with the URL can drive it.
 | --- | --- |
 | **Queue** | The fifteen, ranked. What a new video has to beat to get in. Prepare and watch one before it goes out, or drop it |
 | **Posted** | What went out, and where. Plus what was beaten, and by how much |
-| **Setup** | Accounts, the route test, the download-and-check-the-sound test, and the live config |
+| **Setup** | Where reels go (and what those credentials resolve to), the route test, the download-and-check-the-sound test, and the live config |
 
 ## Layout
 

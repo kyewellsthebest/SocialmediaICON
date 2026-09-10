@@ -8,9 +8,10 @@ video is worth keeping and is never deleted, so a video that has been posted
 cannot be found and posted again months later. What separates the queue from
 the archive is `state`, not the table.
 
-`accounts` and `credentials` survive from the pipeline this replaced because
-posting has not changed: the same four publishers need to know which handles
-to post to and which tokens to use.
+`credentials` survives from the pipeline this replaced because posting has not
+changed. There is no table of accounts: INSTAGRAM_USER_ID *is* the Instagram
+account, and a handle typed beside it is a second record of the same fact that
+can only ever disagree with it.
 """
 
 from __future__ import annotations
@@ -113,19 +114,6 @@ class ReelPost(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
     reel: Mapped[Reel] = relationship(back_populates="posts")
-
-
-class Account(TimestampMixin, Base):
-    """A handle to post to."""
-
-    __tablename__ = "accounts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    platform: Mapped[str] = mapped_column(String(32), nullable=False)
-    handle: Mapped[str] = mapped_column(String(120), nullable=False)
-    # Points at the secret store / env key holding the token, never the token.
-    auth_ref: Mapped[str | None] = mapped_column(String(200))
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
 
 class Credential(Base):

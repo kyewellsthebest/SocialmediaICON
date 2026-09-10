@@ -52,21 +52,12 @@
 
     <!-- SETUP ------------------------------------------------------------ -->
     <section class="view" id="view-setup" hidden>
-      <h2>Accounts</h2>
-      <p class="muted">Where reels go. Nothing is posted while autopost is off.</p>
-      <div id="accounts" class="list"></div>
-      <div class="row">
-        <select id="acc-platform">
-          <option value="instagram">instagram</option>
-          <option value="tiktok">tiktok</option>
-          <option value="youtube">youtube</option>
-          <option value="facebook">facebook</option>
-          <option value="threads">threads</option>
-          <option value="snapchat">snapchat</option>
-        </select>
-        <input id="acc-handle" placeholder="@putitupp">
-        <button class="btn" id="acc-add">Add</button>
-      </div>
+      <h2>Where reels go</h2>
+      <p class="muted">Worked out from the credentials that are set — the ids
+        in the environment <em>are</em> the accounts, so there is nothing to
+        type here. Meta is asked to name each one, because posting to the
+        wrong account is the failure nothing else catches.</p>
+      <div id="destinations" class="list"></div>
 
       <h2>Reddit</h2>
       <p class="muted">Which door into Reddit this deployment can use, measured

@@ -1,5 +1,9 @@
 """Send the top of the queue out.
 
+Where a reel goes is worked out from the credentials that are set, not from a
+list of handles kept beside them - INSTAGRAM_USER_ID is the Instagram account,
+and a second record of the same fact is one that can disagree with it.
+
 The caption is the Reddit title, verbatim. Not summarised, not rewritten, not
 "improved" - it is the author's own words about their own video, and a repost
 page that rewrites them is doing something meaningfully worse than one that
@@ -18,27 +22,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-
 from core.config import settings
 from core.db import session_scope
-from core.models import Account, Reel, ReelPost
-from core.publishers import PublishRequest, get_publisher
+from core.models import Reel, ReelPost
+from core.publishers import PublishRequest, destinations, get_publisher
 from core.storage import get_storage
 
 log = logging.getLogger(__name__)
-
-
-def platforms() -> list[str]:
-    """Every active account's platform, deduped, in a stable order."""
-    with session_scope() as session:
-        rows = session.execute(
-            select(Account.platform)
-            .where(Account.status == "active")
-            .distinct()
-            .order_by(Account.platform)
-        ).scalars()
-        return list(rows)
 
 
 def publish_one(reel_id: int, only: list[str] | None = None) -> list[ReelPost]:
@@ -79,7 +69,7 @@ def publish_one(reel_id: int, only: list[str] | None = None) -> list[ReelPost]:
         # Verbatim. The author wrote this about their own video.
         description=caption,
         hashtags=[],
-        platforms=only or platforms(),
+        platforms=only or destinations(),
         storage_key=key,
         public_url=public_url,
     )

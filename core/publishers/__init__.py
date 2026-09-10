@@ -67,3 +67,48 @@ def get_publisher(name: str | None = None) -> Publisher:
     from core.publishers.manual import ManualPublisher
 
     return ManualPublisher()
+
+
+def destinations() -> list[str]:
+    """Where a reel goes, worked out from the credentials that are set.
+
+    There used to be a table of handles to fill in by hand, and it was the
+    thing stopping anything from posting: the credentials named the accounts
+    perfectly well, and the table sat empty beside them saying there was
+    nowhere to post to.
+
+    Two records of the same fact is one too many. INSTAGRAM_USER_ID *is* the
+    Instagram account; a handle typed next to it adds nothing and can
+    disagree with it. So the destinations are derived, and the only way to
+    change them is to change the credentials - which is also the only way to
+    change where a post can actually land.
+    """
+    choice = (settings.publisher or "manual").lower()
+
+    if choice == "youtube":
+        return ["youtube"] if settings.has_youtube_write else []
+
+    if choice == "upload_post":
+        # The reseller can reach a dozen platforms with one call, and which
+        # ones is a decision rather than a credential - the same key posts
+        # everywhere. So this one is named explicitly.
+        from core.publishers.upload_post import PLATFORM_NAMES
+
+        if not settings.has_upload_post:
+            return []
+        wanted = [p.strip().lower() for p in settings.upload_post_platforms.split(",")]
+        return [p for p in wanted if p in PLATFORM_NAMES]
+
+    # meta, and manual, which reports what *would* be reachable rather than
+    # an empty list - "nothing configured" and "configured but switched off"
+    # are different problems and should not read the same.
+    reachable = []
+    if settings.has_instagram:
+        reachable.append("instagram")
+    if settings.has_threads:
+        reachable.append("threads")
+    if settings.has_facebook:
+        reachable.append("facebook")
+    if choice == "manual" and settings.has_youtube_write:
+        reachable.append("youtube")
+    return reachable

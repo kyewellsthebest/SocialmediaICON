@@ -233,8 +233,51 @@ def prepare(reel_id: int) -> Path:
     return branded
 
 
+LAST_RUN_KEY = "putitupp:last-run"
+
+
+def note_run(summary: dict[str, Any]) -> None:
+    """Leave a record of the last pass where the dashboard can read it.
+
+    A full pass reads twenty-five rooms and looks each candidate up
+    individually, so it takes minutes. Without this, "still running" and "did
+    nothing at all" look exactly the same from the browser - which is the
+    state the whole thing was in when it was first switched on.
+
+    Redis rather than a table: it is a status line, not a record, and it is
+    already there for the queue.
+    """
+    if not settings.has_redis:
+        return
+    try:
+        import json
+
+        from worker.queue import get_redis
+
+        get_redis().set(LAST_RUN_KEY, json.dumps(
+            summary | {"at": datetime.now(UTC).isoformat()}))
+    except Exception as exc:  # noqa: BLE001 - a status line is not worth a run
+        log.warning("harvest: could not record the run (%s)", exc)
+
+
+def last_run() -> dict[str, Any] | None:
+    """What the last pass did, or None if none has finished here."""
+    if not settings.has_redis:
+        return None
+    try:
+        import json
+
+        from worker.queue import get_redis
+
+        raw = get_redis().get(LAST_RUN_KEY)
+        return json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def run(post: bool = True) -> dict[str, Any]:
     """One daily pass: read the rooms, re-rank, then send the top out."""
+    began = datetime.now(UTC)
     found = discover()
     added = admit(found)
     pushed = trim()
@@ -252,5 +295,7 @@ def run(post: bool = True) -> dict[str, Any]:
         summary["failed"] = result["failed"]
         summary["queue"] = len(queued())
 
+    summary["seconds"] = round((datetime.now(UTC) - began).total_seconds(), 1)
+    note_run(summary)
     log.info("harvest: %s", summary)
     return summary

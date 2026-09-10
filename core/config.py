@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     upload_post_api_key: str | None = None
     upload_post_user: str | None = None
     upload_post_base_url: str = "https://api.upload-post.com"
+    #: Which platforms the reseller should post to. Unlike the Meta ones this
+    #: is a decision rather than a credential - the same key reaches all of
+    #: them - so it has to be named rather than derived.
+    upload_post_platforms: str = "tiktok,snapchat"
 
     youtube_client_id: str | None = None
     youtube_client_secret: str | None = None
