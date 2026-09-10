@@ -21,6 +21,7 @@ from core.db import session_scope
 from core.storage import get_storage
 
 from .deps import require_token
+from .routes import reddit as reddit_routes_api
 from .routes import settings as settings_routes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -46,6 +47,7 @@ app.add_middleware(
 protected = [Depends(require_token)]
 for router in (
     settings_routes.router,
+    reddit_routes_api.router,
 ):
     app.include_router(router, prefix="/api", dependencies=protected)
 

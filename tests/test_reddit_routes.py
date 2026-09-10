@@ -330,3 +330,55 @@ class TestChoosingWhichRoutesToTry:
         monkeypatch.setattr(settings, "reddit_routes", "")
         assert [r.name for r in reddit_routes.routes()] == \
             [r.name for r in reddit_routes.ROUTES]
+
+
+class TestAskingTheDeploymentItself:
+    """The measurement has to happen on the host that will do the work, and
+    that host has no terminal on it - so it answers over HTTP instead."""
+
+    def _app(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import api.main
+        monkeypatch.setattr(settings, "dashboard_token", None)
+        return TestClient(api.main.app)
+
+    def test_it_reports_every_route_not_just_the_first_that_worked(
+            self, monkeypatch):
+        """A chain that stops at the first success is right in production and
+        useless as a diagnostic: the point is to see all six."""
+        monkeypatch.setattr(
+            "api.routes.reddit._try",
+            lambda route, *a: {"route": route.name, "ok": route.name == "rss",
+                               "seconds": 0.1, "reason": "403", "video": 1,
+                               "postable": 1, "sees_scores": False, "sample": []})
+        body = self._app(monkeypatch).get("/api/reddit/ways-in").text
+        for route in reddit_routes.ROUTES:
+            assert route.name in body
+
+    def test_a_total_failure_says_what_the_three_causes_are(self, monkeypatch):
+        monkeypatch.setattr(
+            "api.routes.reddit._try",
+            lambda route, *a: {"route": route.name, "ok": False,
+                               "seconds": 0.1, "reason": "403 Forbidden"})
+        body = self._app(monkeypatch).get("/api/reddit/ways-in").text
+        assert "Nothing got through" in body and "egress policy" in body
+
+    def test_it_ends_with_the_line_to_paste_into_the_environment(
+            self, monkeypatch):
+        monkeypatch.setattr(
+            "api.routes.reddit._try",
+            lambda route, *a: {"route": route.name, "ok": route.name in ("rss", "json"),
+                               "seconds": 1.0 if route.name == "json" else 2.0,
+                               "reason": "403", "video": 2, "postable": 2,
+                               "sees_scores": route.name == "json", "sample": []})
+        body = self._app(monkeypatch).get("/api/reddit/ways-in").text
+        assert "REDDIT_ROUTES=json,rss" in body
+
+    def test_it_is_behind_the_dashboard_token(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import api.main
+        monkeypatch.setattr(settings, "dashboard_token", "secret")
+        client = TestClient(api.main.app)
+        assert client.get("/api/reddit/ways-in").status_code == 401
