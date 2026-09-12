@@ -68,9 +68,10 @@
       </div>
       <pre id="diag" hidden></pre>
 
-      <h2>The worker</h2>
-      <p class="muted">A run is queued for the worker service to pick up.
-        Redis accepting the job is not the same as anything running it.</p>
+      <h2>The daily run</h2>
+      <p class="muted">It happens in this service, on a thread — there is no
+        worker to be missing. A run that throws is recorded here, because a
+        thread has nobody waiting on it and no response to fail.</p>
       <div id="worker" class="list"></div>
       <div class="row">
         <button class="btn" id="run-here">Run 3 rooms here, now</button>

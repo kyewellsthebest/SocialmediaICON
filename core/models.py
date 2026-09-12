@@ -1,7 +1,6 @@
 """The whole schema.
 
-Four tables, because the job is four things: find a video, keep the best
-fifteen, brand one, post it.
+Four tables: the queue, what went out, what each run did, and the tokens.
 
 `reels` is the queue and the archive at once - a row is created the moment a
 video is worth keeping and is never deleted, so a video that has been posted
@@ -114,6 +113,33 @@ class ReelPost(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
     reel: Mapped[Reel] = relationship(back_populates="posts")
+
+
+class RunLog(TimestampMixin, Base):
+    """One daily pass, recorded whether it worked or not.
+
+    The failure this exists for: a run happening in a background thread has
+    nobody waiting on it and no response to fail, so one that throws is
+    completely silent. An empty queue then means either "nothing was found",
+    "it never started" or "it crashed", and those are three different things
+    to go and fix.
+    """
+
+    __tablename__ = "run_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    added: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pushed_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    posted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    #: The traceback, last two thousand characters. A run nobody was watching
+    #: leaves nothing else behind.
+    error: Mapped[str | None] = mapped_column(Text)
 
 
 class Credential(Base):

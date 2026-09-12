@@ -100,15 +100,24 @@ Put the disclaimer and a contact address in the account bio.
 
 ## Running it
 
-Three Railway services from one Dockerfile:
+**One Railway service.** There used to be three — a web one, a worker taking
+jobs off a Redis queue, and a scheduler putting them on it — and two of them
+existed to carry a clipping pipeline that no longer does. What they left behind
+was a failure with no symptom: the dashboard accepted a run, Redis accepted the
+job, and nothing picked it up, because the worker was not deployed. "Queued"
+and "queued and abandoned" look identical from a browser.
+
+This is one job, once a day, for about ten minutes. It runs on a thread inside
+the web service, which cannot fail to be running while its own dashboard
+answers. Every run is written to `run_log` — finished or failed, with the
+traceback, because a thread has nobody waiting on it and no response to fail.
 
 ```
-web        ./scripts/start.sh web         # migrations, then the API + dashboard
-worker     ./scripts/start.sh worker      # downloads, branding, posting
-scheduler  ./scripts/start.sh scheduler   # fires the daily run
+web   ./scripts/start.sh web   # migrations, the API, the dashboard, the daily run
 ```
 
-Only `web` migrates. Every variable the app reads is in
+If you still have `worker` or `scheduler` services in Railway, delete them.
+There is no Redis any more either. Every variable the app reads is in
 [`.env.example`](.env.example); anything not on that list is read by nothing.
 
 ```bash
@@ -137,10 +146,10 @@ core/
   models.py       four tables
   publishers/     manual | youtube | meta | upload_post
   storage.py      R2, with a local-directory fallback
+  jobs.py         the daily run, on a thread, one at a time, always recorded
 worker/
   tasks/harvest.py  discover, rank, evict, download, brand
   tasks/publish.py  send the top of the queue out
-  scheduler.py      the daily heartbeat
 api/
   routes/app.py     everything the dashboard reads
   static/           the dashboard, no build step
@@ -149,7 +158,7 @@ api/
 ## Tests
 
 ```bash
-pytest         # 149; the branding tests skip without ffmpeg
+pytest         # 200; the branding tests skip without ffmpeg
 ruff check .
 ```
 

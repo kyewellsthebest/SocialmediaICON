@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import func, select
 
-from core import credentials
+from core import credentials, jobs
 from core.config import settings
 from core.db import session_scope
 from core.models import Reel, ReelPost
@@ -80,17 +80,8 @@ def overview() -> dict[str, Any]:
         "autopost": settings.autopost_enabled,
         "routes": settings.reddit_route_names or ["all six, in order"],
         "storage": "r2" if settings.has_storage else "local disk",
-        "queued_jobs": settings.has_redis,
-        # So that "still running" and "did nothing" stop looking the same. A
-        # full pass reads every room and takes minutes.
-        "last_run": _last_run(),
+
     }
-
-
-def _last_run() -> dict[str, Any] | None:
-    from worker.tasks.harvest import last_run
-
-    return last_run()
 
 
 @router.get("/queue")
@@ -193,47 +184,53 @@ def run_now(
 ) -> dict[str, Any]:
     """Do a run now instead of waiting for the daily one.
 
-    Queued when Redis is configured, because a full pass reads every room and
-    takes minutes - long enough for a browser to give up on it and for the
-    person to press the button again, which is how you get two runs.
+    In the background by default, because a full pass reads every room and
+    takes minutes - longer than a browser will wait, and a request that times
+    out invites a second press, which is how you get two passes downloading
+    the same videos at once.
 
-    `inline` does it here instead, and `rooms` caps how many are read. That
-    pair exists to answer one question a queued job cannot: does the chain
-    work at all? A queued run that never starts and a queued run that failed
-    look identical from a browser, and both look like a broken harvest.
+    `inline` waits for it, which only makes sense with `rooms` small. That
+    pair answers a question the background version cannot: does the chain work
+    at all, right now, with the answer on this screen?
     """
-    from worker.tasks.harvest import run as daily_run
-
     if inline:
-        return {"queued": False, "result": daily_run(post=post, rooms=rooms or 3)}
+        return {"waited": True, "result": jobs.run(post=post, rooms=rooms or 3)}
 
-    if settings.has_redis:
-        from worker.queue import enqueue, status
-
-        job = enqueue("harvest", daily_run, post=post)
-        state = status()
-        # Redis accepting a job is not the same as anything running it, and
-        # from a browser those look identical - which is how "queued, give it
-        # a few minutes" can sit there forever.
-        return {
-            "queued": True,
-            "job": getattr(job, "id", None),
-            "workers": state.get("workers", 0),
-            "warning": state.get("why"),
-        }
-    return {"queued": False, "result": daily_run(post=post)}
+    started = jobs.start_in_background(post=post, rooms=rooms or None)
+    return {
+        "waited": False,
+        "started": started,
+        "since": str(jobs.in_flight()) if not started else None,
+    }
 
 
 @router.get("/run/status")
 def run_status() -> dict[str, Any]:
-    """Whether anything is listening, and what the last failure was.
+    """Whether a run is going, and what the last one did.
 
-    A job that died on the worker is otherwise invisible: RQ files it in a
-    registry nobody reads, and the dashboard goes on saying it is queued.
+    A run happens on a thread inside this service, so there is no queue to be
+    stuck in and no worker to be missing. What can still go wrong is that it
+    threw - which leaves no trace anywhere else, since nobody was waiting on
+    it and there was no response for it to fail.
     """
-    from worker.queue import status
-
-    return status()
+    going = jobs.in_flight()
+    previous = jobs.last()
+    return {
+        "running": going is not None,
+        "since": going.isoformat() if going else None,
+        "armed": settings.harvest_enabled and bool(settings.reddit_rooms),
+        "every_minutes": settings.harvest_interval_minutes,
+        "last": None if previous is None else {
+            "started_at": previous.started_at.isoformat(),
+            "finished_at": previous.finished_at.isoformat() if previous.finished_at else None,
+            "found": previous.found,
+            "added": previous.added,
+            "pushed_out": previous.pushed_out,
+            "posted": previous.posted,
+            "failed": previous.failed,
+            "error": previous.error,
+        },
+    }
 
 
 @router.post("/reels/{reel_id}/drop")

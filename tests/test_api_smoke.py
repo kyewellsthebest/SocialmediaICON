@@ -25,7 +25,7 @@ def client():
 def test_health_is_public_and_reports_subsystems(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"
-    assert set(body) >= {"db", "db_configured", "redis_configured", "storage", "publisher"}
+    assert set(body) >= {"db", "db_configured", "storage", "publisher"}
 
 
 def test_dashboard_and_assets_are_served(client):
@@ -54,28 +54,6 @@ def test_token_gate(client, monkeypatch):
 def test_health_stays_public_when_a_token_is_set(client, monkeypatch):
     monkeypatch.setattr(settings, "dashboard_token", "sekrit")
     assert client.get("/health").status_code == 200
-
-
-def test_worker_refuses_to_start_without_redis(monkeypatch, capsys):
-    """A missing REDIS_URL is a config mistake — it should print one actionable
-    line, not a traceback on every restart."""
-    from worker import queue
-
-    monkeypatch.setattr(settings, "redis_url", None)
-    assert queue.main([]) == 1
-    err = capsys.readouterr().err
-    assert "REDIS_URL is not set" in err
-    assert "${{Redis.REDIS_URL}}" in err
-    assert "Traceback" not in err
-
-
-def test_scheduler_refuses_to_run_jobs_inline_in_prod(monkeypatch, capsys):
-    from worker import scheduler
-
-    monkeypatch.setattr(settings, "redis_url", None)
-    monkeypatch.setattr(settings, "env", "prod")
-    assert scheduler.main() == 1
-    assert "REDIS_URL is not set" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -111,7 +89,8 @@ def test_procfile_commands_contain_no_shell_syntax():
             role, cmd = line.split(":", 1)
             commands[role.strip()] = cmd.strip()
 
-    assert set(commands) == {"web", "worker", "scheduler"}
+    # One process. The daily run happens inside it, on a thread.
+    assert set(commands) == {"web"}
     for role, cmd in commands.items():
         assert not re.search(r"[$`]", cmd), f"{role} command has shell syntax: {cmd}"
         assert cmd == f"./scripts/start.sh {role}", f"{role} should use the entrypoint"
@@ -144,7 +123,7 @@ def test_asset_version_changes_with_content(tmp_path, monkeypatch):
 
 
 def test_railway_config_has_no_global_healthcheck():
-    """railway.json applies to every service. worker and scheduler are
+    """railway.json applies to the service. The old worker and scheduler were
     background processes with no HTTP server, so a healthcheck here fails their
     deploys even though they started correctly. It belongs on web only, set per
     service in the Railway UI."""

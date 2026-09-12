@@ -52,11 +52,25 @@ for router in (
     app.include_router(router, prefix="/api", dependencies=protected)
 
 
+@app.on_event("startup")
+def arm_the_daily_run() -> None:
+    """The run lives here now, on a thread, rather than in a worker service.
+
+    One job once a day for about ten minutes does not need a process of its
+    own - and a service that is not running is a failure with no symptom: the
+    dashboard accepts a run, the queue accepts the job, and nothing ever picks
+    it up.
+    """
+    from core import jobs
+
+    jobs.start_heartbeat()
+
+
 @app.exception_handler(RuntimeError)
 def missing_infrastructure(request: Request, exc: RuntimeError) -> JSONResponse:
     """A route that needs Postgres or Redis should say so, not 500 blankly."""
     message = str(exc)
-    if "DATABASE_URL" in message or "REDIS_URL" in message:
+    if "DATABASE_URL" in message:
         return JSONResponse(status_code=503, content={"detail": message})
     raise exc
 
@@ -78,7 +92,6 @@ def health() -> dict[str, object]:
         "env": settings.env,
         "db": db_ok,
         "db_configured": settings.has_db,
-        "redis_configured": settings.has_redis,
         "storage": get_storage().kind,
         "publisher": settings.publisher,
         "secured": bool(settings.dashboard_token),

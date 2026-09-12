@@ -52,20 +52,6 @@ sys.exit(0 if (settings.redis_url if which == "redis" else settings.database_url
 PYCHECK
 }
 
-require_redis() {
-  have_connection redis && return 0
-  python -m core.envcheck REDIS_URL >&2 || true
-  fatal \
-    "REDIS_URL is not usable, and the $ROLE cannot queue work without it." \
-    "" \
-    "In Railway: add a Redis database, then set this service's variable to:" \
-    "" \
-    "    REDIS_URL=\${{Redis.REDIS_URL}}" \
-    "" \
-    "If it is already set, the reference did not resolve and arrives empty." \
-    "Use Railway's variable picker rather than typing the reference, and" \
-    "check the service really is called Redis, capitals included."
-}
 
 # Postgres can still be accepting connections a few seconds after the container
 # starts, so retry rather than crash-looping on a cold boot.
@@ -107,19 +93,17 @@ case "$ROLE" in
     # does not, uvicorn gets the literal string and never listens.
     exec python -m api.serve
     ;;
-  worker)
-    require_database
-    require_redis
-    wait_for_database
-    exec python -m worker.queue
-    ;;
-  scheduler)
-    require_database
-    require_redis
-    wait_for_database
-    exec python -m worker.scheduler
+  worker|scheduler)
+    fatal "there is no '$ROLE' service any more." \
+      "" \
+      "The daily run happens inside the web service, on a thread. One job" \
+      "once a day does not need a process of its own - and a service that is" \
+      "not running is a failure with no symptom: the dashboard accepts a run," \
+      "the queue accepts the job, and nothing ever picks it up." \
+      "" \
+      "Delete this service in Railway. Everything runs in 'web'."
     ;;
   *)
-    fatal "unknown role '$ROLE'" "" "Expected one of: web, worker, scheduler"
+    fatal "unknown role '$ROLE'" "" "The only role is: web"
     ;;
 esac

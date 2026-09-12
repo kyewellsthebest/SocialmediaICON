@@ -107,17 +107,18 @@ async function loadQueue() {
     flow.append(el("b", null, step));
   });
 
-  const ran = over.last_run;
-  if (ran) {
-    const when = new Date(ran.at);
-    const mins = Math.round((Date.now() - when.getTime()) / 60000);
-    flow.append(el("span", "arrow", "·"));
-    flow.append(el("span", null,
-      `last run ${mins < 1 ? "just now" : mins + "m ago"}: ` +
-      `${ran.found} found, ${ran.added} added, ${ran.pushed_out} pushed out, ` +
-      `${ran.posted} posted (${ran.seconds}s)`));
+  const state = await api("/run/status").catch(() => null);
+  flow.append(el("span", "arrow", "·"));
+  if (state && state.running) {
+    flow.append(el("span", null, "a run is going now"));
+  } else if (state && state.last) {
+    const mins = Math.round((Date.now() - new Date(state.last.started_at)) / 60000);
+    flow.append(el("span", null, state.last.error
+      ? `last run failed ${mins}m ago — see Setup`
+      : `last run ${mins < 1 ? "just now" : mins + "m ago"}: ` +
+        `${state.last.found} found, ${state.last.added} added, ` +
+        `${state.last.posted} posted`));
   } else {
-    flow.append(el("span", "arrow", "·"));
     flow.append(el("span", null, "no run has finished yet"));
   }
 
@@ -323,36 +324,29 @@ async function loadWorker() {
     return;
   }
 
-  if (!state.redis) {
-    box.append(el("div", "empty", state.why || "no Redis"));
-    return;
-  }
-
   const row = el("div", "item");
-  row.append(el("span", "pill " + (state.workers ? "ok" : "bad"),
-    `${state.workers} worker${state.workers === 1 ? "" : "s"}`));
+  row.append(el("span", "pill " + (state.running ? "ok" : ""),
+    state.running ? "running" : "idle"));
   const body = el("div", "body");
-  body.append(el("span", "cap", state.workers
-    ? `listening to ${(state.listening_to || []).join(", ") || "nothing"}`
-    : "nothing is listening — queued runs will never start"));
-  const counts = Object.entries(state.queues || {})
-    .map(([name, q]) => `${name}: ${q.waiting} waiting, ${q.running} running, ${q.failed} failed`)
-    .join("  ·  ");
-  body.append(el("div", "meta", counts));
+  body.append(el("span", "cap", state.running
+    ? `a run started at ${new Date(state.since).toLocaleTimeString()}`
+    : state.armed
+      ? `armed — every ${Math.round(state.every_minutes / 60)}h`
+      : "not armed (HARVEST_ENABLED is off, or no rooms)"));
+  const done = state.last;
+  body.append(el("div", "meta", done
+    ? `last run ${new Date(done.started_at).toLocaleString()}: ` +
+      `${done.found} found, ${done.added} added, ${done.pushed_out} pushed out, ` +
+      `${done.posted} posted`
+    : "no run has finished here yet"));
   row.append(body);
   box.append(row);
 
-  if (state.why) {
-    const warn = el("div", "item");
-    warn.append(el("span", "pill bad", "!"), el("div", "body", state.why));
-    box.append(warn);
-  }
-
-  if (state.last_error) {
-    box.append(el("div", "meta", `last failure on ${state.last_error.queue}` +
-      (state.last_error.at ? ` at ${state.last_error.at}` : "")));
-    const pre = el("pre", null, state.last_error.traceback);
-    box.append(pre);
+  // A run happens on a thread: nobody is waiting on it and there is no
+  // response for it to fail, so a traceback is the only trace it leaves.
+  if (done && done.error) {
+    box.append(el("div", "meta", "the last run failed:"));
+    box.append(el("pre", null, done.error));
   }
 }
 
@@ -387,14 +381,16 @@ function start() {
     button.textContent = "Running…";
     try {
       const done = await api("/run", { method: "POST" });
-      if (done.queued && !done.workers) {
-        say(done.warning || "Queued, but no worker is listening — it will " +
-          "never start. See Setup.", true);
+      if (done.waited) {
+        const r = done.result;
+        say(r.error ? `The run failed: ${r.error}` :
+          `${r.found} found, ${r.added} added, ${r.pushed_out} pushed out, ` +
+          `${r.posted} posted — in ${r.seconds}s.`, Boolean(r.error));
+      } else if (done.started) {
+        say("Running — it reads every room, so give it a few minutes. " +
+          "Setup shows how it went.");
       } else {
-        say(done.queued
-          ? "Run queued — it reads every room, so give it a few minutes."
-          : `Done: ${done.result.added} added, ${done.result.pushed_out} pushed out, ` +
-            `${done.result.posted} posted.`);
+        say(`A run is already going (started ${done.since}).`, true);
       }
       loadQueue();
     } catch (error) {
@@ -411,8 +407,9 @@ function start() {
     try {
       const done = await api("/run?inline=true&rooms=3", { method: "POST" });
       const r = done.result;
-      say(`${r.found} found, ${r.added} added, ${r.pushed_out} pushed out, ` +
-        `${r.posted} posted — in ${r.seconds}s.`);
+      say(r.error ? `The run failed: ${r.error}` :
+        `${r.found} found, ${r.added} added, ${r.pushed_out} pushed out, ` +
+        `${r.posted} posted — in ${r.seconds}s.`, Boolean(r.error));
       loadWorker();
     } catch (error) {
       say(error.message, true);

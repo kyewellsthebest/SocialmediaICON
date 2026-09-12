@@ -207,79 +207,88 @@ class TestTheVideoOverlayCanAlwaysBeClosed:
         assert "pause()" in body and "removeAttribute" in body and "load()" in body
 
 
-class TestAQueuedRunThatNeverRuns:
-    """Redis accepting a job is not the same as anything running it, and from
-    a browser those are identical: the page says "queued, give it a few
-    minutes" and goes on saying it forever. A job that died on the worker is
-    just as invisible - RQ files it in a registry nobody reads.
+class TestARunThatNeverRuns:
+    """There used to be a worker service taking jobs off a Redis queue, and
+    it produced a failure with no symptom: the dashboard accepted a run, Redis
+    accepted the job, and nothing ever picked it up, because the worker was
+    not deployed. "Queued" and "queued and abandoned" look identical.
+
+    The run happens on a thread in this service now, so there is no queue to
+    be stuck in and no worker to be missing. What can still go wrong is that
+    it throws - and a thread has nobody waiting on it and no response to fail,
+    so that has to be written down or it never appears to have happened.
     """
 
-    def test_the_status_says_how_many_workers_are_listening(self, monkeypatch):
-        """The one number that settles it."""
-        monkeypatch.setattr(settings, "redis_url", None)
-        from worker.queue import status
+    def test_there_is_no_worker_service_left_to_forget_to_deploy(self):
+        from pathlib import Path as P
 
-        assert status()["redis"] is False
-        assert "REDIS_URL" in status()["why"]
+        procfile = (P(__file__).resolve().parent.parent / "Procfile").read_text()
+        assert "worker:" not in procfile
+        assert "scheduler:" not in procfile
 
-    def test_no_workers_is_explained_rather_than_reported(self):
-        """"workers: 0" is a fact. "nothing will ever run, check the worker
-        service's deploy log" is the same fact plus what to do about it."""
+    def test_starting_the_old_services_says_what_happened_to_them(self):
+        """Rather than failing on a missing module, which reads as a broken
+        deploy rather than as a service that should be deleted."""
+        from pathlib import Path as P
+
+        start = (P(__file__).resolve().parent.parent / "scripts" / "start.sh").read_text()
+        assert "there is no '$ROLE' service any more" in start
+        assert "Delete this service in Railway" in start
+
+    def test_a_failed_run_is_written_down_with_its_traceback(self):
         import inspect
 
-        from worker import queue
-        source = inspect.getsource(queue.status)
-        assert "no worker is listening" in source
-        assert "crash-looping" in source
+        from core import jobs
+        source = inspect.getsource(jobs.run)
+        assert "format_exception" in source
+        assert "_record_end(run_id, None, detail)" in source
 
-    def test_an_old_deploy_listening_to_dead_queue_names_is_caught(self):
-        """The queue names changed in the rebuild. A worker still running the
-        previous image connects to Redis, reports itself healthy, and takes
-        nothing - which looks exactly like no worker at all."""
+    def test_two_runs_cannot_overlap(self):
+        """A second pass over the same rooms would double every download and
+        race the first one on the same rows."""
+        from core import jobs
+
+        assert jobs._running.acquire(blocking=False)
+        try:
+            assert jobs.start_in_background() is False
+            assert "already going" in jobs.run()["skipped"]
+        finally:
+            jobs._running.release()
+
+    def test_the_schedule_is_measured_from_when_a_run_started(self, monkeypatch):
+        """Not from when it finished. A pass that takes twenty minutes should
+        still go once a day, rather than drifting twenty minutes later every
+        day until it is going at midnight."""
         import inspect
 
-        from worker import queue
-        assert "redeploy the worker" in inspect.getsource(queue.status)
+        from core import jobs
+        assert "started_at" in inspect.getsource(jobs.due)
 
-    def test_the_last_failure_is_readable(self):
-        import inspect
-
-        from worker import queue
-        source = inspect.getsource(queue.status)
-        assert "failed_job_registry" in source
-        assert "exc_info" in source
-
-    def test_pressing_run_says_so_when_nothing_will_pick_it_up(self):
-        js = APP_JS.read_text(encoding="utf-8")
-        assert "no worker is listening" in js
-
-    def test_there_is_a_way_to_run_without_a_worker_at_all(self):
-        """Because "the harvest is broken" and "the worker is not running"
-        are different problems that produce the same empty queue."""
+    def test_there_is_a_way_to_run_and_wait_for_the_answer(self):
+        """Because "the harvest is broken" and "nothing is running it" are
+        different problems that produce the same empty queue."""
         import inspect
 
         import api.routes.app as routes
         source = inspect.getsource(routes.run_now)
-        assert "inline" in source
-        assert "rooms" in source
+        assert "inline" in source and "rooms" in source
 
-    def test_the_inline_run_is_capped_so_a_browser_will_wait_for_it(self):
+    def test_the_waiting_version_is_capped_so_a_browser_will_hold_on(self):
         import inspect
 
         import api.routes.app as routes
-        source = inspect.getsource(routes.run_now)
-        assert "rooms or 3" in source
+        assert "rooms or 3" in inspect.getsource(routes.run_now)
 
     def test_capping_the_rooms_reaches_the_harvest(self, monkeypatch):
+        from core.config import settings as env
         from worker.tasks import harvest
 
         asked = []
-        monkeypatch.setattr(settings, "reddit_subreddits", "a,b,c,d,e")
+        monkeypatch.setattr(env, "reddit_subreddits", "a,b,c,d,e")
         monkeypatch.setattr(harvest, "discover", lambda only=None: asked.append(only) or [])
         monkeypatch.setattr(harvest, "admit", lambda posts: 0)
         monkeypatch.setattr(harvest, "trim", lambda: 0)
         monkeypatch.setattr(harvest, "queued", lambda limit=None: [])
-        monkeypatch.setattr(harvest, "note_run", lambda summary: None)
 
         harvest.run(post=False, rooms=3)
         assert asked == [["a", "b", "c"]]
@@ -292,7 +301,53 @@ class TestAQueuedRunThatNeverRuns:
         monkeypatch.setattr(harvest, "admit", lambda posts: 0)
         monkeypatch.setattr(harvest, "trim", lambda: 0)
         monkeypatch.setattr(harvest, "queued", lambda limit=None: [])
-        monkeypatch.setattr(harvest, "note_run", lambda summary: None)
 
         harvest.run(post=False)
         assert asked == [None], "an uncapped run must not silently read three"
+
+    def test_the_meta_tokens_are_still_refreshed(self):
+        """They die at sixty days and cannot be revived. Losing that job when
+        the worker service went would be a silent sixty-day fuse."""
+        import inspect
+
+        from core import jobs
+        assert "refresh_tokens" in inspect.getsource(jobs._maybe_refresh_tokens)
+
+
+class TestTheDashboardTalksToElementsThatExist:
+    """`$("thing")` on an id the page does not carry returns null, and the
+    next line is a TypeError - at runtime, on whichever path touches it, which
+    may be one nobody opens for a week. The eslint test that would catch the
+    scope errors skips when eslint is absent; this needs nothing.
+    """
+
+    PAGE = Path(__file__).resolve().parent.parent / "api" / "static" / "index.html"
+
+    def _ids(self) -> set[str]:
+        return set(re.findall(r'id="([^"]+)"', self.PAGE.read_text(encoding="utf-8")))
+
+    def _used(self) -> set[str]:
+        return set(re.findall(r'\$\("([^"]+)"\)', APP_JS.read_text(encoding="utf-8")))
+
+    def test_every_element_the_script_reaches_for_is_on_the_page(self):
+        missing = sorted(self._used() - self._ids())
+        assert not missing, f"the script asks for ids the page does not have: {missing}"
+
+    def test_the_check_is_actually_finding_things(self):
+        """A regex that matched nothing would pass the test above while
+        checking nothing at all."""
+        assert len(self._used()) > 10
+        assert "run-now" in self._used()
+
+    def test_the_script_parses(self):
+        """Caught by nothing else here: a syntax error anywhere in the file
+        means the whole dashboard is a blank page."""
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if node is None:
+            pytest.skip("node is not installed")
+        done = subprocess.run(  # noqa: S603
+            [node, "--check", str(APP_JS)], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, done.stderr

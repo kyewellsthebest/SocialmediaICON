@@ -53,7 +53,6 @@ class Settings(BaseSettings):
 
     # --- infrastructure ---------------------------------------------------
     database_url: str | None = None
-    redis_url: str | None = None
 
     r2_account_id: str | None = None
     r2_access_key_id: str | None = None
@@ -199,10 +198,6 @@ class Settings(BaseSettings):
     @property
     def has_db(self) -> bool:
         return bool(self.database_url)
-
-    @property
-    def has_redis(self) -> bool:
-        return bool(self.redis_url)
 
     @property
     def has_storage(self) -> bool:

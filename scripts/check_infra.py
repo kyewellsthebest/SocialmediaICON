@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -19,14 +20,19 @@ from sqlalchemy import text  # noqa: E402
 
 from core.config import settings  # noqa: E402
 from core.db import session_scope  # noqa: E402
-from core.models import Job  # noqa: E402
+from core.models import RunLog  # noqa: E402
 from core.storage import get_storage  # noqa: E402
 
 
 def check_ffmpeg() -> str:
-    from core.ffmpeg_ops import require_binaries
+    import shutil
 
-    require_binaries()
+    missing = [b for b in ("ffmpeg", "ffprobe") if not shutil.which(b)]
+    if missing:
+        raise RuntimeError(
+            f"{', '.join(missing)} not on PATH. They are system binaries, not "
+            f"pip packages - the Dockerfile installs them."
+        )
     return "ffmpeg + ffprobe on PATH"
 
 
@@ -35,15 +41,18 @@ def check_db() -> str:
         return "SKIP (DATABASE_URL not set)"
     with session_scope() as session:
         session.execute(text("select 1"))
-        job = Job(type="infra_check", payload={"ts": time.time()}, state="done")
-        session.add(job)
+        # A throwaway run_log row: written, read back and deleted, so the
+        # check proves the round trip rather than just that a connection
+        # opened.
+        row = RunLog(started_at=datetime.now(UTC), error="infra check")
+        session.add(row)
         session.flush()
-        job_id = job.id
+        row_id = row.id
     with session_scope() as session:
-        found = session.get(Job, job_id)
+        found = session.get(RunLog, row_id)
         assert found is not None, "row did not read back"
         session.delete(found)
-    return f"wrote + read + deleted jobs row {job_id}"
+    return f"wrote + read + deleted run_log row {row_id}"
 
 
 def check_storage() -> str:
@@ -58,21 +67,11 @@ def check_storage() -> str:
     return f"{storage.kind}: wrote + read {key}"
 
 
-def check_redis() -> str:
-    if not settings.has_redis:
-        return "SKIP (REDIS_URL not set)"
-    from worker.queue import get_redis
-
-    get_redis().ping()
-    return "ping ok"
-
-
 def main() -> int:
     checks = (
         ("ffmpeg", check_ffmpeg),
         ("postgres", check_db),
         ("storage", check_storage),
-        ("redis", check_redis),
     )
     failures = 0
     for name, check in checks:
