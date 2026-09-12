@@ -98,3 +98,85 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+
+
+def status() -> dict[str, Any]:
+    """What the queue is actually doing, and whether anything is listening.
+
+    The failure this exists for: a job is accepted by Redis, nothing is
+    running to take it, and the dashboard says "queued, give it a few
+    minutes" forever. Redis accepting work is not the same as work happening,
+    and from a browser those look identical.
+
+    So this reports the one number that settles it - how many workers are
+    listening - alongside what is waiting, running and failed, and the
+    traceback of the last failure. A job that died on the worker is otherwise
+    invisible: RQ files it in a registry nobody reads.
+    """
+    if not settings.has_redis:
+        return {"redis": False, "why": "REDIS_URL is not set on this service"}
+
+    try:
+        from rq import Queue, Worker
+
+        connection = get_redis()
+        connection.ping()
+    except Exception as exc:  # noqa: BLE001 - the point is to report, not raise
+        return {"redis": False, "why": f"{type(exc).__name__}: {exc}"}
+
+    listening: set[str] = set()
+    workers = 0
+    try:
+        for worker in Worker.all(connection=connection):
+            workers += 1
+            listening.update(q.name for q in worker.queues)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not list workers (%s)", exc)
+
+    out: dict[str, Any] = {
+        "redis": True,
+        "workers": workers,
+        "listening_to": sorted(listening),
+        "queues": {},
+        "last_error": None,
+    }
+
+    for name in QUEUE_NAMES:
+        queue = Queue(name, connection=connection)
+        failed = queue.failed_job_registry
+        out["queues"][name] = {
+            "waiting": queue.count,
+            "running": len(queue.started_job_registry),
+            "failed": len(failed),
+        }
+        if out["last_error"] is None and len(failed):
+            try:
+                from rq.job import Job
+
+                job = Job.fetch(failed.get_job_ids()[-1], connection=connection)
+                out["last_error"] = {
+                    "queue": name,
+                    "at": job.ended_at.isoformat() if job.ended_at else None,
+                    # The last lines are the ones that say what happened; the
+                    # top of a traceback is RQ's own plumbing.
+                    "traceback": "\n".join(
+                        (job.exc_info or "no traceback recorded").strip().splitlines()[-12:]
+                    ),
+                }
+            except Exception as exc:  # noqa: BLE001
+                out["last_error"] = {"queue": name, "traceback": f"unreadable: {exc}"}
+
+    if workers == 0:
+        out["why"] = (
+            "Redis is up and accepting jobs, but no worker is listening to "
+            "them. Nothing will ever run. Check that the `worker` service is "
+            "deployed and not crash-looping - its deploy log says why."
+        )
+    elif not (set(QUEUE_NAMES) & listening):
+        out["why"] = (
+            f"{workers} worker(s) are running but listening to "
+            f"{sorted(listening) or 'nothing'} rather than "
+            f"{list(QUEUE_NAMES)}. That is an old deploy: the queue names "
+            f"changed, so redeploy the worker service."
+        )
+    return out

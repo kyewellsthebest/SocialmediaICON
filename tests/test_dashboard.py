@@ -205,3 +205,94 @@ class TestTheVideoOverlayCanAlwaysBeClosed:
         js = APP_JS.read_text(encoding="utf-8")
         body = js.split("function closePlayer()")[1].split("\n}")[0]
         assert "pause()" in body and "removeAttribute" in body and "load()" in body
+
+
+class TestAQueuedRunThatNeverRuns:
+    """Redis accepting a job is not the same as anything running it, and from
+    a browser those are identical: the page says "queued, give it a few
+    minutes" and goes on saying it forever. A job that died on the worker is
+    just as invisible - RQ files it in a registry nobody reads.
+    """
+
+    def test_the_status_says_how_many_workers_are_listening(self, monkeypatch):
+        """The one number that settles it."""
+        monkeypatch.setattr(settings, "redis_url", None)
+        from worker.queue import status
+
+        assert status()["redis"] is False
+        assert "REDIS_URL" in status()["why"]
+
+    def test_no_workers_is_explained_rather_than_reported(self):
+        """"workers: 0" is a fact. "nothing will ever run, check the worker
+        service's deploy log" is the same fact plus what to do about it."""
+        import inspect
+
+        from worker import queue
+        source = inspect.getsource(queue.status)
+        assert "no worker is listening" in source
+        assert "crash-looping" in source
+
+    def test_an_old_deploy_listening_to_dead_queue_names_is_caught(self):
+        """The queue names changed in the rebuild. A worker still running the
+        previous image connects to Redis, reports itself healthy, and takes
+        nothing - which looks exactly like no worker at all."""
+        import inspect
+
+        from worker import queue
+        assert "redeploy the worker" in inspect.getsource(queue.status)
+
+    def test_the_last_failure_is_readable(self):
+        import inspect
+
+        from worker import queue
+        source = inspect.getsource(queue.status)
+        assert "failed_job_registry" in source
+        assert "exc_info" in source
+
+    def test_pressing_run_says_so_when_nothing_will_pick_it_up(self):
+        js = APP_JS.read_text(encoding="utf-8")
+        assert "no worker is listening" in js
+
+    def test_there_is_a_way_to_run_without_a_worker_at_all(self):
+        """Because "the harvest is broken" and "the worker is not running"
+        are different problems that produce the same empty queue."""
+        import inspect
+
+        import api.routes.app as routes
+        source = inspect.getsource(routes.run_now)
+        assert "inline" in source
+        assert "rooms" in source
+
+    def test_the_inline_run_is_capped_so_a_browser_will_wait_for_it(self):
+        import inspect
+
+        import api.routes.app as routes
+        source = inspect.getsource(routes.run_now)
+        assert "rooms or 3" in source
+
+    def test_capping_the_rooms_reaches_the_harvest(self, monkeypatch):
+        from worker.tasks import harvest
+
+        asked = []
+        monkeypatch.setattr(settings, "reddit_subreddits", "a,b,c,d,e")
+        monkeypatch.setattr(harvest, "discover", lambda only=None: asked.append(only) or [])
+        monkeypatch.setattr(harvest, "admit", lambda posts: 0)
+        monkeypatch.setattr(harvest, "trim", lambda: 0)
+        monkeypatch.setattr(harvest, "queued", lambda limit=None: [])
+        monkeypatch.setattr(harvest, "note_run", lambda summary: None)
+
+        harvest.run(post=False, rooms=3)
+        assert asked == [["a", "b", "c"]]
+
+    def test_a_full_run_reads_every_room(self, monkeypatch):
+        from worker.tasks import harvest
+
+        asked = []
+        monkeypatch.setattr(harvest, "discover", lambda only=None: asked.append(only) or [])
+        monkeypatch.setattr(harvest, "admit", lambda posts: 0)
+        monkeypatch.setattr(harvest, "trim", lambda: 0)
+        monkeypatch.setattr(harvest, "queued", lambda limit=None: [])
+        monkeypatch.setattr(harvest, "note_run", lambda summary: None)
+
+        harvest.run(post=False)
+        assert asked == [None], "an uncapped run must not silently read three"

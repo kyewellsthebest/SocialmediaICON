@@ -68,6 +68,18 @@
       </div>
       <pre id="diag" hidden></pre>
 
+      <h2>The worker</h2>
+      <p class="muted">A run is queued for the worker service to pick up.
+        Redis accepting the job is not the same as anything running it.</p>
+      <div id="worker" class="list"></div>
+      <div class="row">
+        <button class="btn" id="run-here">Run 3 rooms here, now</button>
+      </div>
+      <p class="muted">Reads three rooms in this service rather than queuing
+        it, so the whole chain can be proved without a worker. Takes about a
+        minute — a queued run that never starts and one that failed look the
+        same from here, and this tells them apart.</p>
+
       <h2>Config</h2>
       <div id="config" class="grid"></div>
     </section>

@@ -275,10 +275,16 @@ def last_run() -> dict[str, Any] | None:
         return None
 
 
-def run(post: bool = True) -> dict[str, Any]:
-    """One daily pass: read the rooms, re-rank, then send the top out."""
+def run(post: bool = True, rooms: int | None = None) -> dict[str, Any]:
+    """One daily pass: read the rooms, re-rank, then send the top out.
+
+    `rooms` caps how many are read, which exists for one reason: a full pass
+    over twenty-five rooms takes minutes, and there has to be a way to prove
+    the whole chain works in the time a browser will wait for an answer.
+    """
     began = datetime.now(UTC)
-    found = discover()
+    only = settings.reddit_rooms[:rooms] if rooms else None
+    found = discover(only)
     added = admit(found)
     pushed = trim()
 

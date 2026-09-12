@@ -290,6 +290,8 @@ async function loadSetup() {
     }
   }
 
+  await loadWorker();
+
   const config = $("config");
   config.replaceChildren();
   const rows = [
@@ -307,6 +309,50 @@ async function loadSetup() {
     const kv = el("div", "kv");
     kv.append(el("div", "k", k), el("div", "v", String(v)));
     config.append(kv);
+  }
+}
+
+async function loadWorker() {
+  const box = $("worker");
+  box.replaceChildren();
+  let state;
+  try {
+    state = await api("/run/status");
+  } catch (error) {
+    box.append(el("div", "empty", error.message));
+    return;
+  }
+
+  if (!state.redis) {
+    box.append(el("div", "empty", state.why || "no Redis"));
+    return;
+  }
+
+  const row = el("div", "item");
+  row.append(el("span", "pill " + (state.workers ? "ok" : "bad"),
+    `${state.workers} worker${state.workers === 1 ? "" : "s"}`));
+  const body = el("div", "body");
+  body.append(el("span", "cap", state.workers
+    ? `listening to ${(state.listening_to || []).join(", ") || "nothing"}`
+    : "nothing is listening — queued runs will never start"));
+  const counts = Object.entries(state.queues || {})
+    .map(([name, q]) => `${name}: ${q.waiting} waiting, ${q.running} running, ${q.failed} failed`)
+    .join("  ·  ");
+  body.append(el("div", "meta", counts));
+  row.append(body);
+  box.append(row);
+
+  if (state.why) {
+    const warn = el("div", "item");
+    warn.append(el("span", "pill bad", "!"), el("div", "body", state.why));
+    box.append(warn);
+  }
+
+  if (state.last_error) {
+    box.append(el("div", "meta", `last failure on ${state.last_error.queue}` +
+      (state.last_error.at ? ` at ${state.last_error.at}` : "")));
+    const pre = el("pre", null, state.last_error.traceback);
+    box.append(pre);
   }
 }
 
@@ -341,16 +387,38 @@ function start() {
     button.textContent = "Running…";
     try {
       const done = await api("/run", { method: "POST" });
-      say(done.queued
-        ? "Run queued — it reads every room, so give it a few minutes."
-        : `Done: ${done.result.added} added, ${done.result.pushed_out} pushed out, ` +
-          `${done.result.posted} posted.`);
+      if (done.queued && !done.workers) {
+        say(done.warning || "Queued, but no worker is listening — it will " +
+          "never start. See Setup.", true);
+      } else {
+        say(done.queued
+          ? "Run queued — it reads every room, so give it a few minutes."
+          : `Done: ${done.result.added} added, ${done.result.pushed_out} pushed out, ` +
+            `${done.result.posted} posted.`);
+      }
       loadQueue();
     } catch (error) {
       say(error.message, true);
     }
     button.disabled = false;
     button.textContent = "Run now";
+  };
+
+  $("run-here").onclick = async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Reading three rooms…";
+    try {
+      const done = await api("/run?inline=true&rooms=3", { method: "POST" });
+      const r = done.result;
+      say(`${r.found} found, ${r.added} added, ${r.pushed_out} pushed out, ` +
+        `${r.posted} posted — in ${r.seconds}s.`);
+      loadWorker();
+    } catch (error) {
+      say(error.message, true);
+    }
+    button.disabled = false;
+    button.textContent = "Run 3 rooms here, now";
   };
 
   $("ways-in").onclick = (e) =>

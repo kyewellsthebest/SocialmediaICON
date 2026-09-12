@@ -186,21 +186,54 @@ def video(reel_id: int) -> Any:
 
 
 @router.post("/run")
-def run_now(post: bool = Query(default=True)) -> dict[str, Any]:
+def run_now(
+    post: bool = Query(default=True),
+    inline: bool = Query(default=False),
+    rooms: int = Query(default=0, ge=0, le=25),
+) -> dict[str, Any]:
     """Do a run now instead of waiting for the daily one.
 
     Queued when Redis is configured, because a full pass reads every room and
     takes minutes - long enough for a browser to give up on it and for the
     person to press the button again, which is how you get two runs.
+
+    `inline` does it here instead, and `rooms` caps how many are read. That
+    pair exists to answer one question a queued job cannot: does the chain
+    work at all? A queued run that never starts and a queued run that failed
+    look identical from a browser, and both look like a broken harvest.
     """
     from worker.tasks.harvest import run as daily_run
 
+    if inline:
+        return {"queued": False, "result": daily_run(post=post, rooms=rooms or 3)}
+
     if settings.has_redis:
-        from worker.queue import enqueue
+        from worker.queue import enqueue, status
 
         job = enqueue("harvest", daily_run, post=post)
-        return {"queued": True, "job": getattr(job, "id", None)}
+        state = status()
+        # Redis accepting a job is not the same as anything running it, and
+        # from a browser those look identical - which is how "queued, give it
+        # a few minutes" can sit there forever.
+        return {
+            "queued": True,
+            "job": getattr(job, "id", None),
+            "workers": state.get("workers", 0),
+            "warning": state.get("why"),
+        }
     return {"queued": False, "result": daily_run(post=post)}
+
+
+@router.get("/run/status")
+def run_status() -> dict[str, Any]:
+    """Whether anything is listening, and what the last failure was.
+
+    A job that died on the worker is otherwise invisible: RQ files it in a
+    registry nobody reads, and the dashboard goes on saying it is queued.
+    """
+    from worker.queue import status
+
+    return status()
 
 
 @router.post("/reels/{reel_id}/drop")
