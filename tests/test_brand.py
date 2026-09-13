@@ -91,15 +91,32 @@ class TestTheBadgeItself:
             side = int(brand.filtergraph(width).split("scale=")[1].split(":")[0])
             assert side % 2 == 0, f"{width} gave an odd badge of {side}"
 
-    def test_it_goes_in_the_top_left(self):
+    def test_it_goes_at_the_top_centre(self):
+        # 100px badge on a 1000px video: (1000-100)/2 = 450 across, 40 down.
         graph = brand.filtergraph(1000, width_share=0.1, inset_share=0.04)
-        # overlay=x:y, and both are the same positive inset from the origin.
-        assert "overlay=40:40" in graph
+        assert "overlay=450:40" in graph
 
-    def test_the_corner_inset_is_not_flush(self):
-        """Every platform draws a handle or a "reposted" chip near the top
-        left. A badge tucked into the corner ends up half underneath it."""
-        assert settings.brand_inset_share > 0.02
+    @pytest.mark.parametrize("width", [480, 720, 1080, 1081])
+    def test_it_is_centred_whatever_the_video_is_wide(self, width):
+        graph = brand.filtergraph(width)
+        left, top = graph.split("overlay=")[1].split(":")[:2]
+        side = int(graph.split("scale=")[1].split(":")[0])
+        # The same gap each side, to within the pixel an odd width costs.
+        assert abs(width - side - 2 * int(left)) <= 1, graph
+        assert int(top) > 0, "it must not be flush with the top edge"
+
+    def test_it_sits_below_the_top_edge_rather_than_against_it(self):
+        """A mark flush with the edge reads as part of the platform's own
+        chrome rather than as the page's."""
+        assert settings.brand_inset_share > 0.01
+
+    def test_it_is_clear_of_the_corners(self):
+        """Which is where every platform draws a handle, a follow button or a
+        "reposted" chip - and a badge under one of those is a badge nobody
+        sees."""
+        graph = brand.filtergraph(1080)
+        left = int(graph.split("overlay=")[1].split(":")[0])
+        assert left > 1080 * 0.25, "a centred badge is nowhere near a corner"
 
 
 @needs_ffmpeg
@@ -164,15 +181,16 @@ class TestNothingElseChanges:
         diff = ImageChops.difference(before, after)
         width, height = diff.size
 
-        corner = diff.crop((0, 0, int(width * 0.22), int(width * 0.22)))
+        # Where the badge now is: the top centre strip.
+        corner = diff.crop((int(width * 0.35), 0, int(width * 0.65), int(width * 0.22)))
         middle = diff.crop((int(width * 0.35), int(height * 0.45),
                             int(width * 0.65), int(height * 0.55)))
         # A re-encode moves every pixel a little, so this is a comparison of
         # two changes rather than a test for zero change.
         corner_change = sum(corner.convert("L").getdata()) / (corner.size[0] * corner.size[1])
         middle_change = sum(middle.convert("L").getdata()) / (middle.size[0] * middle.size[1])
-        assert corner_change > 12, f"the badge did not land: corner moved {corner_change:.1f}"
+        assert corner_change > 12, f"the badge did not land: the top moved {corner_change:.1f}"
         assert middle_change < corner_change / 4, (
-            f"the middle changed nearly as much as the corner "
+            f"the middle changed nearly as much as the top "
             f"({middle_change:.1f} vs {corner_change:.1f}) - something is "
             f"re-framing the video, not just branding it")

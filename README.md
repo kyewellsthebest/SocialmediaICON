@@ -10,7 +10,7 @@ author's own caption.
 Nothing is cut, transcribed, scored by a model or re-framed. Somebody already
 decided the moment was worth posting, framed it, chose where it starts and
 stops, and several thousand people agreed by upvoting it. The only change made
-to the video is a small circular badge in the top-left corner.
+to the video is a small circular badge at the top centre.
 
 ---
 

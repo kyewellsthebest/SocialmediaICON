@@ -3,7 +3,7 @@
 The video is somebody else's and it is already finished: they framed it, they
 chose where it starts and stops, and several thousand people voted on the
 result. So nothing here crops, cuts, captions or re-frames. The only change is
-a small circular badge in the top-left corner.
+a small circular badge at the top centre.
 
 Two decisions are worth stating because they look like details and are not:
 
@@ -11,11 +11,12 @@ Two decisions are worth stating because they look like details and are not:
 same 96px logo is a discreet mark on a 1080-wide video and a sticker covering
 someone's face on a 480-wide one, and Reddit serves both.
 
-**The corner is inset by a fraction too, and the fraction is generous.** Every
-platform draws its own furniture over the top of a reel - a handle, a follow
-button, a sound name - and the top-left is where a "reposted" chip tends to
-land. Tucking the badge right into the corner is how it ends up half under
-something else.
+**It sits at the top centre, a little way down.** Centred because that is
+where the eye lands first and where nothing else competes: the corners are
+where every platform draws its own furniture - a handle, a follow button, a
+"reposted" chip - and a badge tucked into one ends up half underneath it. The
+drop from the top edge is the same fraction of the width, so it scales with
+the video like the badge does.
 
 The audio is copied, never re-encoded. Reddit's audio is already compressed
 once; a second pass costs quality for nothing, since nothing here touches it.
@@ -75,14 +76,19 @@ def filtergraph(
     # Even numbers: an odd-sized overlay on a yuv420p stream lands on a half
     # chroma sample and ffmpeg rounds it somewhere of its own choosing.
     side = max(2, int(round(width * width_share / 2)) * 2)
-    inset = max(0, int(round(width * inset_share)))
+    top = max(0, int(round(width * inset_share)))
+    # Centred horizontally, worked out here rather than left to ffmpeg's
+    # (W-w)/2: the badge width is already known in pixels, and an expression
+    # that rounds differently would put a circle half a pixel off centre on
+    # an odd-width video.
+    left = max(0, (width - side) // 2)
 
     # Explicitly square. The badge is a circle, and a logo file that is one
     # pixel off square would otherwise arrive as an ellipse.
     scaled = f"[1:v]scale={side}:{side}[badge]"
     if opacity < 1.0:
         scaled += f";[badge]format=rgba,colorchannelmixer=aa={opacity:.3f}[badge]"
-    return f"{scaled};[0:v][badge]overlay={inset}:{inset}:format=auto[out]"
+    return f"{scaled};[0:v][badge]overlay={left}:{top}:format=auto[out]"
 
 
 def apply(video: Path, into: Path, logo: Path | None = None) -> Path:

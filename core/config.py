@@ -153,10 +153,10 @@ class Settings(BaseSettings):
     #: rather than pixels: the same 96px logo is a discreet mark on a
     #: 1080-wide video and a sticker over someone's face on a 480-wide one.
     brand_width_share: float = 0.13
-    #: How far in from the corner, same units. Generous on purpose - every
-    #: platform draws a handle or a "reposted" chip near the top-left, and a
-    #: badge tucked right into the corner ends up half underneath it.
-    brand_inset_share: float = 0.035
+    #: How far down from the top edge, as a share of the width so it scales
+    #: with the badge. Small: the mark sits just under the top edge, centred,
+    #: clear of the corners where every platform draws its own furniture.
+    brand_inset_share: float = 0.03
     brand_opacity: float = 1.0
     #: 18 is visually lossless for this kind of source; the file is small
     #: because the video is short, not because it is squeezed.
