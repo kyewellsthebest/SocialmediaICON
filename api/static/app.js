@@ -285,7 +285,7 @@ async function loadSetup() {
     body.append(el("span", "cap", "needs " + gap.needs));
     body.append(el("div", "meta", gap.why));
     row.append(body);
-    box.append(row);
+    list.append(row);
   }
 
   if (where.error) {
