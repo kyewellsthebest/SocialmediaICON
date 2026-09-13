@@ -21,6 +21,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import db
+from core import rooms as room_list
 from core.config import settings
 from core.models import Base, Reel
 from core.reddit import Post
@@ -48,8 +49,13 @@ def database(monkeypatch, tmp_path):
         finally:
             session.close()
 
+    # Every module that imported session_scope by name holds its own
+    # reference, so patching core.db alone reaches none of them.
     monkeypatch.setattr(db, "session_scope", scope)
     monkeypatch.setattr(harvest, "session_scope", scope)
+    monkeypatch.setattr(room_list, "session_scope", scope)
+    # rooms.current() checks this before it will look in the database at all.
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path/'q.db'}")
     return maker
 
 
@@ -212,3 +218,116 @@ class TestNothingIsLookedUpTwice:
         monkeypatch.setattr(settings, "reddit_subreddits", "GYM")
         monkeypatch.setattr(harvest.reddit_routes, "listing", listing)
         assert [p.external_id for p in harvest.discover()] == ["fine"]
+
+
+class TestWhichRoomsAreRead:
+    """The room list is the biggest lever on what this page posts, and until
+    there is a week of evidence nobody knows which rooms carry it - not the
+    person who wrote the list, and certainly not one who has never opened the
+    subreddit. So it is editable without a redeploy, and every run records
+    what each room actually gave back."""
+
+    def test_the_dashboards_list_wins_over_the_variable(self, database, monkeypatch):
+        from core import rooms as room_list
+
+        monkeypatch.setattr(settings, "reddit_subreddits", "fromenv")
+        assert room_list.current() == ["fromenv"]
+        room_list.replace("GYM, powerlifting")
+        assert room_list.current() == ["GYM", "powerlifting"]
+        assert room_list.overridden()
+
+    def test_clearing_it_hands_control_back_to_the_variable(self, database, monkeypatch):
+        """Rather than leaving no rooms at all, which would look like the
+        harvest breaking."""
+        from core import rooms as room_list
+
+        monkeypatch.setattr(settings, "reddit_subreddits", "fromenv")
+        room_list.replace("GYM")
+        assert room_list.replace("") == ["fromenv"]
+        assert not room_list.overridden()
+
+    def test_a_pasted_list_is_taken_however_it_is_written(self, database, monkeypatch):
+        from core import rooms as room_list
+
+        room_list.replace("r/GYM\n/r/powerlifting\n  strongman  ")
+        assert room_list.current() == ["GYM", "powerlifting", "strongman"]
+
+    def test_each_room_reports_what_it_gave_back(self, database, monkeypatch):
+        from worker.tasks import harvest
+
+        def listing(room, sort, window, limit, skip):
+            if room == "quiet":
+                return [], "rss"
+            return [a_post("x1", 900), a_post("x2", 4, over_18=True)], "rss"
+
+        monkeypatch.setattr(harvest.room_list, "current", lambda: ["busy", "quiet"])
+        monkeypatch.setattr(harvest.reddit_routes, "listing", listing)
+
+        board = {}
+        harvest.discover(scoreboard=board)
+        assert board["busy"]["read"] == 2
+        assert board["busy"]["postable"] == 1, "the adult one must not count"
+        assert board["quiet"]["read"] == 0
+
+    def test_a_room_that_cannot_be_read_records_why_against_itself(
+            self, database, monkeypatch):
+        """A name that does not exist is a typo in the list. Losing that to a
+        log line is how a dead room sits there for a month."""
+        from core.reddit import RedditError
+        from worker.tasks import harvest
+
+        def listing(room, sort, window, limit, skip):
+            raise RedditError("no route to Reddit worked - rss: 404")
+
+        monkeypatch.setattr(harvest.room_list, "current", lambda: ["notareal"])
+        monkeypatch.setattr(harvest.reddit_routes, "listing", listing)
+
+        board = {}
+        assert harvest.discover(scoreboard=board) == []
+        assert "404" in board["notareal"]["error"]
+
+    def test_one_dead_room_does_not_stop_the_others(self, database, monkeypatch):
+        from core.reddit import RedditError
+        from worker.tasks import harvest
+
+        def listing(room, sort, window, limit, skip):
+            if room == "dead":
+                raise RedditError("gone")
+            return [a_post("good", 700)], "rss"
+
+        monkeypatch.setattr(harvest.room_list, "current", lambda: ["dead", "alive"])
+        monkeypatch.setattr(harvest.reddit_routes, "listing", listing)
+        assert [p.external_id for p in harvest.discover()] == ["good"]
+
+
+class TestTheDefaultRooms:
+    def test_it_is_wide_enough_to_feed_fifteen_slots(self):
+        from core.config import Settings
+
+        assert len(Settings().reddit_rooms) >= 15
+
+    def test_the_photo_and_progress_rooms_are_gone(self):
+        """They are mostly stills and text, and their video is personal
+        progress - which nobody who is not the poster wants to watch."""
+        from core.config import Settings
+
+        rooms = {r.lower() for r in Settings().reddit_rooms}
+        for unwanted in ("gainit", "formcheck", "homegym", "gymmotivation",
+                         "swoleacceptance", "progresspics"):
+            assert unwanted not in rooms
+
+    def test_the_rooms_that_are_not_about_the_gym_are_gone(self):
+        """A general fail sub brings funny video and takes the page off its
+        subject, which is the one thing a niche page cannot afford."""
+        from core.config import Settings
+
+        rooms = {r.lower() for r in Settings().reddit_rooms}
+        for unwanted in ("publicfreakout", "instantkarma", "winstupidprizes",
+                         "physicaltherapy"):
+            assert unwanted not in rooms
+
+    def test_the_lifting_rooms_are_there(self):
+        from core.config import Settings
+
+        rooms = {r.lower() for r in Settings().reddit_rooms}
+        assert {"gym", "powerlifting", "weightlifting"} <= rooms

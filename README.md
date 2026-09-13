@@ -4,7 +4,7 @@ Finds short gym video on Reddit, puts the mark on it, posts it with the
 author's own caption.
 
 ```
-25 rooms → top of the week → best 15 kept → badge → 8 posted a day
+20 rooms → top of the week → best 15 kept → badge → 8 posted a day
 ```
 
 Nothing is cut, transcribed, scored by a model or re-framed. Somebody already
@@ -61,6 +61,23 @@ come back through the same lookup, which is what the queue ranks on.
 Press **Test every route** in the dashboard's Setup tab to measure this from
 wherever the app is actually running. A route that answers from your laptop
 says nothing about the server, and that gap is the whole problem.
+
+## Which rooms
+
+The room list is the biggest lever on what this posts, and it is the one thing
+nobody can get right from first principles: a room of personal progress clips
+gives almost nothing usable, one of PR attempts and dropped bars carries the
+whole queue, and the difference is invisible until a week of evidence exists.
+
+So the default is chosen for **PR attempts, heavy singles, skills and fails** —
+the things people post *as video* — and progress, motivation and physique rooms
+are deliberately absent, being mostly stills and text.
+
+Then the Setup tab shows **what each room actually gave back on the last run**:
+read, postable, new, and the error if it could not be read at all. A name that
+does not exist reports against itself rather than breaking the run. Edit the
+list there — it takes effect on the next run, with no redeploy — and clearing
+it hands control back to `REDDIT_SUBREDDITS`.
 
 ## The two rules that never bend
 

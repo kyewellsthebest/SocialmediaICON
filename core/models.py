@@ -16,8 +16,10 @@ can only ever disagree with it.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     DateTime,
     Float,
     ForeignKey,
@@ -27,7 +29,13 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+#: JSONB on Postgres, plain JSON everywhere else. Without the variant the
+#: tests - which run on SQLite so they can be hermetic - cannot even create
+#: the table, so the column type would be the one thing never exercised.
+JSON_COLUMN = JSON().with_variant(JSONB(), "postgresql")
 
 PLATFORMS = ("youtube", "instagram", "tiktok", "facebook", "snapchat", "threads")
 
@@ -140,6 +148,31 @@ class RunLog(TimestampMixin, Base):
     #: The traceback, last two thousand characters. A run nobody was watching
     #: leaves nothing else behind.
     error: Mapped[str | None] = mapped_column(Text)
+
+    #: What each room gave back: {room: {read, postable, route, error}}. The
+    #: room list is the biggest lever on what gets posted, and a total tells
+    #: you nothing about which of twenty-five rooms is carrying it.
+    rooms: Mapped[dict[str, Any] | None] = mapped_column(JSON_COLUMN)
+
+
+class Preference(Base):
+    """A setting edited from the dashboard rather than the environment.
+
+    Only the room list so far. It is the biggest lever on what this page
+    posts, and needing a Railway redeploy to try a different room is how a
+    list stays wrong for a month.
+
+    The environment variable stays the default and the way to reset: an
+    absent row means "whatever the variable says".
+    """
+
+    __tablename__ = "preferences"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class Credential(Base):

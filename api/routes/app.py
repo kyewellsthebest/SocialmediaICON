@@ -13,9 +13,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from core import credentials, jobs
+from core import rooms as room_list
 from core.config import settings
 from core.db import session_scope
 from core.models import Reel, ReelPost
@@ -74,7 +76,7 @@ def overview() -> dict[str, Any]:
         # receive a post, which is a different problem from autopost off.
         "destinations": destinations(),
         "posts_per_run": settings.post_per_run,
-        "rooms": len(settings.reddit_rooms),
+        "rooms": len(room_list.current()),
         "window": settings.reddit_time_filter,
         "publisher": settings.publisher,
         "autopost": settings.autopost_enabled,
@@ -220,6 +222,7 @@ def run_status() -> dict[str, Any]:
         "since": going.isoformat() if going else None,
         "armed": settings.harvest_enabled and bool(settings.reddit_rooms),
         "every_minutes": settings.harvest_interval_minutes,
+        "rooms": len(room_list.current()),
         "last": None if previous is None else {
             "started_at": previous.started_at.isoformat(),
             "finished_at": previous.finished_at.isoformat() if previous.finished_at else None,
@@ -229,8 +232,37 @@ def run_status() -> dict[str, Any]:
             "posted": previous.posted,
             "failed": previous.failed,
             "error": previous.error,
+            # Per room, so a room that has never produced a usable post can
+            # be told apart from one carrying the whole queue.
+            "rooms": previous.rooms or {},
         },
     }
+
+
+class RoomsIn(BaseModel):
+    rooms: str
+
+
+@router.get("/rooms")
+def read_rooms() -> dict[str, Any]:
+    """The rooms being read, and whether they came from here or the variable."""
+    return {
+        "rooms": room_list.current(),
+        "edited_here": room_list.overridden(),
+        "default": settings.reddit_rooms,
+    }
+
+
+@router.post("/rooms")
+def write_rooms(body: RoomsIn) -> dict[str, Any]:
+    """Change the room list. Empty hands control back to REDDIT_SUBREDDITS.
+
+    Nothing is validated against Reddit, because a name can only be checked by
+    asking - and a room that does not exist simply reports an error against
+    itself on the next run rather than breaking it. That is a better answer
+    than refusing a name that is merely unfamiliar.
+    """
+    return {"rooms": room_list.replace(body.rooms), "edited_here": room_list.overridden()}
 
 
 @router.post("/reels/{reel_id}/drop")

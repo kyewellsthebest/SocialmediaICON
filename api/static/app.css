@@ -77,6 +77,40 @@ code {
 .gate .mark { font-size: 26px; margin-bottom: 10px; }
 .field { margin: 16px 0; }
 
+textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+}
+textarea:focus { outline: 2px solid var(--green-dim); outline-offset: 1px; }
+
+/* Per-room results: a dense table, because twenty-five rooms in cards is a
+   page nobody scrolls to the bottom of. */
+.rooms {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.rooms th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.rooms td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.rooms td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.rooms tr.dead td { color: var(--muted); }
+.rooms tr.carrying td.n.good { color: var(--green); font-weight: 600; }
+
 input, select {
   width: 100%;
   padding: 10px 12px;

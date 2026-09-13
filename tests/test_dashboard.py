@@ -285,7 +285,9 @@ class TestARunThatNeverRuns:
 
         asked = []
         monkeypatch.setattr(env, "reddit_subreddits", "a,b,c,d,e")
-        monkeypatch.setattr(harvest, "discover", lambda only=None: asked.append(only) or [])
+        monkeypatch.setattr(harvest.room_list, "current", lambda: ["a", "b", "c", "d", "e"])
+        monkeypatch.setattr(harvest, "discover",
+                            lambda only=None, scoreboard=None: asked.append(only) or [])
         monkeypatch.setattr(harvest, "admit", lambda posts: 0)
         monkeypatch.setattr(harvest, "trim", lambda: 0)
         monkeypatch.setattr(harvest, "queued", lambda limit=None: [])
@@ -297,11 +299,13 @@ class TestARunThatNeverRuns:
         from worker.tasks import harvest
 
         asked = []
-        monkeypatch.setattr(harvest, "discover", lambda only=None: asked.append(only) or [])
+        monkeypatch.setattr(harvest, "discover",
+                            lambda only=None, scoreboard=None: asked.append(only) or [])
         monkeypatch.setattr(harvest, "admit", lambda posts: 0)
         monkeypatch.setattr(harvest, "trim", lambda: 0)
         monkeypatch.setattr(harvest, "queued", lambda limit=None: [])
 
+        monkeypatch.setattr(harvest.room_list, "current", lambda: ["a", "b", "c", "d", "e"])
         harvest.run(post=False)
         assert asked == [None], "an uncapped run must not silently read three"
 

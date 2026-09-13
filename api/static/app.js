@@ -292,6 +292,7 @@ async function loadSetup() {
   }
 
   await loadWorker();
+  await loadRooms();
 
   const config = $("config");
   config.replaceChildren();
@@ -311,6 +312,59 @@ async function loadSetup() {
     kv.append(el("div", "k", k), el("div", "v", String(v)));
     config.append(kv);
   }
+}
+
+async function loadRooms() {
+  const [list, state] = await Promise.all([
+    api("/rooms"),
+    api("/run/status").catch(() => null),
+  ]);
+  $("rooms").value = list.rooms.join("\n");
+
+  const box = $("rooms-results");
+  box.replaceChildren();
+  const results = (state && state.last && state.last.rooms) || {};
+  const names = Object.keys(results);
+  if (!names.length) {
+    box.append(el("div", "empty",
+      "No per-room results yet — they appear after the next run."));
+    return;
+  }
+
+  const table = el("table", "rooms");
+  const head = el("tr");
+  for (const [label, cls] of [["room", ""], ["read", "n"], ["postable", "n"],
+                              ["new", "n"], ["via", ""]]) {
+    const th = el("th", cls, label);
+    head.append(th);
+  }
+  table.append(head);
+
+  // Best first, so the rooms worth keeping are the ones you see without
+  // scrolling and the dead ones collect at the bottom.
+  names.sort((a, b) => (results[b].postable || 0) - (results[a].postable || 0));
+  for (const name of names) {
+    const r = results[name];
+    const row = el("tr", r.error || !r.read ? "dead" : (r.postable ? "carrying" : ""));
+    row.append(el("td", null, "r/" + name));
+    row.append(el("td", "n", String(r.read ?? 0)));
+    row.append(el("td", "n" + (r.postable ? " good" : ""), String(r.postable ?? 0)));
+    row.append(el("td", "n", String(r.new ?? 0)));
+    row.append(el("td", null, r.error ? r.error.slice(0, 40) : (r.route || "—")));
+    table.append(row);
+  }
+  box.append(table);
+}
+
+async function saveRooms(raw) {
+  const done = await api("/rooms", {
+    method: "POST",
+    body: JSON.stringify({ rooms: raw }),
+  });
+  say(done.edited_here
+    ? `${done.rooms.length} rooms saved. They take effect on the next run.`
+    : `Back to the ${done.rooms.length} rooms in REDDIT_SUBREDDITS.`);
+  loadRooms();
 }
 
 async function loadWorker() {
@@ -399,6 +453,9 @@ function start() {
     button.disabled = false;
     button.textContent = "Run now";
   };
+
+  $("rooms-save").onclick = () => saveRooms($("rooms").value);
+  $("rooms-reset").onclick = () => saveRooms("");
 
   $("run-here").onclick = async (event) => {
     const button = event.currentTarget;

@@ -59,6 +59,19 @@
         wrong account is the failure nothing else catches.</p>
       <div id="destinations" class="list"></div>
 
+      <h2>Rooms</h2>
+      <p class="muted">One per line. The biggest lever on what gets posted —
+        a room of personal progress clips gives almost nothing, one of PR
+        attempts and dropped bars carries the queue. Nothing is checked
+        against Reddit: a name that does not exist reports an error against
+        itself on the next run rather than breaking it.</p>
+      <textarea id="rooms" rows="10" spellcheck="false"></textarea>
+      <div class="row">
+        <button class="btn primary" id="rooms-save">Save rooms</button>
+        <button class="btn" id="rooms-reset">Back to the default</button>
+      </div>
+      <div id="rooms-results" class="list"></div>
+
       <h2>Reddit</h2>
       <p class="muted">Which door into Reddit this deployment can use, measured
         from here rather than guessed. Slow — it makes real requests.</p>

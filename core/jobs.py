@@ -31,6 +31,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from core import rooms as room_list
 from core.config import settings
 from core.db import session_scope
 from core.models import RunLog
@@ -96,6 +97,7 @@ def _record_end(run_id: int, summary: dict[str, Any] | None, error: str | None) 
             row.pushed_out = summary.get("pushed_out", 0)
             row.posted = summary.get("posted", 0)
             row.failed = summary.get("failed", 0)
+            row.rooms = summary.get("rooms") or None
 
 
 def run(post: bool = True, rooms: int | None = None) -> dict[str, Any]:
@@ -165,7 +167,7 @@ def _heartbeat() -> None:
     while True:
         try:
             _maybe_refresh_tokens()
-            if settings.harvest_enabled and settings.reddit_rooms and due():
+            if settings.harvest_enabled and room_list.current() and due():
                 log.info("the daily run is due")
                 run()
         except Exception:  # noqa: BLE001 - the heartbeat must outlive a bad run
@@ -193,4 +195,4 @@ def start_heartbeat() -> None:
     _heart = threading.Thread(target=_heartbeat, name="putitupp-heartbeat", daemon=True)
     _heart.start()
     log.info("daily run armed: every %d minutes, %d rooms",
-             settings.harvest_interval_minutes, len(settings.reddit_rooms))
+             settings.harvest_interval_minutes, len(room_list.current()))

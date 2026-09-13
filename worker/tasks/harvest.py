@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import select
 
 from core import brand, reddit, reddit_routes
+from core import rooms as room_list
 from core.config import settings
 from core.db import session_scope
 from core.models import Reel
@@ -47,14 +48,23 @@ def known_ids() -> set[str]:
         return set(session.execute(select(Reel.external_id)).scalars())
 
 
-def discover(rooms: list[str] | None = None) -> list[reddit.Post]:
+def discover(
+    only: list[str] | None = None,
+    scoreboard: dict[str, Any] | None = None,
+) -> list[reddit.Post]:
     """Every postable video the rooms are showing that we have not seen.
+
+    `scoreboard` is filled in per room as it goes. The room list is the
+    biggest lever on what this page posts, and a total tells you nothing about
+    which of twenty-five rooms is carrying it - a room full of personal
+    progress clips and one full of PR attempts both just add to a number.
 
     One room failing is not the run failing. By the time `listing` gives up it
     has already tried every way in, so a room that still cannot be read is a
-    name that no longer exists - a typo in configuration, not an outage.
+    name that does not exist - a typo in the list, not an outage - and that is
+    worth recording against the room rather than losing to a log line.
     """
-    rooms = rooms if rooms is not None else settings.reddit_rooms
+    rooms = only if only is not None else room_list.current()
     skip = known_ids()
     seen: dict[str, reddit.Post] = {}
     refused: dict[str, int] = {}
@@ -62,6 +72,9 @@ def discover(rooms: list[str] | None = None) -> list[reddit.Post]:
     looked = 0
 
     for room in rooms:
+        card: dict[str, Any] = {"read": 0, "postable": 0, "new": 0, "route": None}
+        if scoreboard is not None:
+            scoreboard[room] = card
         try:
             found, route = reddit_routes.listing(
                 room, "top", settings.reddit_time_filter,
@@ -69,17 +82,22 @@ def discover(rooms: list[str] | None = None) -> list[reddit.Post]:
             )
         except reddit.RedditError as exc:
             log.warning("harvest: r/%s could not be read (%s)", room, exc)
+            card["error"] = str(exc)[:200]
             continue
         routes.add(route)
         looked += len(found)
+        card["route"] = route
+        card["read"] = len(found)
         for post in found:
-            if post.external_id in seen:
-                continue
             ok, why = reddit.postable(post)
             if not ok:
                 key = why.split()[-1] if why else "?"
                 refused[key] = refused.get(key, 0) + 1
                 continue
+            card["postable"] += 1
+            if post.external_id in seen:
+                continue
+            card["new"] += 1
             seen[post.external_id] = post
 
     log.info(
@@ -241,12 +259,15 @@ def run(post: bool = True, rooms: int | None = None) -> dict[str, Any]:
     the whole chain works in the time a browser will wait for an answer.
     """
     began = datetime.now(UTC)
-    only = settings.reddit_rooms[:rooms] if rooms else None
-    found = discover(only)
+    every = room_list.current()
+    only = every[:rooms] if rooms else None
+    scoreboard: dict[str, Any] = {}
+    found = discover(only, scoreboard)
     added = admit(found)
     pushed = trim()
 
     summary: dict[str, Any] = {
+        "rooms": scoreboard,
         "found": len(found), "added": added, "pushed_out": pushed,
         "queue": len(queued()), "posted": 0, "failed": 0,
     }

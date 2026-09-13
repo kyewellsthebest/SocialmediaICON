@@ -12,6 +12,7 @@ a badge is drawn on it, and the author's own caption goes out with it.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -33,8 +34,12 @@ def _names(raw: str) -> list[str]:
     REDDIT_SUBREDDITS=GYM all mean GYM. A name cannot contain an equals sign,
     so nothing legitimate is lost.
     """
+    # Commas, newlines and semicolons all separate. The dashboard's room
+    # editor is one per line and a pasted list is usually comma-separated;
+    # splitting on only one of those turns the whole box into a single room
+    # name, which then reads as "every room is dead".
     out: list[str] = []
-    for part in (raw or "").split(","):
+    for part in re.split(r"[,\n;]", raw or ""):
         name = part.strip().strip("\"'").strip()
         if "=" in name:
             name = name.rsplit("=", 1)[1].strip().strip("\"'").strip()
@@ -74,16 +79,32 @@ class Settings(BaseSettings):
     reddit_client_secret: str | None = None
     reddit_user_agent: str = "putitupp/1.0 (repost queue)"
 
-    #: The rooms to read. Not optional: blank would mean site-wide search, and
-    #: search exists only on the JSON routes - the ones a cloud host is
-    #: refused from. Cast wide, because the queue only keeps fifteen and a
-    #: narrow list runs dry by Wednesday.
+    #: The default rooms. The dashboard's list overrides this when one is
+    #: saved; an empty list there hands control back here.
+    #:
+    #: Not optional: blank would mean site-wide search, and search exists only
+    #: on the JSON routes - the ones a cloud host is refused from.
+    #:
+    #: Chosen for PR attempts, heavy singles, skills and fails - the things
+    #: people post *as video*. Progress, motivation and physique rooms are
+    #: deliberately absent: they are mostly photographs and text, and the few
+    #: videos are personal rather than watchable by a stranger.
+    #:
+    #: Some of these names may not exist or may be dead. That is expected and
+    #: visible: a room that cannot be read reports the error against itself in
+    #: the Setup tab's per-room table, and one that is read but never yields
+    #: anything shows as a row of zeros. Prune it there after a week rather
+    #: than guessing here.
     reddit_subreddits: str = (
-        "GYM,weightroom,bodyweightfitness,gymsnark,fitness,naturalbodybuilding,"
-        "powerlifting,weightlifting,calisthenics,strength_training,"
-        "Gymmotivation,gainit,swoleacceptance,formcheck,homegym,"
-        "crossfit,bodybuilding,Fitness_India,workout,physicaltherapy,"
-        "gymfails,funnyworkout,PublicFreakout,instantkarma,WinStupidPrizes"
+        # Lifting, where a PR attempt is the point of the post.
+        "GYM,powerlifting,weightlifting,Olympicweightlifting,strongman,"
+        "weightroom,powerbuilding,bodybuilding,naturalbodybuilding,"
+        # Skills, which are visually strong and already vertical.
+        "calisthenics,bodyweightfitness,Gymnastics,kettlebell,crossfit,"
+        # Fails.
+        "gymfails,Weightliftingfail,fitnessfails,"
+        # Wide enough to be worth reading, gym enough to stay on topic.
+        "fitness,Fitnesscirclejerk,GYMBROS"
     )
     #: hour | day | week | month | year | all. The window the rooms are ranked
     #: over. Wider finds better video and finds the same video every day;

@@ -114,6 +114,21 @@ class TestTheRoomsAreForgiving:
         value has to be a working default, not an empty one."""
         assert len(Settings().reddit_rooms) >= 20
 
+    @pytest.mark.parametrize("given", [
+        "GYM,powerlifting",
+        "GYM\npowerlifting",
+        "r/GYM\n/r/powerlifting",
+        "GYM; powerlifting",
+        " GYM , powerlifting ",
+    ])
+    def test_every_way_a_list_gets_written_is_understood(self, given, monkeypatch):
+        """The dashboard's editor is one per line; a list pasted from
+        anywhere else is comma-separated. Splitting on only one of those
+        turns the whole box into a single room name, and every room then
+        reads as dead."""
+        monkeypatch.setattr(settings, "reddit_subreddits", given)
+        assert settings.reddit_rooms == ["GYM", "powerlifting"]
+
     def test_case_is_kept_because_reddit_keeps_it(self, monkeypatch):
         monkeypatch.setattr(settings, "reddit_subreddits", "GYM,bodyweightfitness")
         assert settings.reddit_rooms == ["GYM", "bodyweightfitness"]
