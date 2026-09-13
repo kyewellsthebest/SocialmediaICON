@@ -113,6 +113,14 @@ The Setup tab asks Meta to name each account rather than reporting that a
 variable is non-empty, since posting to the wrong Instagram is the failure
 nothing else catches until after it has happened.
 
+It also names any platform that was **started but cannot be reached**, and
+which variable it is waiting on. Instagram, Threads and Facebook are three
+separate products behind one brand and they do not share credentials —
+Threads has its own API on `graph.threads.net` and its own login, and
+`META_ACCESS_TOKEN` does not work for it. Without that readout a page posts
+happily to two of the three and nothing anywhere says the third was ever
+meant to be included.
+
 Two switches gate everything: `PUBLISHER` picks the backend, and
 `AUTOPOST_ENABLED` has to be on. An accidental deploy that starts posting is
 not a mistake you can take back.

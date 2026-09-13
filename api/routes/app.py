@@ -22,7 +22,7 @@ from core import rooms as room_list
 from core.config import settings
 from core.db import session_scope
 from core.models import Reel, ReelPost
-from core.publishers import destinations
+from core.publishers import destinations, unreachable
 from core.storage import get_storage
 
 log = logging.getLogger(__name__)
@@ -427,6 +427,11 @@ def services() -> dict[str, Any]:
         "publisher": settings.publisher,
         "autopost": settings.autopost_enabled,
         "destinations": where,
+        # Named rather than left absent: a platform missing a credential
+        # simply does not appear in `destinations`, which is correct and
+        # completely silent - the page posts to two of three and nothing says
+        # the third was ever meant to be included.
+        "missing": unreachable(),
         "resolved": {},
         "blocked": [],
     }

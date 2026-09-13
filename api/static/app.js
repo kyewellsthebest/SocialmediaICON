@@ -276,6 +276,18 @@ async function loadSetup() {
     list.append(row);
   }
 
+  // A platform that is configured for but cannot be reached: named, with the
+  // variable it is waiting on, rather than quietly missing from the list.
+  for (const gap of where.missing || []) {
+    const row = el("div", "item");
+    row.append(el("span", "pill bad", gap.platform));
+    const body = el("div", "body");
+    body.append(el("span", "cap", "needs " + gap.needs));
+    body.append(el("div", "meta", gap.why));
+    row.append(body);
+    box.append(row);
+  }
+
   if (where.error) {
     const row = el("div", "item");
     row.append(el("span", "pill bad", "token"), el("div", "body", where.error));

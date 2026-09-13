@@ -131,3 +131,72 @@ class TestNothingAsksForAHandle:
                 / "api" / "static" / "index.html").read_text(encoding="utf-8")
         assert "acc-handle" not in page
         assert "destinations" in page
+
+
+class TestAPlatformThatCannotBeReachedIsNamed:
+    """Three products behind one brand, and they do not share credentials.
+    Threads is a separate API on its own host with its own login, so a page
+    with META_ACCESS_TOKEN set posts happily to Instagram and Facebook and is
+    silent on Threads - with nothing anywhere saying the third was ever meant
+    to be included, because a platform missing a credential simply does not
+    appear in the destination list.
+    """
+
+    def test_the_meta_token_does_not_reach_threads(self, monkeypatch):
+        monkeypatch.setattr(settings, "meta_access_token", "EAA...")
+        monkeypatch.setattr(settings, "instagram_user_id", "1784")
+        monkeypatch.setattr(settings, "facebook_page_id", "999")
+        monkeypatch.setattr(settings, "threads_user_id", "777")
+
+        assert destinations() == ["instagram", "facebook"]
+
+    def test_and_it_says_so_rather_than_leaving_threads_out_quietly(
+            self, monkeypatch):
+        from core.publishers import unreachable
+
+        monkeypatch.setattr(settings, "meta_access_token", "EAA...")
+        monkeypatch.setattr(settings, "threads_user_id", "777")
+
+        gaps = {g["platform"]: g for g in unreachable()}
+        assert "threads" in gaps
+        assert "THREADS_ACCESS_TOKEN" in gaps["threads"]["needs"]
+
+    def test_the_reason_says_what_the_obvious_guess_gets_wrong(self, monkeypatch):
+        """"Set META_ACCESS_TOKEN" is the natural assumption and it is wrong,
+        so the message has to say so outright."""
+        from core.publishers import unreachable
+
+        monkeypatch.setattr(settings, "threads_user_id", "777")
+        why = next(g for g in unreachable() if g["platform"] == "threads")["why"]
+        assert "META_ACCESS_TOKEN does NOT work" in why
+        assert "graph.threads.net" in why
+
+    def test_once_its_own_token_is_set_it_is_a_destination(self, monkeypatch):
+        monkeypatch.setattr(settings, "meta_access_token", "EAA...")
+        monkeypatch.setattr(settings, "instagram_user_id", "1784")
+        monkeypatch.setattr(settings, "threads_user_id", "777")
+        monkeypatch.setattr(settings, "threads_access_token", "TH...")
+
+        assert destinations() == ["instagram", "threads"]
+        from core.publishers import unreachable
+
+        assert not [g for g in unreachable() if g["platform"] == "threads"]
+
+    def test_a_platform_nobody_configured_is_not_reported_as_missing(
+            self, monkeypatch):
+        """Only what was evidently meant to be included. Listing Facebook as
+        "missing" on a page that never had a Facebook account turns the
+        readout into noise."""
+        from core.publishers import unreachable
+
+        monkeypatch.setattr(settings, "threads_user_id", "777")
+        assert [g["platform"] for g in unreachable()] == ["threads"]
+
+    def test_the_reseller_has_nothing_to_say_here(self, monkeypatch):
+        """Its platforms are a config list, not a set of credentials, so
+        nothing can be missing in this sense."""
+        from core.publishers import unreachable
+
+        monkeypatch.setattr(settings, "publisher", "upload_post")
+        monkeypatch.setattr(settings, "threads_user_id", "777")
+        assert unreachable() == []
