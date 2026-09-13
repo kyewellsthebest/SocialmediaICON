@@ -22,6 +22,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
+from core import schedule
 from core.config import settings
 from core.db import session_scope
 from core.models import Reel, ReelPost
@@ -103,32 +106,97 @@ def publish_one(reel_id: int, only: list[str] | None = None) -> list[ReelPost]:
     return recorded
 
 
-def post_due(limit: int | None = None) -> dict[str, Any]:
-    """Send out the best `limit` waiting reels, strongest first."""
-    limit = settings.post_per_run if limit is None else limit
+def posted_today(tz) -> tuple[int, datetime | None]:
+    """How many have gone out in the viewer's today, and when the last was.
+
+    The viewer's today, not UTC's: counting against a UTC day would reset the
+    tally at ten in the morning for an audience in Brisbane, and put ten reels
+    out on one afternoon.
+    """
+    since = schedule.day_of(datetime.now(UTC), tz).astimezone(UTC)
+    with session_scope() as session:
+        rows = list(
+            session.execute(
+                select(Reel.posted_at)
+                .where(Reel.state == "posted", Reel.posted_at >= since)
+                .order_by(Reel.posted_at.desc())
+            ).scalars()
+        )
+    latest = rows[0] if rows else None
+    if latest is not None and latest.tzinfo is None:
+        latest = latest.replace(tzinfo=UTC)
+    return len(rows), latest
+
+
+def window() -> schedule.Window:
+    return schedule.Window(
+        start_hour=settings.post_start_hour,
+        per_day=settings.post_per_day,
+        every_minutes=settings.post_every_minutes,
+    )
+
+
+def next_due() -> tuple[bool, str]:
+    """Whether a reel should go out now, and why not if it should not."""
     if not settings.autopost_enabled:
-        log.info("publish: AUTOPOST_ENABLED is off, nothing sent")
-        return {"posted": 0, "failed": 0, "skipped": "autopost disabled"}
+        return False, "AUTOPOST_ENABLED is off"
+    if not destinations():
+        return False, f"PUBLISHER={settings.publisher} has no credentials set"
+
+    tz = schedule.zone(settings.post_timezone)
+    count, last = posted_today(tz)
+    return schedule.due(datetime.now(UTC), count, last, window(), tz)
+
+
+def post_one_now() -> dict[str, Any]:
+    """Send the single best waiting reel, if a slot is open.
+
+    One per slot rather than a batch. Eight reels arriving at once is a burst
+    every platform notices, and it spends a day's queue in a minute.
+    """
+    ready, why = next_due()
+    if not ready:
+        return {"posted": 0, "skipped": why}
 
     from worker.tasks.harvest import queued
 
-    posted = failed = 0
-    for reel in queued(limit=limit):
-        try:
-            results = publish_one(reel.id)
-        except Exception as exc:  # noqa: BLE001 - one bad reel is not the run
-            log.warning("publish: reel %s failed (%s)", reel.external_id, exc)
-            with session_scope() as session:
-                row = session.get(Reel, reel.id)
-                if row is not None:
-                    row.note = str(exc)[:400]
-            failed += 1
-            continue
-        if any(r.status == "posted" for r in results):
-            posted += 1
-            log.info("publish: %s out (%d ups) %s",
-                     reel.external_id, reel.ups, reel.caption[:60])
-        else:
-            failed += 1
+    waiting = queued(limit=1)
+    if not waiting:
+        return {"posted": 0, "skipped": "nothing in the queue"}
 
-    return {"posted": posted, "failed": failed}
+    reel = waiting[0]
+    try:
+        results = publish_one(reel.id)
+    except Exception as exc:  # noqa: BLE001 - one bad reel is not the schedule
+        log.warning("publish: reel %s failed (%s)", reel.external_id, exc)
+        with session_scope() as session:
+            row = session.get(Reel, reel.id)
+            if row is not None:
+                row.note = str(exc)[:400]
+        return {"posted": 0, "failed": 1, "error": str(exc)[:300]}
+
+    if any(r.status == "posted" for r in results):
+        log.info("publish: %s out (%d ups) %s",
+                 reel.external_id, reel.ups, reel.caption[:60])
+        return {"posted": 1, "failed": 0, "reel": reel.external_id}
+    return {"posted": 0, "failed": 1,
+            "error": "; ".join(r.error or "refused" for r in results)[:300]}
+
+
+def post_due(limit: int | None = None) -> dict[str, Any]:
+    """Every slot that is open right now, which is normally one or none.
+
+    `limit` exists for the harvest, which calls this once at the end of a run:
+    a queue that has just been filled should not empty itself in one pass.
+    """
+    posted = failed = 0
+    skipped = ""
+    for _ in range(limit or settings.post_per_day):
+        outcome = post_one_now()
+        posted += outcome.get("posted", 0)
+        failed += outcome.get("failed", 0)
+        if outcome.get("skipped"):
+            skipped = outcome["skipped"]
+        if not outcome.get("posted"):
+            break
+    return {"posted": posted, "failed": failed, "skipped": skipped}

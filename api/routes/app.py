@@ -8,6 +8,7 @@ it goes out to.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +76,8 @@ def overview() -> dict[str, Any]:
         # in beside them. An empty list means nothing is configured to
         # receive a post, which is a different problem from autopost off.
         "destinations": destinations(),
-        "posts_per_run": settings.post_per_run,
+        "posts_per_day": settings.post_per_day,
+        "post_from": f"{settings.post_start_hour:02d}:00 {settings.post_timezone}",
         "rooms": len(room_list.current()),
         "window": settings.reddit_time_filter,
         "publisher": settings.publisher,
@@ -99,7 +101,8 @@ def queue() -> dict[str, Any]:
         )
         items = [_reel(r, place=i + 1) for i, r in enumerate(rows)]
     return {"items": items, "slots": settings.queue_size,
-            "goes_out_next": settings.post_per_run}
+            # One per slot, so only the top of the queue is next in line.
+            "goes_out_next": 1}
 
 
 @router.get("/posted")
@@ -203,6 +206,32 @@ def run_now(
         "waited": False,
         "started": started,
         "since": str(jobs.in_flight()) if not started else None,
+    }
+
+
+@router.get("/posting")
+def posting() -> dict[str, Any]:
+    """When the next reel goes out, and why not if it is not going out now."""
+    from core import schedule
+    from worker.tasks.publish import next_due, posted_today, window
+
+    tz = schedule.zone(settings.post_timezone)
+    count, last = posted_today(tz)
+    ready, why = next_due()
+    slot = schedule.next_slot(datetime.now(UTC), count, last, window(), tz)
+    return {
+        "timezone": tz.key,
+        "now": datetime.now(UTC).astimezone(tz).strftime("%H:%M"),
+        "per_day": settings.post_per_day,
+        "every_minutes": settings.post_every_minutes,
+        "from": f"{settings.post_start_hour:02d}:00",
+        "until": f"{int(window().end_hour):02d}:00",
+        "posted_today": count,
+        "ready": ready,
+        # The answer to "why has nothing posted?", which has five different
+        # ones and each is a different thing to go and look at.
+        "why": why,
+        "next_at": slot.strftime("%a %H:%M"),
     }
 
 

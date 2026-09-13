@@ -163,13 +163,31 @@ def _maybe_refresh_tokens() -> None:
         log.exception("could not refresh the Meta tokens")
 
 
+def _maybe_post() -> None:
+    """Send one reel if a slot is open.
+
+    Separate from the harvest on purpose. Filling the queue and emptying it
+    are on different clocks: the queue is topped up once a day, and reels go
+    out one an hour through the morning - because eight arriving at once is a
+    burst every platform notices, and it spends a day's queue in a minute.
+    """
+    from worker.tasks.publish import post_one_now
+
+    outcome = post_one_now()
+    if outcome.get("posted"):
+        log.info("posted: %s", outcome)
+
+
 def _heartbeat() -> None:
     while True:
         try:
             _maybe_refresh_tokens()
             if settings.harvest_enabled and room_list.current() and due():
-                log.info("the daily run is due")
-                run()
+                log.info("the daily harvest is due")
+                # Without posting: the slots decide when a reel goes out, not
+                # the moment the queue happened to be refilled.
+                run(post=False)
+            _maybe_post()
         except Exception:  # noqa: BLE001 - the heartbeat must outlive a bad run
             log.exception("the heartbeat stumbled")
         time.sleep(TICK_S)
@@ -194,5 +212,10 @@ def start_heartbeat() -> None:
         return
     _heart = threading.Thread(target=_heartbeat, name="putitupp-heartbeat", daemon=True)
     _heart.start()
-    log.info("daily run armed: every %d minutes, %d rooms",
-             settings.harvest_interval_minutes, len(room_list.current()))
+    log.info(
+        "armed: harvest every %d minutes over %d rooms; %d posts a day from "
+        "%02d:00 %s, %d minutes apart",
+        settings.harvest_interval_minutes, len(room_list.current()),
+        settings.post_per_day, settings.post_start_hour,
+        settings.post_timezone, settings.post_every_minutes,
+    )

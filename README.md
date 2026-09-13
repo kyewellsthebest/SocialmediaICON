@@ -4,7 +4,7 @@ Finds short gym video on Reddit, puts the mark on it, posts it with the
 author's own caption.
 
 ```
-20 rooms → top of the week → best 15 kept → badge → 8 posted a day
+20 rooms → top of the week → best 15 kept → badge → 5 a day, hourly from 7am
 ```
 
 Nothing is cut, transcribed, scored by a model or re-framed. Somebody already
@@ -27,9 +27,20 @@ beaten one stays a beaten one, because both answer the same question — *have w
 already dealt with this?* — and a queue that forgets reposts itself the first
 time a video comes round again.
 
-**One daily run** does the whole thing: read the rooms, re-rank, send the top
-eight out. Find fifteen, post eight, seven carry over and compete against
-tomorrow's.
+**Two clocks, because filling the queue and emptying it are different jobs.**
+The harvest runs once a day: read every room, re-rank, keep the best fifteen.
+Posting runs on slots — one reel an hour, five a day, from 7am local, so the
+last lands at 11am and the window shuts at noon.
+
+One per slot rather than a batch: eight reels arriving at once is a burst
+every platform notices, and it spends a day's queue in a minute. Missed slots
+stay missed — a service that comes back at half past ten posts one reel, not
+the three it owes, because catching up by dumping the backlog is the burst
+this exists to avoid.
+
+The timezone is named rather than assumed. Railway runs in UTC, so "7am" means
+seven in the morning *somewhere*, and posting at 07:00 UTC to an audience in
+Brisbane puts every reel out at five in the afternoon.
 
 A reel is downloaded when it is about to be posted, not when it joins the
 queue. Most of what enters is beaten before its turn, and downloading fifteen a

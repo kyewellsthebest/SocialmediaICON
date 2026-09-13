@@ -153,18 +153,18 @@ class TestWhatGoesOutNext:
         harvest.trim()
         assert [r.external_id for r in harvest.queued()] == ["big", "mid", "small"]
 
-    def test_a_run_sends_out_only_its_allowance(self, database, monkeypatch):
+    def test_a_days_worth_goes_out_and_the_rest_waits(self, database, monkeypatch):
+        """Fifteen found, five posted across the day, ten carried over to
+        compete against tomorrow's."""
         monkeypatch.setattr(settings, "queue_size", 15)
-        monkeypatch.setattr(settings, "post_per_run", 8)
+        monkeypatch.setattr(settings, "post_per_day", 5)
         harvest.admit([a_post(f"p{i:02d}", ups=100 * i) for i in range(1, 16)])
         harvest.trim()
 
-        going = harvest.queued(limit=settings.post_per_run)
-        assert len(going) == 8
-        assert going[0].external_id == "p15"
-        # ...and seven are still waiting for the next run, which is the
-        # arithmetic in the brief: fifteen found, eight posted, seven saved.
-        assert len(harvest.queued()) - len(going) == 7
+        going = harvest.queued(limit=settings.post_per_day)
+        assert len(going) == 5
+        assert going[0].external_id == "p15", "the strongest goes first"
+        assert len(harvest.queued()) - len(going) == 10
 
     def test_a_posted_video_leaves_the_queue_but_not_the_record(
             self, database, monkeypatch):

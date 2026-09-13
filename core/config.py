@@ -170,8 +170,19 @@ class Settings(BaseSettings):
     #: How many wait their turn. A run that finds more than this keeps the
     #: best, and a later run with a better video pushes the weakest out.
     queue_size: int = 15
-    #: How many go out per run.
-    post_per_run: int = 8
+    # --- when reels go out -------------------------------------------------
+    #: The clock the schedule is read against. Railway runs in UTC, so "7am"
+    #: means seven in the morning *somewhere*, and the somewhere has to be
+    #: said out loud: posting at 07:00 UTC to an audience in Brisbane puts
+    #: every reel out at five in the afternoon.
+    post_timezone: str = "Australia/Brisbane"
+    #: The first slot of the day, local.
+    post_start_hour: int = 7
+    #: How many go out in a day, one per slot.
+    post_per_day: int = 5
+    #: How far apart the slots are. 5 an hour apart from 07:00 means the last
+    #: lands at 11:00.
+    post_every_minutes: int = 60
 
     # --- publishing -------------------------------------------------------
     publisher: str = "manual"  # manual | upload_post | youtube | meta

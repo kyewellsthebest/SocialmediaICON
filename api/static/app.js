@@ -99,7 +99,7 @@ async function loadQueue() {
     `top of the ${over.window}`,
     `best ${over.slots} kept`,
     over.autopost
-      ? `${over.posts_per_run} posted per run via ${over.publisher}`
+      ? `${over.posts_per_day} a day from ${over.post_from} via ${over.publisher}`
       : `posting OFF (AUTOPOST_ENABLED)`,
   ];
   steps.forEach((step, i) => {
@@ -291,6 +291,7 @@ async function loadSetup() {
     }
   }
 
+  await loadPosting();
   await loadWorker();
   await loadRooms();
 
@@ -312,6 +313,33 @@ async function loadSetup() {
     kv.append(el("div", "k", k), el("div", "v", String(v)));
     config.append(kv);
   }
+}
+
+async function loadPosting() {
+  const box = $("posting");
+  box.replaceChildren();
+  let state;
+  try {
+    state = await api("/posting");
+  } catch (error) {
+    box.append(el("div", "empty", error.message));
+    return;
+  }
+
+  const row = el("div", "item");
+  row.append(el("span", "pill " + (state.ready ? "ok" : ""),
+    `${state.posted_today}/${state.per_day}`));
+  const body = el("div", "body");
+  body.append(el("span", "cap",
+    `${state.per_day} a day, ${state.every_minutes} min apart, ` +
+    `${state.from}–${state.until} ${state.timezone}`));
+  // The five different reasons nothing is posting, each a different thing to
+  // go and look at. Far more useful than an empty Posted tab.
+  body.append(el("div", "meta", state.ready
+    ? "a slot is open now"
+    : `${state.why} · next ${state.next_at}`));
+  row.append(body);
+  box.append(row);
 }
 
 async function loadRooms() {
