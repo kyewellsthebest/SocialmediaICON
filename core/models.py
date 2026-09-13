@@ -97,6 +97,14 @@ class Reel(TimestampMixin, Base):
 
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: The second post: the same video as a square Instagram carousel, half an
+    #: hour later. Tracked separately from `posted_at` because it is a
+    #: different post on a different surface, and because a reel that went out
+    #: and a carousel that failed must not read the same.
+    carousel_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Why the carousel has not gone out, when it has not.
+    carousel_note: Mapped[str | None] = mapped_column(Text)
+
     posts: Mapped[list[ReelPost]] = relationship(
         back_populates="reel", cascade="all, delete-orphan"
     )

@@ -170,6 +170,20 @@ class Settings(BaseSettings):
     #: How many wait their turn. A run that finds more than this keeps the
     #: best, and a later run with a better video pushes the weakest out.
     queue_size: int = 15
+    # --- the Instagram carousel --------------------------------------------
+    #: A second post of the same video: a square cover, then the square
+    #: video. A reel goes to the Reels surface and a carousel sits in the grid
+    #: and the feed, so the same clip reaches two different sets of eyes
+    #: without either looking like a repeat.
+    carousel_enabled: bool = True
+    #: How long after the reel. Far enough apart not to read as a double
+    #: post, close enough to ride the same interest.
+    carousel_delay_minutes: int = 30
+    #: Where the cover still comes from. Not zero: the literal first frame is
+    #: very often black, a fade, or a hand reaching for the phone.
+    carousel_frame_at_s: float = 1.0
+    carousel_swipe_text: str = "Swipe to watch"
+
     # --- when reels go out -------------------------------------------------
     #: The clock the schedule is read against. Railway runs in UTC, so "7am"
     #: means seven in the morning *somewhere*, and the somewhere has to be

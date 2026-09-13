@@ -278,6 +278,95 @@ class MetaPublisher:
             log.warning("meta: %s request failed: %s", platform, exc)
             return PublishResult(platform=platform, ok=False, error=f"request failed: {exc}"[:300])
 
+    # ------------------------------------------------------------- carousel
+
+    def publish_carousel(
+        self,
+        image_url: str,
+        video_url: str,
+        caption: str,
+    ) -> PublishResult:
+        """An Instagram carousel: a cover image, then the video.
+
+        A different flow from a reel and not a variation on one. Each slide
+        gets its own container with is_carousel_item set, then a third
+        container ties them together, then that is published - four calls
+        where a reel takes two.
+
+        The video slide is `VIDEO`, never `REELS`. A reel cannot be a carousel
+        item, and asking for one is rejected in a way that reads like a bad
+        URL rather than a wrong media type.
+        """
+        try:
+            target = self._target("instagram")
+        except MetaError as exc:
+            return PublishResult(platform="instagram_carousel", ok=False, error=str(exc)[:300])
+
+        with httpx.Client(timeout=httpx.Timeout(settings.meta_publish_timeout_s,
+                                                connect=30.0)) as client:
+            try:
+                children = []
+                for body in (
+                    {"is_carousel_item": "true", "image_url": image_url},
+                    {"is_carousel_item": "true", "media_type": "VIDEO",
+                     "video_url": video_url},
+                ):
+                    created = self._call(
+                        client, "POST",
+                        self._graph(target, f"{target.account_id}/media"),
+                        data=body | {"access_token": target.token},
+                    )
+                    child = str(created.get("id") or "")
+                    if not child:
+                        raise MetaError(f"no container id for a slide: {created}")
+                    children.append(child)
+
+                # Only the video needs ingesting; the image is ready as soon
+                # as Meta has fetched it. Waiting on both is a minute of
+                # polling something that is already finished.
+                self._await_container(client, target, children[1])
+
+                parent = self._call(
+                    client, "POST",
+                    self._graph(target, f"{target.account_id}/media"),
+                    data={
+                        "media_type": "CAROUSEL",
+                        "children": ",".join(children),
+                        "caption": caption[: CAPTION_LIMITS["instagram"]],
+                        "access_token": target.token,
+                    },
+                )
+                parent_id = str(parent.get("id") or "")
+                if not parent_id:
+                    raise MetaError(f"no carousel container id: {parent}")
+
+                published = self._call(
+                    client, "POST",
+                    self._graph(target, f"{target.account_id}/media_publish"),
+                    data={"creation_id": parent_id, "access_token": target.token},
+                )
+                post_id = str(published.get("id") or "")
+                if not post_id:
+                    raise MetaError(f"no post id in the response: {published}")
+
+                # Asked for inside the client block: the permalink is a
+                # separate request, and a post that went out is still a post
+                # that went out if looking up its URL fails.
+                link = self._permalink(client, target, post_id)
+
+            except MetaError as exc:
+                log.warning("meta: carousel failed: %s", exc)
+                return PublishResult(platform="instagram_carousel", ok=False,
+                                     error=str(exc)[:300])
+            except httpx.HTTPError as exc:
+                log.warning("meta: carousel request failed: %s", exc)
+                return PublishResult(platform="instagram_carousel", ok=False,
+                                     error=f"request failed: {exc}"[:300])
+
+        return PublishResult(
+            platform="instagram_carousel", ok=True, post_id=post_id, url=link,
+        )
+
     def _publish_container(
         self,
         client: httpx.Client,

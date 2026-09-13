@@ -352,6 +352,21 @@ async function loadPosting() {
     : `${state.why} · next ${state.next_at}`));
   row.append(body);
   box.append(row);
+
+  // The second post, on its own clock behind the reels.
+  const carousel = state.carousel || {};
+  const second = el("div", "item");
+  second.append(el("span", "pill " + (carousel.blocked ? "bad" : "ok"),
+    `${carousel.posted || 0} up`));
+  const detail = el("div", "body");
+  detail.append(el("span", "cap",
+    `Instagram carousel — cover + square video, ${carousel.delay_minutes} min ` +
+    `after each reel`));
+  detail.append(el("div", "meta", carousel.blocked
+    ? carousel.blocked
+    : `${carousel.owed || 0} waiting to go out`));
+  second.append(detail);
+  box.append(second);
 }
 
 async function loadRooms() {

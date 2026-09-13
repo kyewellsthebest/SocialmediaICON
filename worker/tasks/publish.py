@@ -18,7 +18,7 @@ starts posting is not a mistake you can take back.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -200,3 +200,140 @@ def post_due(limit: int | None = None) -> dict[str, Any]:
         if not outcome.get("posted"):
             break
     return {"posted": posted, "failed": failed, "skipped": skipped}
+
+
+def carousel_owed(now: datetime | None = None) -> list[int]:
+    """Reels whose carousel is due: posted, delay elapsed, not yet sent.
+
+    Oldest first, so a backlog drains in the order it was created rather than
+    newest-first, which would leave the oldest owed forever.
+    """
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(minutes=settings.carousel_delay_minutes)
+    with session_scope() as session:
+        return list(
+            session.execute(
+                select(Reel.id)
+                .where(
+                    Reel.state == "posted",
+                    Reel.carousel_at.is_(None),
+                    Reel.posted_at.is_not(None),
+                    Reel.posted_at <= cutoff,
+                )
+                .order_by(Reel.posted_at.asc())
+            ).scalars()
+        )
+
+
+def post_carousel(reel_id: int) -> dict[str, Any]:
+    """Build both slides and put them up as one Instagram carousel.
+
+    Needs public URLs: Instagram fetches each slide from one rather than
+    accepting an upload, which is why R2 is not optional for this path in the
+    way it nearly is for a reel.
+    """
+    from core import carousel as slides
+
+    with session_scope() as session:
+        reel = session.get(Reel, reel_id)
+        if reel is None:
+            raise ValueError(f"no reel {reel_id}")
+        if reel.carousel_at is not None:
+            return {"skipped": "already up"}
+        caption, external_id = reel.caption, reel.external_id
+        key, local = reel.storage_key, Path(reel.local_path) if reel.local_path else None
+
+    storage = get_storage()
+
+    # The branded reel is the source. It may only exist in storage - the
+    # service that made it is not necessarily the one running now - so fetch
+    # it back rather than assuming a file on this disk.
+    work = Path(settings.work_dir) / "carousel"
+    work.mkdir(parents=True, exist_ok=True)
+    if local is None or not local.exists():
+        if not key:
+            return _carousel_failed(reel_id, "the reel has no file to build from")
+        local = storage.get_file(key, work / f"{external_id}.mp4")
+
+    try:
+        cover_path, square_path = slides.build(local, work)
+    except Exception as exc:  # noqa: BLE001 - one bad render is not the schedule
+        return _carousel_failed(reel_id, f"could not build the slides: {exc}"[:400])
+
+    try:
+        cover_key = f"carousel/{external_id}-cover.jpg"
+        square_key = f"carousel/{external_id}-square.mp4"
+        storage.put_file(cover_path, cover_key)
+        storage.put_file(square_path, square_key)
+        cover_url = storage.url_for(cover_key, expires_s=6 * 3600)
+        square_url = storage.url_for(square_key, expires_s=6 * 3600)
+    except Exception as exc:  # noqa: BLE001
+        return _carousel_failed(
+            reel_id,
+            f"could not store the slides ({exc}). Instagram fetches a carousel "
+            f"from a URL rather than accepting an upload, so R2 is required "
+            f"for this."[:400],
+        )
+
+    from core.publishers.meta import MetaPublisher
+
+    result = MetaPublisher().publish_carousel(cover_url, square_url, caption)
+
+    with session_scope() as session:
+        session.add(ReelPost(
+            reel_id=reel_id,
+            platform=result.platform,
+            platform_post_id=result.post_id,
+            platform_url=result.url,
+            error=result.error,
+            status="posted" if result.ok else "failed",
+            posted_at=datetime.now(UTC) if result.ok else None,
+        ))
+        reel = session.get(Reel, reel_id)
+        if reel is not None:
+            if result.ok:
+                reel.carousel_at = datetime.now(UTC)
+                reel.carousel_note = None
+            else:
+                reel.carousel_note = (result.error or "refused")[:400]
+
+    if result.ok:
+        log.info("carousel: %s up (%s)", external_id, result.url or result.post_id)
+        return {"posted": 1, "reel": external_id, "url": result.url}
+    return {"posted": 0, "failed": 1, "error": result.error}
+
+
+def _carousel_failed(reel_id: int, why: str) -> dict[str, Any]:
+    """Record why, and leave carousel_at unset so it is tried again.
+
+    A render that failed on a bad frame usually fails again, but a storage
+    blip does not - and writing the timestamp on failure would mean the one
+    that could have worked is never retried.
+    """
+    log.warning("carousel: reel %s - %s", reel_id, why)
+    with session_scope() as session:
+        reel = session.get(Reel, reel_id)
+        if reel is not None:
+            reel.carousel_note = why[:400]
+    return {"posted": 0, "failed": 1, "error": why}
+
+
+def post_carousels_due(limit: int = 2) -> dict[str, Any]:
+    """Send any carousels whose half hour is up.
+
+    Capped per tick: each one renders a video, and a backlog of ten would
+    otherwise hold the heartbeat for a quarter of an hour.
+    """
+    if not settings.carousel_enabled:
+        return {"posted": 0, "skipped": "CAROUSEL_ENABLED is off"}
+    if not settings.autopost_enabled:
+        return {"posted": 0, "skipped": "AUTOPOST_ENABLED is off"}
+    if "instagram" not in destinations():
+        return {"posted": 0, "skipped": "Instagram is not a destination"}
+
+    posted = failed = 0
+    for reel_id in carousel_owed()[:limit]:
+        outcome = post_carousel(reel_id)
+        posted += outcome.get("posted", 0)
+        failed += outcome.get("failed", 0)
+    return {"posted": posted, "failed": failed}
