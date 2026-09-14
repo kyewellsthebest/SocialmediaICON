@@ -183,6 +183,12 @@ class Settings(BaseSettings):
     #: very often black, a fade, or a hand reaching for the phone.
     carousel_frame_at_s: float = 1.0
     carousel_swipe_text: str = "Swipe to watch"
+    #: How many goes before giving up. A render that fails on a bad frame
+    #: fails the same way every time, and retrying it once a minute for a week
+    #: buries every other failure on the page.
+    carousel_max_attempts: int = 4
+    #: Multiplied by the attempt number, so the gaps widen: 15, 30, 45...
+    carousel_retry_minutes: int = 15
 
     # --- when reels go out -------------------------------------------------
     #: The clock the schedule is read against. Railway runs in UTC, so "7am"

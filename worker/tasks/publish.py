@@ -205,24 +205,43 @@ def post_due(limit: int | None = None) -> dict[str, Any]:
 def carousel_owed(now: datetime | None = None) -> list[int]:
     """Reels whose carousel is due: posted, delay elapsed, not yet sent.
 
+    A failed one stays owed - a storage blip should not cost a reel its second
+    post permanently - but it backs off and eventually gives up. Owed with no
+    memory means retried on every heartbeat, once a minute, forever, which is
+    how one broken render becomes forty identical failures.
+
     Oldest first, so a backlog drains in the order it was created rather than
     newest-first, which would leave the oldest owed forever.
     """
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(minutes=settings.carousel_delay_minutes)
     with session_scope() as session:
-        return list(
+        rows = list(
             session.execute(
-                select(Reel.id)
+                select(Reel.id, Reel.carousel_attempts, Reel.carousel_tried_at)
                 .where(
                     Reel.state == "posted",
                     Reel.carousel_at.is_(None),
                     Reel.posted_at.is_not(None),
                     Reel.posted_at <= cutoff,
+                    Reel.carousel_attempts < settings.carousel_max_attempts,
                 )
                 .order_by(Reel.posted_at.asc())
-            ).scalars()
+            ).all()
         )
+
+    due = []
+    for reel_id, attempts, tried in rows:
+        if tried is not None:
+            if tried.tzinfo is None:
+                tried = tried.replace(tzinfo=UTC)
+            # Each failure waits longer than the last, so a render that is
+            # simply never going to work stops costing a request a minute.
+            wait = timedelta(minutes=settings.carousel_retry_minutes * attempts)
+            if now - tried < wait:
+                continue
+        due.append(reel_id)
+    return due
 
 
 def post_carousel(reel_id: int) -> dict[str, Any]:
@@ -280,22 +299,33 @@ def post_carousel(reel_id: int) -> dict[str, Any]:
     result = MetaPublisher().publish_carousel(cover_url, square_url, caption)
 
     with session_scope() as session:
-        session.add(ReelPost(
-            reel_id=reel_id,
-            platform=result.platform,
-            platform_post_id=result.post_id,
-            platform_url=result.url,
-            error=result.error,
-            status="posted" if result.ok else "failed",
-            posted_at=datetime.now(UTC) if result.ok else None,
-        ))
+        # One row per platform, updated. A new row per attempt turns the
+        # record of what happened into a record of how often it was retried.
+        row = session.execute(
+            select(ReelPost).where(
+                ReelPost.reel_id == reel_id,
+                ReelPost.platform == result.platform,
+            )
+        ).scalars().first()
+        if row is None:
+            row = ReelPost(reel_id=reel_id, platform=result.platform)
+            session.add(row)
+        row.platform_post_id = result.post_id
+        row.platform_url = result.url
+        row.error = result.error
+        row.status = "posted" if result.ok else "failed"
+        row.posted_at = datetime.now(UTC) if result.ok else None
+
         reel = session.get(Reel, reel_id)
         if reel is not None:
+            reel.carousel_tried_at = datetime.now(UTC)
             if result.ok:
                 reel.carousel_at = datetime.now(UTC)
                 reel.carousel_note = None
             else:
-                reel.carousel_note = (result.error or "refused")[:400]
+                reel.carousel_attempts = (reel.carousel_attempts or 0) + 1
+                reel.carousel_note = _note(
+                    reel.carousel_attempts, result.error or "refused")
 
     if result.ok:
         log.info("carousel: %s up (%s)", external_id, result.url or result.post_id)
@@ -303,18 +333,28 @@ def post_carousel(reel_id: int) -> dict[str, Any]:
     return {"posted": 0, "failed": 1, "error": result.error}
 
 
+def _note(attempts: int, why: str) -> str:
+    """The failure, with how many goes it has had. Read on the dashboard."""
+    if attempts >= settings.carousel_max_attempts:
+        return f"gave up after {attempts} attempts: {why}"[:400]
+    return f"attempt {attempts} of {settings.carousel_max_attempts}: {why}"[:400]
+
+
 def _carousel_failed(reel_id: int, why: str) -> dict[str, Any]:
     """Record why, and leave carousel_at unset so it is tried again.
 
     A render that failed on a bad frame usually fails again, but a storage
     blip does not - and writing the timestamp on failure would mean the one
-    that could have worked is never retried.
+    that could have worked is never retried. So it stays owed, waits longer
+    each time, and gives up rather than retrying for the rest of the week.
     """
     log.warning("carousel: reel %s - %s", reel_id, why)
     with session_scope() as session:
         reel = session.get(Reel, reel_id)
         if reel is not None:
-            reel.carousel_note = why[:400]
+            reel.carousel_attempts = (reel.carousel_attempts or 0) + 1
+            reel.carousel_tried_at = datetime.now(UTC)
+            reel.carousel_note = _note(reel.carousel_attempts, why)
     return {"posted": 0, "failed": 1, "error": why}
 
 
@@ -330,6 +370,14 @@ def post_carousels_due(limit: int = 2) -> dict[str, Any]:
         return {"posted": 0, "skipped": "AUTOPOST_ENABLED is off"}
     if "instagram" not in destinations():
         return {"posted": 0, "skipped": "Instagram is not a destination"}
+    if not settings.has_r2:
+        # Checked here rather than discovered per reel. Instagram fetches each
+        # slide from a URL; local storage hands back a file:// one, which it
+        # cannot possibly read - so without R2 every carousel fails at the
+        # last step having already rendered two videos.
+        return {"posted": 0,
+                "skipped": "R2 is not configured, and Instagram fetches each "
+                           "carousel slide from a URL rather than an upload"}
 
     posted = failed = 0
     for reel_id in carousel_owed()[:limit]:

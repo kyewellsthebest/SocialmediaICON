@@ -233,6 +233,17 @@ async function loadPosted() {
       }
     }
     postedList.append(row);
+
+    // The reason, in words, under the row. A failure whose only explanation
+    // is a tooltip on a phone is a failure nobody can read at all.
+    const failures = (reel.went_to || []).filter((w) => w.status !== "posted");
+    for (const failure of failures) {
+      if (!failure.error) continue;
+      postedList.append(el("div", "why", `${failure.platform}: ${failure.error}`));
+    }
+    if (reel.carousel_note && !failures.some((f) => f.platform.includes("carousel"))) {
+      postedList.append(el("div", "why", `carousel: ${reel.carousel_note}`));
+    }
   }
 
   const beatenList = $("beaten-list");

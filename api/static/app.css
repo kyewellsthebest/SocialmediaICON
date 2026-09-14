@@ -265,6 +265,18 @@ main { max-width: 940px; margin: 0 auto; padding: 8px 20px 80px; }
 
 .actions { display: flex; gap: 6px; }
 
+/* The reason a post failed, in words, under its row. On a phone a tooltip is
+   not a thing anyone can read. */
+.why {
+  margin: -4px 0 4px var(--pad);
+  padding: 8px var(--pad);
+  border-left: 2px solid var(--bad);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .empty {
   padding: 26px var(--pad);
   text-align: center;

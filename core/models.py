@@ -104,6 +104,13 @@ class Reel(TimestampMixin, Base):
     carousel_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Why the carousel has not gone out, when it has not.
     carousel_note: Mapped[str | None] = mapped_column(Text)
+    #: How many times it has been tried, and when last. A carousel that fails
+    #: is left owed on purpose - a storage blip should not cost a reel its
+    #: second post permanently - but "owed" with no memory means retrying
+    #: every minute forever, which is how one broken render becomes forty
+    #: identical failures nobody can read.
+    carousel_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    carousel_tried_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     posts: Mapped[list[ReelPost]] = relationship(
         back_populates="reel", cascade="all, delete-orphan"

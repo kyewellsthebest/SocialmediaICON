@@ -128,6 +128,10 @@ def posted(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
                      "url": a.platform_url, "error": a.error}
                     for a in attempts
                 ],
+                # Read on the page rather than hidden in a tooltip: a failure
+                # nobody can see is a failure nobody fixes.
+                "carousel_note": reel.carousel_note,
+                "carousel_at": reel.carousel_at.isoformat() if reel.carousel_at else None,
             })
     return {"items": items}
 

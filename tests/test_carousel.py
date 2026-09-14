@@ -301,9 +301,85 @@ class TestWhenItWillNotGo:
         owed = publish.carousel_owed()
         publish._carousel_failed(owed[0], "storage was unreachable")
 
-        assert publish.carousel_owed() == [owed[0]], "it must still be owed"
+        later = datetime.now(UTC) + timedelta(hours=2)
+        assert publish.carousel_owed(now=later) == [owed[0]], "it must still be owed"
         with database() as session:
             assert "storage" in session.get(Reel, owed[0]).carousel_note
+
+    def test_it_is_not_retried_a_minute_later(self, database):
+        """The heartbeat ticks every sixty seconds. Without a wait, one broken
+        render becomes forty identical failures before anyone looks."""
+        from worker.tasks import publish
+
+        with database() as session:
+            a_reel(session, "r", posted_minutes_ago=60)
+        publish._carousel_failed(publish.carousel_owed()[0], "ffmpeg said no")
+
+        assert publish.carousel_owed() == [], "it should be waiting, not retrying"
+
+    def test_each_failure_waits_longer_than_the_last(self, database):
+        from worker.tasks import publish
+
+        with database() as session:
+            a_reel(session, "r", posted_minutes_ago=60)
+        reel_id = publish.carousel_owed()[0]
+
+        publish._carousel_failed(reel_id, "no")
+        # 15 minutes after one failure: due again.
+        assert publish.carousel_owed(
+            now=datetime.now(UTC) + timedelta(minutes=16)) == [reel_id]
+
+        publish._carousel_failed(reel_id, "no")
+        # After two, the wait is thirty, so sixteen minutes is not enough.
+        assert publish.carousel_owed(
+            now=datetime.now(UTC) + timedelta(minutes=16)) == []
+        assert publish.carousel_owed(
+            now=datetime.now(UTC) + timedelta(minutes=31)) == [reel_id]
+
+    def test_it_gives_up_rather_than_trying_forever(self, database, monkeypatch):
+        from worker.tasks import publish
+
+        monkeypatch.setattr(settings, "carousel_max_attempts", 3)
+        with database() as session:
+            a_reel(session, "r", posted_minutes_ago=60)
+        reel_id = publish.carousel_owed()[0]
+
+        for _ in range(3):
+            publish._carousel_failed(reel_id, "ffmpeg said no")
+
+        far_future = datetime.now(UTC) + timedelta(days=7)
+        assert publish.carousel_owed(now=far_future) == []
+        with database() as session:
+            assert "gave up after 3" in session.get(Reel, reel_id).carousel_note
+
+    def test_the_note_says_which_attempt_it_is_on(self, database):
+        from worker.tasks import publish
+
+        with database() as session:
+            a_reel(session, "r", posted_minutes_ago=60)
+        reel_id = publish.carousel_owed()[0]
+        publish._carousel_failed(reel_id, "ffmpeg said no")
+
+        with database() as session:
+            note = session.get(Reel, reel_id).carousel_note
+        assert note.startswith("attempt 1 of ")
+        assert "ffmpeg said no" in note
+
+    def test_local_storage_is_refused_before_anything_is_rendered(
+            self, database, monkeypatch):
+        """Instagram fetches each slide from a URL, and local storage hands
+        back a file:// one it cannot possibly read. Discovering that after
+        rendering two videos, once a minute, is the expensive way to find out."""
+        from worker.tasks import publish
+
+        monkeypatch.setattr(settings, "carousel_enabled", True)
+        monkeypatch.setattr(settings, "autopost_enabled", True)
+        monkeypatch.setattr(settings, "instagram_user_id", "1784")
+        monkeypatch.setattr(settings, "meta_access_token", "EAA")
+        monkeypatch.setattr(settings, "publisher", "meta")
+        monkeypatch.setattr(settings, "r2_bucket", None)
+
+        assert "R2" in publish.post_carousels_due()["skipped"]
 
 
 class TestTheCarouselApiShape:
