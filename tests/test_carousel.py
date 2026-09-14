@@ -415,3 +415,85 @@ class TestTheCarouselApiShape:
         assert '"media_type": "CAROUSEL"' in source
         assert '"children"' in source
         assert "media_publish" in source
+
+
+class TestARateLimitIsAWaitNotAFailure:
+    """Meta's code 4 / 1349210 means "stop asking for a while", not "this is
+    broken". The two need completely different handling: a broken render fails
+    the same way forever and should be given up on, while a rate limit clears
+    by itself the moment the traffic stops.
+
+    This matters because the retries were what spent the quota in the first
+    place. Counting each refusal as an attempt would have abandoned every
+    reel's second post over a limit that refills on its own.
+    """
+
+    @pytest.mark.parametrize("said", [
+        "Application request limit reached (code 4/1349210)",
+        "Application request limit reached (code 4)",
+        "User request limit reached (code 17)",
+        "Please retry your request later (code 2)",
+    ])
+    def test_metas_ways_of_saying_slow_down_are_recognised(self, said):
+        from core.publishers.meta import is_rate_limited
+
+        assert is_rate_limited(said)
+
+    @pytest.mark.parametrize("said", [
+        "Invalid parameter (code 100/2207026)",
+        "could not build the slides: ffmpeg said no",
+        "The access token is invalid (code 190)",
+        None,
+        "",
+    ])
+    def test_a_real_fault_is_not_mistaken_for_one(self, said):
+        from core.publishers.meta import is_rate_limited
+
+        assert not is_rate_limited(said)
+
+    def test_it_does_not_spend_an_attempt(self, database):
+        """Four rate limits would otherwise use up the whole give-up budget
+        and abandon the post permanently."""
+        from worker.tasks import publish
+
+        with database() as session:
+            a_reel(session, "r", posted_minutes_ago=60)
+        reel_id = publish.carousel_owed()[0]
+
+        for _ in range(6):
+            publish._carousel_failed(
+                reel_id, "Application request limit reached (code 4/1349210)")
+
+        with database() as session:
+            reel = session.get(Reel, reel_id)
+        assert reel.carousel_attempts == 0, "a rate limit is not an attempt"
+        assert "waiting" in reel.carousel_note
+
+    def test_it_is_still_owed_once_the_limit_has_had_time_to_clear(self, database):
+        from worker.tasks import publish
+
+        with database() as session:
+            a_reel(session, "r", posted_minutes_ago=60)
+        reel_id = publish.carousel_owed()[0]
+        publish._carousel_failed(
+            reel_id, "Application request limit reached (code 4/1349210)")
+
+        assert publish.carousel_owed() == [], "asking again is what spent it"
+        later = datetime.now(UTC) + timedelta(
+            minutes=settings.rate_limit_wait_minutes + 1)
+        assert publish.carousel_owed(now=later) == [reel_id]
+
+    def test_it_waits_far_longer_than_an_ordinary_failure(self):
+        """A minute of backoff against a 24-hour window is no backoff."""
+        assert settings.rate_limit_wait_minutes >= settings.carousel_retry_minutes * 2
+
+    def test_a_real_fault_still_counts_and_still_gives_up(self, database):
+        from worker.tasks import publish
+
+        with database() as session:
+            a_reel(session, "r", posted_minutes_ago=60)
+        reel_id = publish.carousel_owed()[0]
+        publish._carousel_failed(reel_id, "could not build the slides: ffmpeg said no")
+
+        with database() as session:
+            assert session.get(Reel, reel_id).carousel_attempts == 1

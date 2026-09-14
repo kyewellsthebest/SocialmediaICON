@@ -189,6 +189,10 @@ class Settings(BaseSettings):
     carousel_max_attempts: int = 4
     #: Multiplied by the attempt number, so the gaps widen: 15, 30, 45...
     carousel_retry_minutes: int = 15
+    #: How long to stand down when Meta says the publishing limit is spent.
+    #: Its window is 24 hours and the allowance refills gradually, so an hour
+    #: is a reasonable next look - and asking more often is what spends it.
+    rate_limit_wait_minutes: int = 60
 
     # --- when reels go out -------------------------------------------------
     #: The clock the schedule is read against. Railway runs in UTC, so "7am"

@@ -52,6 +52,34 @@ CLIP_URL_TTL_S = 6 * 3600
 POLL_INTERVAL_S = 5.0
 
 
+#: Meta's way of saying "not now". Code 4 is the application request limit;
+#: subcode 1349210 is Instagram's content-publishing quota specifically, which
+#: is 25 published posts per account per rolling 24 hours.
+#:
+#: Worth telling apart from every other failure, because the response is
+#: completely different: a broken render fails the same way forever and should
+#: be given up on, while this one succeeds by itself if you simply stop asking
+#: for a while. Counting a rate limit as a failed attempt abandons a post over
+#: something temporary.
+RATE_LIMIT_MARKERS = (
+    "application request limit reached",
+    "1349210",
+    "(code 4/",
+    "(code 4)",
+    "(code 17",
+    "rate limit",
+    "please retry",
+)
+
+
+def is_rate_limited(error: str | None) -> bool:
+    """Whether this failure is Meta asking for less traffic, not a fault."""
+    if not error:
+        return False
+    said = error.lower()
+    return any(marker in said for marker in RATE_LIMIT_MARKERS)
+
+
 class MetaError(RuntimeError):
     """A Graph API call came back with an error we cannot retry past."""
 
@@ -711,3 +739,44 @@ def refresh_tokens(client: httpx.Client | None = None) -> dict[str, str]:
         if owns_client:
             client.close()
     return fresh
+
+
+def publishing_quota(client: httpx.Client | None = None) -> dict[str, object]:
+    """How much of Instagram's 24-hour publishing allowance is spent.
+
+    Meta reports this directly rather than making you count, which matters
+    because the allowance is per account and a failed attempt can consume it
+    without anything being published. Asked for by the dashboard so the answer
+    to "why is nothing posting" can be a number rather than a guess.
+    """
+    if not settings.has_instagram:
+        return {"known": False, "why": "Instagram is not configured"}
+
+    owns_client = client is None
+    client = client or httpx.Client(timeout=30.0)
+    try:
+        publisher = MetaPublisher()
+        target = publisher._target("instagram")
+        response = client.get(
+            publisher._graph(target, f"{target.account_id}/content_publishing_limit"),
+            params={"fields": "config,quota_usage", "access_token": target.token},
+        )
+        payload = response.json()
+    except Exception as exc:  # noqa: BLE001 - a readout must not raise
+        return {"known": False, "why": f"{type(exc).__name__}: {exc}"[:200]}
+    finally:
+        if owns_client:
+            client.close()
+
+    rows = payload.get("data") or []
+    if not rows:
+        return {"known": False, "why": str(payload)[:200]}
+
+    row = rows[0]
+    config = row.get("config") or {}
+    return {
+        "known": True,
+        "used": row.get("quota_usage"),
+        "limit": config.get("quota_total"),
+        "window_hours": (config.get("quota_duration") or 86400) // 3600,
+    }

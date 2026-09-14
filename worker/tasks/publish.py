@@ -29,6 +29,7 @@ from core.config import settings
 from core.db import session_scope
 from core.models import Reel, ReelPost
 from core.publishers import PublishRequest, destinations, get_publisher
+from core.publishers.meta import is_rate_limited
 from core.storage import get_storage
 
 log = logging.getLogger(__name__)
@@ -236,9 +237,13 @@ def carousel_owed(now: datetime | None = None) -> list[int]:
             if tried.tzinfo is None:
                 tried = tried.replace(tzinfo=UTC)
             # Each failure waits longer than the last, so a render that is
-            # simply never going to work stops costing a request a minute.
-            wait = timedelta(minutes=settings.carousel_retry_minutes * attempts)
-            if now - tried < wait:
+            # simply never going to work stops costing a request a minute. A
+            # rate limit records no attempt, so `attempts` can be zero here -
+            # that still waits, and waits long, because asking again is what
+            # caused it.
+            minutes = (settings.carousel_retry_minutes * attempts
+                       if attempts else settings.rate_limit_wait_minutes)
+            if now - tried < timedelta(minutes=minutes):
                 continue
         due.append(reel_id)
     return due
@@ -322,6 +327,14 @@ def post_carousel(reel_id: int) -> dict[str, Any]:
             if result.ok:
                 reel.carousel_at = datetime.now(UTC)
                 reel.carousel_note = None
+            elif is_rate_limited(result.error):
+                # Not an attempt. Meta is asking for less traffic, which
+                # succeeds by itself once the traffic stops - counting it
+                # would abandon this reel's second post over something
+                # temporary, and the retries are what caused it.
+                reel.carousel_note = (
+                    f"waiting - Instagram's publishing limit is spent: "
+                    f"{result.error}")[:400]
             else:
                 reel.carousel_attempts = (reel.carousel_attempts or 0) + 1
                 reel.carousel_note = _note(
@@ -352,9 +365,12 @@ def _carousel_failed(reel_id: int, why: str) -> dict[str, Any]:
     with session_scope() as session:
         reel = session.get(Reel, reel_id)
         if reel is not None:
-            reel.carousel_attempts = (reel.carousel_attempts or 0) + 1
             reel.carousel_tried_at = datetime.now(UTC)
-            reel.carousel_note = _note(reel.carousel_attempts, why)
+            if is_rate_limited(why):
+                reel.carousel_note = f"waiting - {why}"[:400]
+            else:
+                reel.carousel_attempts = (reel.carousel_attempts or 0) + 1
+                reel.carousel_note = _note(reel.carousel_attempts, why)
     return {"posted": 0, "failed": 1, "error": why}
 
 

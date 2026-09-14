@@ -299,6 +299,25 @@ async function loadSetup() {
     list.append(row);
   }
 
+  // Instagram's 24-hour publishing allowance. When it is spent, everything
+  // fails with the same unhelpful "Application request limit reached".
+  const quota = where.quota;
+  if (quota && quota.known) {
+    const row = el("div", "item");
+    const spent = quota.limit && quota.used >= quota.limit;
+    row.append(el("span", "pill " + (spent ? "bad" : "ok"),
+      `${quota.used}/${quota.limit}`));
+    const body = el("div", "body");
+    body.append(el("span", "cap",
+      `Instagram posts used in the last ${quota.window_hours}h`));
+    body.append(el("div", "meta", spent
+      ? "the allowance is spent — everything will fail with \"Application " +
+        "request limit reached\" until it refills"
+      : "posts and carousels both count against this"));
+    row.append(body);
+    list.append(row);
+  }
+
   if (where.error) {
     const row = el("div", "item");
     row.append(el("span", "pill bad", "token"), el("div", "body", where.error));

@@ -491,6 +491,15 @@ def services() -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 - a dead token must not 500 the page
             payload["error"] = str(exc)[:300]
 
+    # Instagram's publishing allowance, asked for rather than counted: it is
+    # per account and a failed attempt can spend it without anything being
+    # published, so guessing from our own records is wrong in exactly the
+    # situation where the number matters.
+    if "instagram" in where:
+        from core.publishers.meta import publishing_quota
+
+        payload["quota"] = publishing_quota()
+
     payload["tokens"] = [
         {
             "name": row["name"],
