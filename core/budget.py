@@ -94,7 +94,9 @@ def cap() -> int:
     """
     if settings.instagram_daily_attempts:
         return settings.instagram_daily_attempts
-    posts = settings.post_per_day * (2 if settings.carousel_enabled else 1)
+    posts = settings.post_per_day
+    if settings.carousel_enabled:
+        posts += min(settings.carousel_per_day, settings.post_per_day)
     return posts + settings.publish_headroom
 
 

@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from core import budget, schedule
 from core.config import settings
@@ -466,11 +466,29 @@ def _carousel_failed(reel_id: int, why: str) -> dict[str, Any]:
     return {"posted": 0, "failed": 1, "error": why}
 
 
+def carousels_today(tz) -> int:
+    """How many second posts have gone out in the viewer's today.
+
+    The viewer's today, not UTC's. Counting against a UTC day would roll over
+    at ten in the morning in Brisbane and put two days' worth in one
+    afternoon - the same reason the reels count their own.
+    """
+    since = schedule.day_of(datetime.now(UTC), tz).astimezone(UTC)
+    with session_scope() as session:
+        return int(session.execute(
+            select(func.count(Reel.id)).where(
+                Reel.carousel_at.is_not(None), Reel.carousel_at >= since)
+        ).scalar() or 0)
+
+
 def post_carousels_due(limit: int = 2) -> dict[str, Any]:
     """Send any carousels whose half hour is up.
 
-    Capped per tick: each one renders a video, and a backlog of ten would
-    otherwise hold the heartbeat for a quarter of an hour.
+    Two caps, doing different jobs. `limit` is per tick, because each one
+    renders a video and a backlog of ten would hold the heartbeat for a
+    quarter of an hour. CAROUSEL_PER_DAY is the real one: only the first few
+    reels of the day get a second post, because a carousel costs four requests
+    to a reel's two and every reel appearing twice reads as a feed of repeats.
     """
     if not settings.carousel_enabled:
         return {"posted": 0, "skipped": "CAROUSEL_ENABLED is off"}
@@ -490,8 +508,16 @@ def post_carousels_due(limit: int = 2) -> dict[str, Any]:
                 "skipped": "R2 is not configured, and Instagram fetches each "
                            "carousel slide from a URL rather than an upload"}
 
+    tz = schedule.zone(settings.post_timezone)
+    already = carousels_today(tz)
+    room_today = settings.carousel_per_day - already
+    if room_today <= 0:
+        return {"posted": 0,
+                "skipped": f"today's {settings.carousel_per_day} second posts "
+                           f"have all gone out"}
+
     posted = failed = 0
-    for reel_id in carousel_owed()[:limit]:
+    for reel_id in carousel_owed()[:min(limit, room_today)]:
         outcome = post_carousel(reel_id)
         posted += outcome.get("posted", 0)
         failed += outcome.get("failed", 0)

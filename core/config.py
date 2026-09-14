@@ -179,6 +179,11 @@ class Settings(BaseSettings):
     #: How long after the reel. Far enough apart not to read as a double
     #: post, close enough to ride the same interest.
     carousel_delay_minutes: int = 30
+    #: How many of the day's reels get a second post. Fewer than the reels on
+    #: purpose: a carousel costs four requests to a reel's two, and every reel
+    #: appearing twice in the grid reads as a feed of repeats rather than as
+    #: two surfaces. The earliest reels of the day get them.
+    carousel_per_day: int = 3
     #: Where the cover still comes from. Not zero: the literal first frame is
     #: very often black, a fade, or a hand reaching for the phone.
     carousel_frame_at_s: float = 1.0

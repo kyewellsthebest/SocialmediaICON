@@ -149,25 +149,45 @@ class TestTheCover:
         frame = carousel.first_frame(short, tmp_path / "out", at_s=30.0)
         assert frame.exists()
 
-    def test_it_carries_the_mark_and_the_swipe_cue(self, tmp_path):
+    def test_it_carries_the_swipe_cue(self, tmp_path):
         """The cover's whole job is to be a reason to swipe. A bare frame of
         the video gives nobody one."""
-        from PIL import Image
+        from PIL import Image, ImageChops
 
         frame = carousel.first_frame(a_video(tmp_path / "v.mp4"), tmp_path / "out")
         plain = Image.open(frame).convert("RGB")
         cover = Image.open(carousel.cover(frame, tmp_path / "out")).convert("RGB")
 
-        # The badge sits top centre, the cue bottom centre. Both must have
-        # changed the image relative to a plain letterbox of the same frame.
         bare = carousel._fit_on_blur(plain)
-        from PIL import ImageChops
-
         diff = ImageChops.difference(bare, cover)
-        top = diff.crop((300, 0, 780, 220)).convert("L")
         bottom = diff.crop((150, 880, 930, 1040)).convert("L")
-        assert sum(top.getdata()) / (top.width * top.height) > 5, "no mark on the cover"
         assert sum(bottom.getdata()) / (bottom.width * bottom.height) > 5, "no swipe cue"
+
+    def test_it_does_not_add_a_second_mark(self, tmp_path):
+        """The frame comes from the branded reel and is already carrying one.
+        Drawing another put a large logo over the small one the video had, at
+        slightly different sizes, which reads as a rendering fault."""
+        from PIL import Image, ImageChops
+
+        frame = carousel.first_frame(a_video(tmp_path / "v.mp4"), tmp_path / "out")
+        plain = Image.open(frame).convert("RGB")
+        cover = Image.open(carousel.cover(frame, tmp_path / "out")).convert("RGB")
+
+        # Round-tripped through the same encoder before comparing. The cover
+        # is saved as JPEG, so every pixel differs a little from the PNG it
+        # was built from - measuring against the PNG would be pinning the
+        # encoder's noise rather than what was drawn.
+        same = tmp_path / "bare.jpg"
+        carousel._fit_on_blur(plain).save(same, "JPEG", quality=92, optimize=True)
+        diff = ImageChops.difference(Image.open(same).convert("RGB"), cover)
+
+        def mean(box):
+            band = diff.crop(box).convert("L")
+            return sum(band.getdata()) / (band.width * band.height)
+
+        assert mean((300, 0, 780, 220)) < 0.2, "something is drawn where the badge was"
+        # The cue is still drawn, so the measurement is measuring something.
+        assert mean((150, 880, 930, 1040)) > 5
 
     def test_both_slides_come_back_in_order(self, tmp_path):
         first, second = carousel.build(a_video(tmp_path / "v.mp4"), tmp_path / "out")
@@ -380,6 +400,86 @@ class TestWhenItWillNotGo:
         monkeypatch.setattr(settings, "r2_bucket", None)
 
         assert "R2" in publish.post_carousels_due()["skipped"]
+
+
+class TestOnlyTheFirstFewReelsGetASecondPost:
+    """Three a day against five reels. A carousel costs four requests to a
+    reel's two, and every reel appearing twice in the grid reads as a feed of
+    repeats rather than as two surfaces."""
+
+    @pytest.fixture(autouse=True)
+    def _configured(self, monkeypatch):
+        monkeypatch.setattr(settings, "carousel_enabled", True)
+        monkeypatch.setattr(settings, "autopost_enabled", True)
+        monkeypatch.setattr(settings, "carousel_per_day", 3)
+        monkeypatch.setattr(settings, "instagram_user_id", "1784")
+        monkeypatch.setattr(settings, "meta_access_token", "EAA")
+        monkeypatch.setattr(settings, "publisher", "meta")
+        monkeypatch.setattr(settings, "r2_bucket", "bucket")
+        monkeypatch.setattr(settings, "r2_account_id", "acct")
+        monkeypatch.setattr(settings, "r2_access_key_id", "key")
+        monkeypatch.setattr(settings, "r2_secret_access_key", "secret")
+
+    def test_the_fourth_one_of_the_day_is_not_sent(self, database, monkeypatch):
+        from worker.tasks import publish
+
+        monkeypatch.setattr(publish, "budget", _AlwaysRoom())
+        with database() as session:
+            for n in range(3):
+                a_reel(session, f"up{n}", posted_minutes_ago=90,
+                       carousel_at=datetime.now(UTC) - timedelta(minutes=30))
+            a_reel(session, "owed", posted_minutes_ago=90)
+
+        sent: list[int] = []
+        monkeypatch.setattr(publish, "post_carousel",
+                            lambda rid: sent.append(rid) or {"posted": 1})
+
+        assert "have all gone out" in publish.post_carousels_due()["skipped"]
+        assert sent == []
+
+    def test_the_third_still_goes(self, database, monkeypatch):
+        from worker.tasks import publish
+
+        monkeypatch.setattr(publish, "budget", _AlwaysRoom())
+        with database() as session:
+            for n in range(2):
+                a_reel(session, f"up{n}", posted_minutes_ago=90,
+                       carousel_at=datetime.now(UTC) - timedelta(minutes=30))
+            a_reel(session, "owed", posted_minutes_ago=90)
+
+        sent: list[int] = []
+        monkeypatch.setattr(publish, "post_carousel",
+                            lambda rid: sent.append(rid) or {"posted": 1})
+
+        publish.post_carousels_due()
+        assert len(sent) == 1
+
+    def test_yesterdays_three_do_not_count_against_today(self, database, monkeypatch):
+        """Counted in the viewer's day, not UTC's - a UTC day rolls over at
+        ten in the morning in Brisbane."""
+        from worker.tasks import publish
+
+        monkeypatch.setattr(publish, "budget", _AlwaysRoom())
+        with database() as session:
+            for n in range(3):
+                a_reel(session, f"old{n}", posted_minutes_ago=3000,
+                       carousel_at=datetime.now(UTC) - timedelta(days=2))
+            a_reel(session, "owed", posted_minutes_ago=90)
+
+        sent: list[int] = []
+        monkeypatch.setattr(publish, "post_carousel",
+                            lambda rid: sent.append(rid) or {"posted": 1})
+
+        publish.post_carousels_due()
+        assert len(sent) == 1
+
+
+class _AlwaysRoom:
+    """The daily-count cap under test, with the request budget out of the way."""
+
+    @staticmethod
+    def allowed(_platform):
+        return True, ""
 
 
 class TestTheCarouselApiShape:

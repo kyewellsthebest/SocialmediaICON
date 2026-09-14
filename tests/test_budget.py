@@ -51,6 +51,7 @@ def ledger(monkeypatch, tmp_path):
     monkeypatch.setattr(budget, "session_scope", scope)
     monkeypatch.setattr(settings, "post_per_day", 5)
     monkeypatch.setattr(settings, "carousel_enabled", True)
+    monkeypatch.setattr(settings, "carousel_per_day", 3)
     monkeypatch.setattr(settings, "publish_headroom", 4)
     monkeypatch.setattr(settings, "instagram_daily_attempts", 0)
     return scope
@@ -90,14 +91,21 @@ class TestWhatAPostCosts:
 
 class TestTheCapIsCheckedBeforeAnythingIsSent:
     def test_the_schedule_sets_it(self, ledger):
-        """Five reels and five carousels, plus headroom for a genuine retry.
+        """Five reels and three carousels, plus headroom for a genuine retry.
         Derived rather than set beside the schedule, so raising POST_PER_DAY
         does not leave the cap behind and stop posting in the afternoon."""
-        assert budget.cap() == 5 * 2 + 4
+        assert budget.cap() == 5 + 3 + 4
 
     def test_it_follows_the_schedule_up(self, ledger, monkeypatch):
         monkeypatch.setattr(settings, "post_per_day", 8)
-        assert budget.cap() == 8 * 2 + 4
+        assert budget.cap() == 8 + 3 + 4
+
+    def test_carousels_cannot_outnumber_the_reels_they_follow(self, ledger, monkeypatch):
+        """Each one trails a reel by half an hour, so asking for more of them
+        than there are reels buys allowance nothing can spend."""
+        monkeypatch.setattr(settings, "post_per_day", 2)
+        monkeypatch.setattr(settings, "carousel_per_day", 9)
+        assert budget.cap() == 2 + 2 + 4
 
     def test_without_carousels_it_is_half(self, ledger, monkeypatch):
         monkeypatch.setattr(settings, "carousel_enabled", False)
@@ -115,23 +123,23 @@ class TestTheCapIsCheckedBeforeAnythingIsSent:
 
     def test_refused_at_the_cap_with_the_numbers_in_the_reason(self, ledger):
         with ledger() as session:
-            for _ in range(14):
+            for _ in range(12):
                 a_call(session, "publish")
         ok, why = budget.allowed("instagram")
         assert not ok
-        assert "14 of 14" in why
+        assert "12 of 12" in why
         assert "INSTAGRAM_DAILY_ATTEMPTS" in why
 
     def test_a_failed_attempt_still_counts(self, ledger):
         """Retrying past the cap is precisely how the cap got spent."""
         with ledger() as session:
-            for _ in range(14):
+            for _ in range(12):
                 a_call(session, "publish", ok=False)
         assert not budget.allowed("instagram")[0]
 
     def test_it_refills_as_the_oldest_age_out(self, ledger):
         with ledger() as session:
-            for _ in range(14):
+            for _ in range(12):
                 a_call(session, "publish", hours_ago=25)
         assert budget.allowed("instagram")[0]
         assert budget.attempts_today() == 0
@@ -140,9 +148,9 @@ class TestTheCapIsCheckedBeforeAnythingIsSent:
         """Same account, same limit. Counting them separately is how you
         arrive at twice the cap you set."""
         with ledger() as session:
-            for _ in range(7):
+            for _ in range(6):
                 a_call(session, "publish", platform="instagram")
-            for _ in range(7):
+            for _ in range(6):
                 a_call(session, "publish", platform="instagram_carousel")
         assert not budget.allowed("instagram")[0]
         assert not budget.allowed("instagram_carousel")[0]
@@ -163,7 +171,7 @@ class TestTheCapStopsTheQueueRatherThanMeta:
         monkeypatch.setattr(settings, "autopost_enabled", True)
         monkeypatch.setattr(publish, "destinations", lambda: ["instagram"])
         with ledger() as session:
-            for _ in range(14):
+            for _ in range(12):
                 a_call(session, "publish")
 
         ready, why = publish.next_due()
@@ -177,7 +185,7 @@ class TestTheCapStopsTheQueueRatherThanMeta:
         monkeypatch.setattr(settings, "carousel_enabled", True)
         monkeypatch.setattr(publish, "destinations", lambda: ["instagram"])
         with ledger() as session:
-            for _ in range(14):
+            for _ in range(12):
                 a_call(session, "publish")
 
         assert "daily cap is spent" in publish.post_carousels_due()["skipped"]
@@ -190,7 +198,7 @@ class TestTheCapStopsTheQueueRatherThanMeta:
         monkeypatch.setattr(settings, "autopost_enabled", True)
         monkeypatch.setattr(settings, "retry_rate_limited", True)
         with ledger() as session:
-            for _ in range(14):
+            for _ in range(12):
                 a_call(session, "publish")
 
         assert "daily cap is spent" in publish.retry_rate_limited()["skipped"]

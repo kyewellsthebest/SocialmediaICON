@@ -14,9 +14,13 @@ with a blurred, darkened copy of itself - the video stays whole and the square
 stays full.
 
 **The cover is the first thing anyone sees and it is not the video.** It is a
-still with the mark on it and a reason to swipe, which is the only job it has:
-a carousel whose first slide is just a frame of the video gives nobody any
-reason to go to the second.
+still with a reason to swipe on it, which is the only job it has: a carousel
+whose first slide is just a frame of the video gives nobody any reason to go
+to the second.
+
+**Neither slide is branded here.** Both are built from the reel that has
+already been through `core.brand`, so the mark is in the picture before this
+module sees it. Adding one put a second, larger logo on top of the first.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from core.brand import LOGO, BrandingFailed, video_width
+from core.brand import BrandingFailed, video_width
 from core.config import settings
 
 log = logging.getLogger(__name__)
@@ -107,7 +111,12 @@ def _fit_on_blur(image, side: int = SIDE):
 
 
 def cover(frame: Path, into: Path, swipe: str | None = None) -> Path:
-    """The first slide: the still, the mark, and a reason to swipe."""
+    """The first slide: the still, and a reason to swipe.
+
+    No mark is drawn here. The frame comes from the branded reel, so it is
+    already carrying one - adding a second put two logos of different sizes
+    over each other at the top of the slide.
+    """
     from PIL import Image, ImageDraw, ImageFont
 
     swipe = settings.carousel_swipe_text if swipe is None else swipe
@@ -124,14 +133,6 @@ def cover(frame: Path, into: Path, swipe: str | None = None) -> Path:
         shade = int(200 * (row / depth) ** 1.6)
         draw.line([(0, SIDE - depth + row), (SIDE, SIDE - depth + row)],
                   fill=(0, 0, 0, shade))
-
-    # The mark, top centre, the same share of the width as on the reel so the
-    # two posts look like they came from the same place.
-    badge_side = max(2, int(round(SIDE * settings.brand_width_share / 2)) * 2)
-    badge = Image.open(LOGO).convert("RGBA").resize(
-        (badge_side, badge_side), Image.LANCZOS)
-    canvas.paste(badge, ((SIDE - badge_side) // 2,
-                         int(SIDE * settings.brand_inset_share)), badge)
 
     # The swipe cue: a green pill, because the brand is a green mark on black
     # and the eye goes to the one saturated thing in a darkened photograph.
@@ -163,15 +164,16 @@ def cover(frame: Path, into: Path, swipe: str | None = None) -> Path:
     return out
 
 
-def square(video: Path, into: Path, logo: Path | None = None) -> Path:
-    """The second slide: the whole video, square, with the mark on it."""
-    logo = logo or LOGO
+def square(video: Path, into: Path) -> Path:
+    """The second slide: the whole video, square.
+
+    The mark is not added here either. This is built from the branded reel,
+    which already has one - drawing a second put a large logo on top of the
+    small one the video was carrying, at slightly different sizes, which read
+    as a rendering fault rather than as branding.
+    """
     into.mkdir(parents=True, exist_ok=True)
     out = into / f"{video.stem}-square.mp4"
-
-    badge = max(2, int(round(SIDE * settings.brand_width_share / 2)) * 2)
-    top = int(SIDE * settings.brand_inset_share)
-    left = (SIDE - badge) // 2
 
     graph = (
         # The fill: cover the square, blur it hard, darken it. Same idea as
@@ -181,14 +183,12 @@ def square(video: Path, into: Path, logo: Path | None = None) -> Path:
         # The picture: whole, fitted, centred. Nothing is cropped away - a
         # 9:16 lift cut to a square loses either the barbell or the lifter.
         f"[0:v]scale={SIDE}:{SIDE}:force_original_aspect_ratio=decrease[fg];"
-        f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
-        f"[1:v]scale={badge}:{badge}[mark];"
-        f"[base][mark]overlay={left}:{top}:format=auto[out]"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]"
     )
 
     command = [
         "ffmpeg", "-y", "-v", "error",
-        "-i", str(video), "-i", str(logo),
+        "-i", str(video),
         "-filter_complex", graph,
         "-map", "[out]", "-map", "0:a?",
         "-c:v", "libx264", "-preset", "medium", "-crf", str(settings.brand_crf),
