@@ -171,11 +171,7 @@ def _maybe_post() -> None:
     out one an hour through the morning - because eight arriving at once is a
     burst every platform notices, and it spends a day's queue in a minute.
     """
-    from worker.tasks.publish import (
-        post_carousels_due,
-        post_one_now,
-        retry_rate_limited,
-    )
+    from worker.tasks.publish import post_one_now, retry_rate_limited
 
     outcome = post_one_now()
     if outcome.get("posted"):
@@ -187,12 +183,6 @@ def _maybe_post() -> None:
     again = retry_rate_limited()
     if again.get("retried"):
         log.info("retried: %s", again)
-
-    # The second post of each reel, half an hour behind it. On its own clock
-    # rather than the slots: it is not competing for them, it is following.
-    trailing = post_carousels_due()
-    if trailing.get("posted"):
-        log.info("carousels: %s", trailing)
 
 
 def _heartbeat() -> None:

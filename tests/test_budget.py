@@ -6,12 +6,11 @@ Four is not twenty-five, and nothing could say where the gap came from,
 because the only number available was Meta's - reported after the fact and
 never itemised.
 
-Posts and requests are not the same number. A reel is a container and a
-publish. A carousel is three containers and a publish, because each slide is
-fetched separately and the pair is then tied together. And a failed attempt
-costs its containers whether or not anything is published, so a carousel
-retried four times has asked Meta to hold twelve files for nothing. No cap on
-*posts* would have caught that, because the posts were never the problem.
+Posts and requests are not the same number. A post is a container - Meta
+fetches the file and holds it - and then a publish. And a failed attempt costs
+its container whether or not anything is published, so a reel retried four
+times has asked Meta to hold four files for nothing. No cap on *posts* would
+have caught that, because the posts were never the problem.
 """
 
 from __future__ import annotations
@@ -50,8 +49,6 @@ def ledger(monkeypatch, tmp_path):
 
     monkeypatch.setattr(budget, "session_scope", scope)
     monkeypatch.setattr(settings, "post_per_day", 5)
-    monkeypatch.setattr(settings, "carousel_enabled", True)
-    monkeypatch.setattr(settings, "carousel_per_day", 3)
     monkeypatch.setattr(settings, "publish_headroom", 4)
     monkeypatch.setattr(settings, "instagram_daily_attempts", 0)
     return scope
@@ -65,15 +62,15 @@ def a_call(session, kind, platform="instagram", hours_ago=0.0, ok=True):
 
 
 class TestWhatAPostCosts:
-    def test_a_carousel_is_four_requests_not_one(self, ledger, meta_for_carousel):
-        """Three containers - a slide each, then the pair tied together - and
-        a publish. This is the arithmetic that turned four posts into a spent
-        allowance, and it is invisible from the word "post"."""
-        publisher, handler_calls = meta_for_carousel
-        publisher.publish_carousel("c.jpg", "v.mp4", "a lift")
+    def test_a_reel_is_a_container_and_a_publish(self, ledger, meta_for_reel):
+        """Two requests, not one - and a failed attempt still costs its
+        container. That gap is invisible from the word "post", and it is what
+        turned four posts into a spent allowance."""
+        publisher, _seen = meta_for_reel
+        publisher.publish(_reel_request())
 
         spent = budget.spent("instagram")
-        assert spent["container"] == 3
+        assert spent["container"] == 1
         assert spent["publish"] == 1
 
     def test_only_the_publish_counts_as_an_attempt(self, ledger):
@@ -91,25 +88,14 @@ class TestWhatAPostCosts:
 
 class TestTheCapIsCheckedBeforeAnythingIsSent:
     def test_the_schedule_sets_it(self, ledger):
-        """Five reels and three carousels, plus headroom for a genuine retry.
-        Derived rather than set beside the schedule, so raising POST_PER_DAY
-        does not leave the cap behind and stop posting in the afternoon."""
-        assert budget.cap() == 5 + 3 + 4
+        """Five reels, plus headroom for a genuine retry. Derived rather than
+        set beside the schedule, so raising POST_PER_DAY does not leave the
+        cap behind and stop posting in the afternoon."""
+        assert budget.cap() == 5 + 4
 
     def test_it_follows_the_schedule_up(self, ledger, monkeypatch):
         monkeypatch.setattr(settings, "post_per_day", 8)
-        assert budget.cap() == 8 + 3 + 4
-
-    def test_carousels_cannot_outnumber_the_reels_they_follow(self, ledger, monkeypatch):
-        """Each one trails a reel by half an hour, so asking for more of them
-        than there are reels buys allowance nothing can spend."""
-        monkeypatch.setattr(settings, "post_per_day", 2)
-        monkeypatch.setattr(settings, "carousel_per_day", 9)
-        assert budget.cap() == 2 + 2 + 4
-
-    def test_without_carousels_it_is_half(self, ledger, monkeypatch):
-        monkeypatch.setattr(settings, "carousel_enabled", False)
-        assert budget.cap() == 5 + 4
+        assert budget.cap() == 8 + 4
 
     def test_an_explicit_number_wins(self, ledger, monkeypatch):
         monkeypatch.setattr(settings, "instagram_daily_attempts", 3)
@@ -117,43 +103,32 @@ class TestTheCapIsCheckedBeforeAnythingIsSent:
 
     def test_room_while_under(self, ledger):
         with ledger() as session:
-            for _ in range(9):
+            for _ in range(8):
                 a_call(session, "publish")
         assert budget.allowed("instagram")[0]
 
     def test_refused_at_the_cap_with_the_numbers_in_the_reason(self, ledger):
         with ledger() as session:
-            for _ in range(12):
+            for _ in range(9):
                 a_call(session, "publish")
         ok, why = budget.allowed("instagram")
         assert not ok
-        assert "12 of 12" in why
+        assert "9 of 9" in why
         assert "INSTAGRAM_DAILY_ATTEMPTS" in why
 
     def test_a_failed_attempt_still_counts(self, ledger):
         """Retrying past the cap is precisely how the cap got spent."""
         with ledger() as session:
-            for _ in range(12):
+            for _ in range(9):
                 a_call(session, "publish", ok=False)
         assert not budget.allowed("instagram")[0]
 
     def test_it_refills_as_the_oldest_age_out(self, ledger):
         with ledger() as session:
-            for _ in range(12):
+            for _ in range(9):
                 a_call(session, "publish", hours_ago=25)
         assert budget.allowed("instagram")[0]
         assert budget.attempts_today() == 0
-
-    def test_the_carousel_shares_the_reels_allowance(self, ledger):
-        """Same account, same limit. Counting them separately is how you
-        arrive at twice the cap you set."""
-        with ledger() as session:
-            for _ in range(6):
-                a_call(session, "publish", platform="instagram")
-            for _ in range(6):
-                a_call(session, "publish", platform="instagram_carousel")
-        assert not budget.allowed("instagram")[0]
-        assert not budget.allowed("instagram_carousel")[0]
 
     def test_facebook_is_not_capped_by_instagrams_number(self, ledger):
         with ledger() as session:
@@ -171,24 +146,12 @@ class TestTheCapStopsTheQueueRatherThanMeta:
         monkeypatch.setattr(settings, "autopost_enabled", True)
         monkeypatch.setattr(publish, "destinations", lambda: ["instagram"])
         with ledger() as session:
-            for _ in range(12):
+            for _ in range(9):
                 a_call(session, "publish")
 
         ready, why = publish.next_due()
         assert not ready
         assert "daily cap is spent" in why
-
-    def test_carousels_stop_too(self, ledger, monkeypatch):
-        from worker.tasks import publish
-
-        monkeypatch.setattr(settings, "autopost_enabled", True)
-        monkeypatch.setattr(settings, "carousel_enabled", True)
-        monkeypatch.setattr(publish, "destinations", lambda: ["instagram"])
-        with ledger() as session:
-            for _ in range(12):
-                a_call(session, "publish")
-
-        assert "daily cap is spent" in publish.post_carousels_due()["skipped"]
 
     def test_retries_stop_too(self, ledger, monkeypatch):
         """A retry is a post flow like any other and costs the same
@@ -198,7 +161,7 @@ class TestTheCapStopsTheQueueRatherThanMeta:
         monkeypatch.setattr(settings, "autopost_enabled", True)
         monkeypatch.setattr(settings, "retry_rate_limited", True)
         with ledger() as session:
-            for _ in range(12):
+            for _ in range(9):
                 a_call(session, "publish")
 
         assert "daily cap is spent" in publish.retry_rate_limited()["skipped"]
@@ -277,8 +240,18 @@ class TestTheQuotaReadoutIsARequestToo:
         assert out["used"] == 4
 
 
+def _reel_request():
+    from core.publishers import PublishRequest
+
+    return PublishRequest(
+        clip_path=Path("clip.mp4"), title="a lift", description="a lift",
+        hashtags=[], platforms=["instagram"],
+        public_url="https://example.invalid/clip.mp4",
+    )
+
+
 @pytest.fixture
-def meta_for_carousel(monkeypatch, ledger):
+def meta_for_reel(monkeypatch, ledger):
     """A publisher wired to a fake Graph API that says yes to everything."""
     from core.publishers.meta import MetaPublisher
 
@@ -294,11 +267,7 @@ def meta_for_carousel(monkeypatch, ledger):
         path = request.url.path
         seen.append(f"{request.method} {path}")
         if request.method == "POST" and path.endswith("/media"):
-            body = dict(httpx.QueryParams(request.content.decode()))
-            if body.get("media_type") == "CAROUSEL":
-                return httpx.Response(200, json={"id": "parent"})
-            return httpx.Response(200, json={
-                "id": "cover" if "image_url" in body else "video"})
+            return httpx.Response(200, json={"id": "container-1"})
         if path.endswith("/media_publish"):
             return httpx.Response(200, json={"id": "post-1"})
         return httpx.Response(200, json={"status_code": "FINISHED"})

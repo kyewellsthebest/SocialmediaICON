@@ -133,10 +133,6 @@ def posted(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
                      "waiting": a.status == "failed" and is_rate_limited(a.error)}
                     for a in attempts
                 ],
-                # Read on the page rather than hidden in a tooltip: a failure
-                # nobody can see is a failure nobody fixes.
-                "carousel_note": reel.carousel_note,
-                "carousel_at": reel.carousel_at.isoformat() if reel.carousel_at else None,
             })
     return {"items": items}
 
@@ -241,36 +237,6 @@ def posting() -> dict[str, Any]:
         # ones and each is a different thing to go and look at.
         "why": why,
         "next_at": slot.strftime("%a %H:%M"),
-        "carousel": _carousel_state(),
-    }
-
-
-def _carousel_state() -> dict[str, Any]:
-    """The second post: how many are owed, and whether it can go at all."""
-    from core.publishers import destinations as where
-    from worker.tasks.publish import carousel_owed
-
-    blocked = ""
-    if not settings.carousel_enabled:
-        blocked = "CAROUSEL_ENABLED is off"
-    elif "instagram" not in where():
-        blocked = "Instagram is not a destination"
-    elif not settings.has_r2:
-        # Instagram fetches each slide from a URL rather than accepting an
-        # upload, so this one really is required rather than nearly.
-        blocked = "R2 is not configured, and a carousel is fetched from a URL"
-
-    with session_scope() as session:
-        done = session.execute(
-            select(func.count(Reel.id)).where(Reel.carousel_at.is_not(None))
-        ).scalar()
-
-    return {
-        "enabled": settings.carousel_enabled,
-        "delay_minutes": settings.carousel_delay_minutes,
-        "owed": len(carousel_owed()),
-        "posted": int(done or 0),
-        "blocked": blocked,
     }
 
 

@@ -94,9 +94,9 @@ def is_rate_limited(error: str | None) -> bool:
 #: wrong id and sends you off checking the one thing that is fine.
 #:
 #: It is what a publish gets when Meta has not finished assembling the
-#: container - and container readiness is eventually consistent, so a carousel
-#: can report FINISHED and still be refused for a few seconds after. Waiting
-#: and asking again is the documented answer, not a workaround.
+#: container - and container readiness is eventually consistent, so one can
+#: report FINISHED and still be refused for a few seconds after. Waiting and
+#: asking again is the documented answer, not a workaround.
 NOT_READY_MARKERS = ("media id is not available", "2207027", "(code 9007")
 
 #: How many times to re-ask, and how long to leave between. Three tries over
@@ -267,19 +267,11 @@ class MetaPublisher:
         client: httpx.Client,
         target: _Target,
         container_id: str,
-        *,
-        may_be_silent: bool = False,
     ) -> None:
         """Block until Meta has finished ingesting the video, or give up.
 
         Publishing a container that is still IN_PROGRESS fails, so this is not
         optional politeness - it is the handshake.
-
-        `may_be_silent` is for the carousel parent, which is assembled from
-        children rather than downloaded and which some Graph versions do not
-        report a status for at all. Polling a field that is never going to
-        appear is not patience, it is a two-minute timeout - so when nothing
-        answers, take that as done rather than as still working.
         """
         # Threads reports `status`; Instagram reports `status_code`. Ask for both
         # and read whichever comes back.
@@ -303,9 +295,6 @@ class MetaPublisher:
             if last in ("ERROR", "EXPIRED"):
                 reason = payload.get("error_message") or last
                 raise MetaError(f"Meta rejected the upload: {reason}")
-            if may_be_silent and "status_code" not in payload and "status" not in payload:
-                log.info("meta: %s reports no status; treating it as ready", container_id)
-                return
             self._sleep(_poll_wait(looks))
             looks += 1
 
@@ -320,7 +309,6 @@ class MetaPublisher:
         target: _Target,
         creation_id: str,
         path: str,
-        counted_as: str | None = None,
     ) -> str:
         """Publish a finished container, re-asking while Meta says it is not.
 
@@ -337,7 +325,7 @@ class MetaPublisher:
                     "POST",
                     self._graph(target, path),
                     data={"creation_id": creation_id, "access_token": target.token},
-                    kind="publish", platform=counted_as or target.platform,
+                    kind="publish", platform=target.platform,
                 )
             except MetaError as exc:
                 if not is_not_ready(str(exc)):
@@ -419,106 +407,6 @@ class MetaPublisher:
         except httpx.HTTPError as exc:
             log.warning("meta: %s request failed: %s", platform, exc)
             return PublishResult(platform=platform, ok=False, error=f"request failed: {exc}"[:300])
-
-    # ------------------------------------------------------------- carousel
-
-    def publish_carousel(
-        self,
-        image_url: str,
-        video_url: str,
-        caption: str,
-    ) -> PublishResult:
-        """An Instagram carousel: a cover image, then the video.
-
-        A different flow from a reel and not a variation on one. Each slide
-        gets its own container with is_carousel_item set, then a third
-        container ties them together, then that is published - four calls
-        where a reel takes two.
-
-        The video slide is `VIDEO`, never `REELS`. A reel cannot be a carousel
-        item, and asking for one is rejected in a way that reads like a bad
-        URL rather than a wrong media type.
-        """
-        try:
-            target = self._target("instagram")
-        except MetaError as exc:
-            return PublishResult(platform="instagram_carousel", ok=False, error=str(exc)[:300])
-
-        client = self._http()
-        owns_client = self._client is None
-        try:
-            try:
-                children = []
-                for body in (
-                    {"is_carousel_item": "true", "image_url": image_url},
-                    {"is_carousel_item": "true", "media_type": "VIDEO",
-                     "video_url": video_url},
-                ):
-                    created = self._call(
-                        client, "POST",
-                        self._graph(target, f"{target.account_id}/media"),
-                        data=body | {"access_token": target.token},
-                        kind="container", platform="instagram_carousel",
-                    )
-                    child = str(created.get("id") or "")
-                    if not child:
-                        raise MetaError(f"no container id for a slide: {created}")
-                    children.append(child)
-
-                # Every slide, not just the video. An image container is
-                # usually ready in a second, but tying the carousel together
-                # while any child is still being fetched produces a parent
-                # that can never be published - and the refusal names the
-                # parent, so the half-finished child never comes up.
-                for child in children:
-                    self._await_container(client, target, child)
-
-                parent = self._call(
-                    client, "POST",
-                    self._graph(target, f"{target.account_id}/media"),
-                    kind="container", platform="instagram_carousel",
-                    data={
-                        "media_type": "CAROUSEL",
-                        "children": ",".join(children),
-                        "caption": caption[: CAPTION_LIMITS["instagram"]],
-                        "access_token": target.token,
-                    },
-                )
-                parent_id = str(parent.get("id") or "")
-                if not parent_id:
-                    raise MetaError(f"no carousel container id: {parent}")
-
-                # The parent is a container as well. Publishing it the
-                # instant it is created is what "Media ID is not available"
-                # means - Meta hands back an id before it has finished
-                # assembling the thing the id refers to.
-                self._await_container(client, target, parent_id, may_be_silent=True)
-
-                post_id = self._publish_creation(
-                    client, target, parent_id, f"{target.account_id}/media_publish",
-                    counted_as="instagram_carousel",
-                )
-
-                # Asked for inside the client block: the permalink is a
-                # separate request, and a post that went out is still a post
-                # that went out if looking up its URL fails.
-                link = self._permalink(client, target, post_id)
-
-            except MetaError as exc:
-                log.warning("meta: carousel failed: %s", exc)
-                return PublishResult(platform="instagram_carousel", ok=False,
-                                     error=str(exc)[:300])
-            except httpx.HTTPError as exc:
-                log.warning("meta: carousel request failed: %s", exc)
-                return PublishResult(platform="instagram_carousel", ok=False,
-                                     error=f"request failed: {exc}"[:300])
-        finally:
-            if owns_client:
-                client.close()
-
-        return PublishResult(
-            platform="instagram_carousel", ok=True, post_id=post_id, url=link,
-        )
 
     def _publish_container(
         self,

@@ -250,9 +250,6 @@ async function loadPosted() {
           : `${failure.platform}: ${failure.error}`);
       postedList.append(why);
     }
-    if (reel.carousel_note && !failures.some((f) => f.platform.includes("carousel"))) {
-      postedList.append(el("div", "why", `carousel: ${reel.carousel_note}`));
-    }
   }
 
   const beatenList = $("beaten-list");
@@ -322,15 +319,15 @@ async function loadSetup() {
     body.append(el("div", "meta", spent
       ? "the allowance is spent — everything will fail with \"Application " +
         "request limit reached\" until it refills"
-      : "posts and carousels both count against this"));
+      : "every published post counts against this"));
     row.append(body);
     list.append(row);
   }
 
   // What this app itself asked Meta for, counted at the wire. Next to Meta's
-  // number on purpose: five reels and five carousels are ten posts, but they
-  // are thirty requests — a carousel is three containers and a publish — and
-  // it was that gap, not the posting, that spent the allowance.
+  // number on purpose: a post is not one request — it is a container and a
+  // publish, and a failed attempt still costs its container. It was that gap,
+  // not the posting, that spent the allowance.
   const led = where.ledger;
   if (led) {
     const row = el("div", "item");
@@ -416,20 +413,6 @@ async function loadPosting() {
   row.append(body);
   box.append(row);
 
-  // The second post, on its own clock behind the reels.
-  const carousel = state.carousel || {};
-  const second = el("div", "item");
-  second.append(el("span", "pill " + (carousel.blocked ? "bad" : "ok"),
-    `${carousel.posted || 0} up`));
-  const detail = el("div", "body");
-  detail.append(el("span", "cap",
-    `Instagram carousel — cover + square video, ${carousel.delay_minutes} min ` +
-    `after each reel`));
-  detail.append(el("div", "meta", carousel.blocked
-    ? carousel.blocked
-    : `${carousel.owed || 0} waiting to go out`));
-  second.append(detail);
-  box.append(second);
 }
 
 async function loadRooms() {

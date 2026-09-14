@@ -7,18 +7,15 @@ number anyone had was Meta's - reported after the fact and never itemised.
 
 Two things were happening, and they need separating.
 
-*Posts* are what the schedule decides: five reels an hour apart from seven,
-and five carousels half an hour behind each. Ten a day, which is well under
-Meta's twenty-five and always was.
+*Posts* are what the schedule decides: five reels an hour apart from seven.
+Five a day, which is well under Meta's twenty-five and always was.
 
 *Calls* are what those posts cost, and they are not the same number. A reel is
-a container and a publish. A carousel is three containers and a publish,
-because each slide is fetched separately and the pair is then tied together.
-And a failed attempt costs its containers whether or not anything is published
-- so a carousel retried four times has asked Meta to hold twelve files to show
-nothing for it. That is the arithmetic that turned four posts into a spent
-limit, and no cap on posts would have caught it, because the posts were never
-the problem.
+a container and a publish - and a failed attempt costs its container whether
+or not anything is published. The two-slide post this used to also send cost
+four requests each, and a retry loop on those turned four posts into a spent
+limit. That is the arithmetic no cap on *posts* would have caught, because the
+posts were never the problem.
 
 So the budget is counted in attempts - one per post flow, successful or not -
 and it is checked before the first request rather than discovered at the last.
@@ -92,12 +89,10 @@ def cap() -> int:
     afternoon. The headroom is for genuine retries - a storage blip on one clip
     should not eat the evening's slots.
     """
+
     if settings.instagram_daily_attempts:
         return settings.instagram_daily_attempts
-    posts = settings.post_per_day
-    if settings.carousel_enabled:
-        posts += min(settings.carousel_per_day, settings.post_per_day)
-    return posts + settings.publish_headroom
+    return settings.post_per_day + settings.publish_headroom
 
 
 def allowed(platform: str = "instagram") -> tuple[bool, str]:
@@ -106,7 +101,7 @@ def allowed(platform: str = "instagram") -> tuple[bool, str]:
     Checked before the first container, not after the last refusal. A limit
     discovered from Meta has already been spent finding out.
     """
-    if platform not in ("instagram", "instagram_carousel"):
+    if platform != "instagram":
         return True, ""
     used, limit = attempts_today(), cap()
     if used < limit:

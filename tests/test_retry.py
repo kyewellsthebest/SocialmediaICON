@@ -120,16 +120,6 @@ class TestWhatIsWorthAskingAgain:
 
         assert publish.retry_rate_limited()["owed"] == 0
 
-    def test_the_carousel_is_left_to_its_own_clock(self, database):
-        """It has its own attempts, backoff and give-up point. Two schedules
-        retrying the same post is how the limit was spent."""
-        from worker.tasks import publish
-
-        with database() as session:
-            a_refusal(session, "eee", LIMIT, platform="instagram_carousel")
-
-        assert publish.retry_rate_limited()["owed"] == 0
-
     def test_nothing_happens_while_autopost_is_off(self, database, monkeypatch):
         from worker.tasks import publish
 
@@ -222,9 +212,8 @@ class TestAPostedReelCanStillBeRetried:
 
     def test_a_late_success_does_not_move_the_reels_posted_at(
             self, database, monkeypatch, tmp_path):
-        """The carousel's half hour counts from posted_at, and the day's tally
-        counts posted_at - so moving it forward on a retry restarts one and
-        miscounts the other."""
+        """The day's tally counts posted_at, so moving it forward on a retry
+        miscounts how many have gone out today."""
         from worker.tasks import publish
 
         clip = tmp_path / "clip.mp4"

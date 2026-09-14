@@ -170,30 +170,6 @@ class Settings(BaseSettings):
     #: How many wait their turn. A run that finds more than this keeps the
     #: best, and a later run with a better video pushes the weakest out.
     queue_size: int = 15
-    # --- the Instagram carousel --------------------------------------------
-    #: A second post of the same video: a square cover, then the square
-    #: video. A reel goes to the Reels surface and a carousel sits in the grid
-    #: and the feed, so the same clip reaches two different sets of eyes
-    #: without either looking like a repeat.
-    carousel_enabled: bool = True
-    #: How long after the reel. Far enough apart not to read as a double
-    #: post, close enough to ride the same interest.
-    carousel_delay_minutes: int = 30
-    #: How many of the day's reels get a second post. Fewer than the reels on
-    #: purpose: a carousel costs four requests to a reel's two, and every reel
-    #: appearing twice in the grid reads as a feed of repeats rather than as
-    #: two surfaces. The earliest reels of the day get them.
-    carousel_per_day: int = 3
-    #: Where the cover still comes from. Not zero: the literal first frame is
-    #: very often black, a fade, or a hand reaching for the phone.
-    carousel_frame_at_s: float = 1.0
-    carousel_swipe_text: str = "Swipe to watch"
-    #: How many goes before giving up. A render that fails on a bad frame
-    #: fails the same way every time, and retrying it once a minute for a week
-    #: buries every other failure on the page.
-    carousel_max_attempts: int = 4
-    #: Multiplied by the attempt number, so the gaps widen: 15, 30, 45...
-    carousel_retry_minutes: int = 15
     #: How long to stand down when Meta says the publishing limit is spent.
     #: Its window is 24 hours and the allowance refills gradually, so an hour
     #: is a reasonable next look - and asking more often is what spends it.
@@ -208,9 +184,8 @@ class Settings(BaseSettings):
     retry_within_hours: int = 24
     #: A hard ceiling on post flows per 24 hours, checked before the first
     #: request rather than discovered at the last. Zero derives it from the
-    #: schedule - five reels and five carousels, plus headroom - so raising
-    #: POST_PER_DAY does not leave the cap behind and quietly stop posting in
-    #: the afternoon.
+    #: schedule - POST_PER_DAY plus headroom - so raising it does not leave
+    #: the cap behind and quietly stop posting in the afternoon.
     instagram_daily_attempts: int = 0
     #: Spare attempts on top of the schedule, for genuine retries. A storage
     #: blip on one clip should not eat the evening's slots.

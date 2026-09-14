@@ -5,7 +5,6 @@ author's own caption.
 
 ```
 20 rooms → top of the week → best 15 kept → badge → 5 a day, hourly from 7am
-                                                    → square carousel, +30 min
 ```
 
 Nothing is cut, transcribed, scored by a model or re-framed. Somebody already
@@ -73,32 +72,6 @@ come back through the same lookup, which is what the queue ranks on.
 Press **Test every route** in the dashboard's Setup tab to measure this from
 wherever the app is actually running. A route that answers from your laptop
 says nothing about the server, and that gap is the whole problem.
-
-## The second post
-
-Every reel goes up again half an hour later as a square Instagram carousel:
-slide one a cover still with the mark on it and a reason to swipe, slide two
-the video itself. A reel lands on the Reels surface; a carousel sits in the
-grid and the feed, so the same clip reaches two different sets of eyes without
-either looking like a repeat.
-
-Nothing is cropped to make it square. A 9:16 gym video cut to a square loses
-either the barbell or the lifter depending on where the crop falls, so the
-whole frame is fitted and the gap filled with a blurred, darkened copy of
-itself — pillarboxed, since a portrait video in a square is narrow and full
-height.
-
-The cover still is taken a second in rather than from frame zero, which is
-very often black, a fade, or a hand reaching for the phone.
-
-Instagram's carousel flow is not a variation on the reel flow: each slide gets
-its own container marked `is_carousel_item`, a third container ties them
-together, and that is what gets published. The video slide is `VIDEO` and
-never `REELS` — a reel cannot be a carousel item, and asking for one is
-refused in a way that reads like a bad URL.
-
-**R2 is required for this**, unlike for a reel: Instagram fetches each slide
-from a URL rather than accepting an upload.
 
 ## Which rooms
 
@@ -206,7 +179,6 @@ core/
   reddit.py       what a video is, and whether it may be posted
   reddit_routes.py  six ways in, tried until one answers
   brand.py        the badge, and nothing else touched
-  carousel.py     the two square slides: cover, then video
   models.py       four tables
   publishers/     manual | youtube | meta | upload_post
   storage.py      R2, with a local-directory fallback
