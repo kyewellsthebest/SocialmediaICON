@@ -17,19 +17,33 @@ from core.config import settings
 
 _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
+#: What the cached engine was built for. In production this never changes; the
+#: cache is keyed on it anyway, because an engine held open against a URL that
+#: is no longer configured answers queries from the wrong database - and it
+#: answers them, so nothing fails and the wrong data just looks like the data.
+_engine_url: str | None = None
 
 
 def get_engine() -> Engine:
-    global _engine
-    if _engine is None:
-        _engine = create_engine(settings.sqlalchemy_url, pool_pre_ping=True, future=True)
+    global _engine, _engine_url
+    url = settings.sqlalchemy_url
+    if _engine is None or _engine_url != url:
+        _engine = create_engine(url, pool_pre_ping=True, future=True)
+        _engine_url = url
+        reset_sessionmaker()
     return _engine
+
+
+def reset_sessionmaker() -> None:
+    global _SessionLocal
+    _SessionLocal = None
 
 
 def get_sessionmaker() -> sessionmaker[Session]:
     global _SessionLocal
+    engine = get_engine()
     if _SessionLocal is None:
-        _SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False, future=True)
+        _SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     return _SessionLocal
 
 

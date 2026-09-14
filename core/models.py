@@ -20,6 +20,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -145,6 +146,34 @@ class ReelPost(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
     reel: Mapped[Reel] = relationship(back_populates="posts")
+
+
+class GraphCall(Base):
+    """One call this app made to Meta's publisher, whatever it was for.
+
+    The ledger exists because of a question nothing could answer: Instagram
+    said the publishing limit was spent on a day four things had been posted.
+    Meta reports its own number and will not itemise it, so the only way to
+    know whether four posts really cost twenty-five is to count this side of
+    the wire and put the two totals next to each other.
+
+    It is also what the daily cap is enforced from. Meta's limit is a number
+    we are told about only after we have exceeded it; this one we can refuse
+    against before a single request goes out.
+    """
+
+    __tablename__ = "graph_calls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: container - asked Meta to fetch a file and hold it
+    #: publish   - turned a container into a post
+    #: poll      - asked whether a container had finished
+    #: read      - anything else: a permalink, a quota readout, a username
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    detail: Mapped[str | None] = mapped_column(Text)
 
 
 class RunLog(TimestampMixin, Base):

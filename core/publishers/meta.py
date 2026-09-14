@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from core import credentials
+from core import budget, credentials
 from core.config import settings
 from core.publishers import PublishRequest, PublishResult
 from core.storage import get_storage
@@ -49,7 +49,16 @@ CAPTION_LIMITS = {"instagram": 2200, "threads": 500, "facebook": 2200}
 # but a busy transcode queue can leave it sitting a while.
 CLIP_URL_TTL_S = 6 * 3600
 
-POLL_INTERVAL_S = 5.0
+#: How long to leave between asking whether a container has finished. It
+#: widens, because the shape of the wait is not flat: a four-second clip is
+#: usually ready on the first look, and one that is not is rarely ready a
+#: moment later. Asking every five seconds for two minutes is twenty-four
+#: requests to learn one thing, and requests are the currency being spent.
+POLL_WAITS_S = (2.0, 3.0, 5.0, 8.0, 13.0, 21.0, 30.0)
+
+
+def _poll_wait(attempt: int) -> float:
+    return POLL_WAITS_S[min(attempt, len(POLL_WAITS_S) - 1)]
 
 
 #: Meta's way of saying "not now". Code 4 is the application request limit;
@@ -128,6 +137,11 @@ class MetaPublisher:
     ) -> None:
         self._client = client
         self._sleep = sleep
+        #: What an unattributed call is counted against. Every call that knows
+        #: its platform says so; the handful that do not - a token exchange, a
+        #: quota readout - are Meta's own bookkeeping rather than any one
+        #: account's.
+        self._platform = "meta"
         self.version = settings.meta_graph_version
         self.timeout_s = settings.meta_publish_timeout_s
 
@@ -197,7 +211,17 @@ class MetaPublisher:
         data: dict | None = None,
         params: dict | None = None,
         headers: dict | None = None,
+        kind: str = "read",
+        platform: str | None = None,
     ) -> dict:
+        """One request, counted.
+
+        Everything goes through here, so this is the one place that knows what
+        this app actually asked Meta for. Counted at the wire rather than at
+        the call sites, because the call site's idea of "one post" is three
+        containers and a publish, and it was the difference between those two
+        numbers that spent the limit.
+        """
         response = client.request(method, url, data=data, params=params, headers=headers)
         try:
             payload = response.json()
@@ -211,7 +235,9 @@ class MetaPublisher:
             subcode = error.get("error_subcode")
             detail = f"{message} (code {error.get('code')}"
             detail += f"/{subcode})" if subcode else ")"
+            budget.record(platform or self._platform, kind, ok=False, detail=detail)
             raise MetaError(detail)
+        budget.record(platform or self._platform, kind, ok=True)
         return payload
 
     def _graph(self, target: _Target, path: str) -> str:
@@ -260,6 +286,7 @@ class MetaPublisher:
         fields = "status,status_code,error_message"
         deadline = time.monotonic() + self.timeout_s
         last = "UNKNOWN"
+        looks = 0
 
         while time.monotonic() < deadline:
             payload = self._call(
@@ -267,6 +294,8 @@ class MetaPublisher:
                 "GET",
                 self._graph(target, container_id),
                 params={"fields": fields, "access_token": target.token},
+                kind="poll",
+                platform=target.platform,
             )
             last = payload.get("status_code") or payload.get("status") or "UNKNOWN"
             if last in ("FINISHED", "PUBLISHED"):
@@ -277,7 +306,8 @@ class MetaPublisher:
             if may_be_silent and "status_code" not in payload and "status" not in payload:
                 log.info("meta: %s reports no status; treating it as ready", container_id)
                 return
-            self._sleep(POLL_INTERVAL_S)
+            self._sleep(_poll_wait(looks))
+            looks += 1
 
         raise MetaError(
             f"Meta was still {last} after {self.timeout_s}s - "
@@ -290,6 +320,7 @@ class MetaPublisher:
         target: _Target,
         creation_id: str,
         path: str,
+        counted_as: str | None = None,
     ) -> str:
         """Publish a finished container, re-asking while Meta says it is not.
 
@@ -306,6 +337,7 @@ class MetaPublisher:
                     "POST",
                     self._graph(target, path),
                     data={"creation_id": creation_id, "access_token": target.token},
+                    kind="publish", platform=counted_as or target.platform,
                 )
             except MetaError as exc:
                 if not is_not_ready(str(exc)):
@@ -333,6 +365,7 @@ class MetaPublisher:
                 "GET",
                 self._graph(target, post_id),
                 params={"fields": "permalink", "access_token": target.token},
+                kind="read", platform=target.platform,
             )
         except MetaError:
             return None
@@ -425,6 +458,7 @@ class MetaPublisher:
                         client, "POST",
                         self._graph(target, f"{target.account_id}/media"),
                         data=body | {"access_token": target.token},
+                        kind="container", platform="instagram_carousel",
                     )
                     child = str(created.get("id") or "")
                     if not child:
@@ -442,6 +476,7 @@ class MetaPublisher:
                 parent = self._call(
                     client, "POST",
                     self._graph(target, f"{target.account_id}/media"),
+                    kind="container", platform="instagram_carousel",
                     data={
                         "media_type": "CAROUSEL",
                         "children": ",".join(children),
@@ -461,6 +496,7 @@ class MetaPublisher:
 
                 post_id = self._publish_creation(
                     client, target, parent_id, f"{target.account_id}/media_publish",
+                    counted_as="instagram_carousel",
                 )
 
                 # Asked for inside the client block: the permalink is a
@@ -513,7 +549,8 @@ class MetaPublisher:
                 "access_token": target.token,
             }
 
-        created = self._call(client, "POST", self._graph(target, create_path), data=body)
+        created = self._call(client, "POST", self._graph(target, create_path), data=body,
+                             kind="container", platform=target.platform)
         container_id = str(created.get("id") or "")
         if not container_id:
             raise MetaError(f"no container id in the response: {created}")
@@ -544,6 +581,7 @@ class MetaPublisher:
             "POST",
             endpoint,
             data={"upload_phase": "start", "access_token": target.token},
+            kind="container", platform="facebook",
         )
         video_id = str(started.get("video_id") or "")
         upload_url = started.get("upload_url")
@@ -557,6 +595,7 @@ class MetaPublisher:
             "POST",
             upload_url,
             headers={"Authorization": f"OAuth {target.token}", "file_url": clip_url},
+            kind="container", platform="facebook",
         )
 
         self._call(
@@ -570,6 +609,7 @@ class MetaPublisher:
                 "description": self._caption(request, "facebook"),
                 "access_token": target.token,
             },
+            kind="publish", platform="facebook",
         )
 
         return PublishResult(
@@ -822,16 +862,32 @@ def refresh_tokens(client: httpx.Client | None = None) -> dict[str, str]:
     return fresh
 
 
-def publishing_quota(client: httpx.Client | None = None) -> dict[str, object]:
+#: The last quota readout and when it was taken. The readout is a Graph call
+#: like any other, and a dashboard left open on a phone would otherwise spend
+#: the allowance asking how much of the allowance is left.
+_quota_cache: tuple[float, dict[str, object]] | None = None
+
+
+def publishing_quota(
+    client: httpx.Client | None = None, fresh: bool = False,
+) -> dict[str, object]:
     """How much of Instagram's 24-hour publishing allowance is spent.
 
     Meta reports this directly rather than making you count, which matters
     because the allowance is per account and a failed attempt can consume it
     without anything being published. Asked for by the dashboard so the answer
     to "why is nothing posting" can be a number rather than a guess.
+
+    Cached, because it is itself a request against the limit it reports on.
     """
+    global _quota_cache
     if not settings.has_instagram:
         return {"known": False, "why": "Instagram is not configured"}
+
+    if not fresh and _quota_cache is not None:
+        taken, cached = _quota_cache
+        if time.monotonic() - taken < settings.quota_cache_minutes * 60:
+            return cached | {"cached": True}
 
     owns_client = client is None
     client = client or httpx.Client(timeout=30.0)
@@ -855,9 +911,11 @@ def publishing_quota(client: httpx.Client | None = None) -> dict[str, object]:
 
     row = rows[0]
     config = row.get("config") or {}
-    return {
+    answer: dict[str, object] = {
         "known": True,
         "used": row.get("quota_usage"),
         "limit": config.get("quota_total"),
         "window_hours": (config.get("quota_duration") or 86400) // 3600,
     }
+    _quota_cache = (time.monotonic(), answer)
+    return answer

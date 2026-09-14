@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from core import schedule
+from core import budget, schedule
 from core.config import settings
 from core.db import session_scope
 from core.models import Reel, ReelPost
@@ -141,6 +141,11 @@ def retry_rate_limited(limit: int = 2) -> dict[str, Any]:
     """
     if not (settings.autopost_enabled and settings.retry_rate_limited):
         return {"retried": 0}
+    # A retry is a post flow like any other and costs the same containers.
+    # Retrying past the cap is precisely how the cap got spent.
+    room, why = budget.allowed("instagram")
+    if not room:
+        return {"retried": 0, "skipped": why}
 
     cutoff = datetime.now(UTC) - timedelta(hours=settings.retry_within_hours)
     waited = datetime.now(UTC) - timedelta(minutes=settings.rate_limit_wait_minutes)
@@ -222,6 +227,13 @@ def next_due() -> tuple[bool, str]:
         return False, "AUTOPOST_ENABLED is off"
     if not destinations():
         return False, f"PUBLISHER={settings.publisher} has no credentials set"
+    if "instagram" in destinations():
+        # Checked before the schedule, not after: a slot that opens with the
+        # cap spent should stay shut rather than spend three containers
+        # finding out.
+        room, why = budget.allowed("instagram")
+        if not room:
+            return False, why
 
     tz = schedule.zone(settings.post_timezone)
     count, last = posted_today(tz)
@@ -466,6 +478,9 @@ def post_carousels_due(limit: int = 2) -> dict[str, Any]:
         return {"posted": 0, "skipped": "AUTOPOST_ENABLED is off"}
     if "instagram" not in destinations():
         return {"posted": 0, "skipped": "Instagram is not a destination"}
+    room, why = budget.allowed("instagram")
+    if not room:
+        return {"posted": 0, "skipped": why}
     if not settings.has_r2:
         # Checked here rather than discovered per reel. Instagram fetches each
         # slide from a URL; local storage hands back a file:// one, which it

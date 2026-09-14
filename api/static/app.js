@@ -327,6 +327,30 @@ async function loadSetup() {
     list.append(row);
   }
 
+  // What this app itself asked Meta for, counted at the wire. Next to Meta's
+  // number on purpose: five reels and five carousels are ten posts, but they
+  // are thirty requests — a carousel is three containers and a publish — and
+  // it was that gap, not the posting, that spent the allowance.
+  const led = where.ledger;
+  if (led) {
+    const row = el("div", "item");
+    const full = led.attempts >= led.cap;
+    row.append(el("span", "pill " + (full ? "wait" : "ok"),
+      `${led.attempts}/${led.cap}`));
+    const body = el("div", "body");
+    body.append(el("span", "cap",
+      `posts this app attempted in the last ${led.window_hours}h`));
+    const calls = led.calls || {};
+    body.append(el("div", "meta", full
+      ? "this app's own cap is spent and it has stopped asking — it refills "
+        + "as the oldest attempts age out"
+      : `${led.posted} went out. `
+        + `${calls.container || 0} containers, ${calls.publish || 0} publishes, `
+        + `${calls.poll || 0} status checks, ${calls.read || 0} other`));
+    row.append(body);
+    list.append(row);
+  }
+
   if (where.error) {
     const row = el("div", "item");
     row.append(el("span", "pill bad", "token"), el("div", "body", where.error));

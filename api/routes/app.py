@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from core import credentials, jobs
+from core import budget, credentials, jobs
 from core import rooms as room_list
 from core.config import settings
 from core.db import session_scope
@@ -504,6 +504,11 @@ def services() -> dict[str, Any]:
         from core.publishers.meta import publishing_quota
 
         payload["quota"] = publishing_quota()
+
+    # And what this app itself asked for, counted at the wire. Next to Meta's
+    # number on purpose: "four posts, nine calls, and Meta says twenty-five"
+    # is a fact worth acting on, and no single number can say it.
+    payload["ledger"] = budget.ledger("instagram")
 
     payload["tokens"] = [
         {

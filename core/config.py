@@ -201,6 +201,19 @@ class Settings(BaseSettings):
     #: How long a refused platform stays worth retrying. Past a day the clip
     #: is no longer the clip of the day, and the queue has moved on.
     retry_within_hours: int = 24
+    #: A hard ceiling on post flows per 24 hours, checked before the first
+    #: request rather than discovered at the last. Zero derives it from the
+    #: schedule - five reels and five carousels, plus headroom - so raising
+    #: POST_PER_DAY does not leave the cap behind and quietly stop posting in
+    #: the afternoon.
+    instagram_daily_attempts: int = 0
+    #: Spare attempts on top of the schedule, for genuine retries. A storage
+    #: blip on one clip should not eat the evening's slots.
+    publish_headroom: int = 4
+    #: How long the quota readout is reused for. It is a Graph call like any
+    #: other, and a dashboard left open on a phone would otherwise spend the
+    #: allowance asking how much of the allowance is left.
+    quota_cache_minutes: int = 10
 
     # --- when reels go out -------------------------------------------------
     #: The clock the schedule is read against. Railway runs in UTC, so "7am"
