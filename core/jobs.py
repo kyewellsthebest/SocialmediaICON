@@ -171,11 +171,22 @@ def _maybe_post() -> None:
     out one an hour through the morning - because eight arriving at once is a
     burst every platform notices, and it spends a day's queue in a minute.
     """
-    from worker.tasks.publish import post_carousels_due, post_one_now
+    from worker.tasks.publish import (
+        post_carousels_due,
+        post_one_now,
+        retry_rate_limited,
+    )
 
     outcome = post_one_now()
     if outcome.get("posted"):
         log.info("posted: %s", outcome)
+
+    # Platforms that answered "not now" rather than "no". A reel counts as
+    # posted the moment any platform takes it, so without this an Instagram
+    # refusal on a reel Facebook accepted is never asked about again.
+    again = retry_rate_limited()
+    if again.get("retried"):
+        log.info("retried: %s", again)
 
     # The second post of each reel, half an hour behind it. On its own clock
     # rather than the slots: it is not competing for them, it is following.

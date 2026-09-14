@@ -41,6 +41,12 @@ def publish_one(reel_id: int, only: list[str] | None = None) -> list[ReelPost]:
     A platform refusing is recorded, not raised: one refusal is not the others
     refusing, and a run that gives up on the first error posts nothing on a day
     when three of four would have worked.
+
+    `only` names the platforms to ask, and is also what makes a retry possible:
+    a reel counts as posted the moment *any* platform takes it, so a reel that
+    went to Facebook and was refused by Instagram is "posted" with Instagram
+    still owed. Naming the platform says this is that retry rather than a
+    second go at the whole thing.
     """
     from worker.tasks.harvest import prepare
 
@@ -48,7 +54,7 @@ def publish_one(reel_id: int, only: list[str] | None = None) -> list[ReelPost]:
         reel = session.get(Reel, reel_id)
         if reel is None:
             raise ValueError(f"no reel {reel_id}")
-        if reel.state == "posted":
+        if reel.state == "posted" and not only:
             raise ValueError(f"reel {reel_id} has already gone out")
         caption, external_id = reel.caption, reel.external_id
         local = Path(reel.local_path) if reel.local_path else None
@@ -80,31 +86,104 @@ def publish_one(reel_id: int, only: list[str] | None = None) -> list[ReelPost]:
     results = get_publisher().publish(request)
 
     recorded: list[ReelPost] = []
+    now = datetime.now(UTC)
     with session_scope() as session:
         reel = session.get(Reel, reel_id)
         for result in results:
-            row = ReelPost(
-                reel_id=reel_id,
-                platform=result.platform,
-                platform_post_id=result.post_id,
-                platform_url=result.url,
-                error=result.error,
-                status="posted" if result.ok else "failed",
-                posted_at=datetime.now(UTC) if result.ok else None,
-            )
-            session.add(row)
+            # One row per platform, updated. A row per attempt turns the
+            # record of what happened into a record of how often it was
+            # retried - which is what forty identical red pills looked like.
+            row = session.execute(
+                select(ReelPost).where(
+                    ReelPost.reel_id == reel_id,
+                    ReelPost.platform == result.platform,
+                )
+            ).scalars().first()
+            if row is None:
+                row = ReelPost(reel_id=reel_id, platform=result.platform)
+                session.add(row)
+            row.platform_post_id = result.post_id
+            row.platform_url = result.url
+            row.error = result.error
+            row.status = "posted" if result.ok else "failed"
+            row.tried_at = now
+            if result.ok:
+                row.posted_at = now
             recorded.append(row)
         if reel is not None:
             reel.storage_key = key
             if any(r.ok for r in results):
+                # Only on the first success. A retry that finally lands
+                # Instagram must not move the reel's posted_at forward, or the
+                # carousel's half hour restarts and the day's tally is wrong.
                 reel.state = "posted"
-                reel.posted_at = datetime.now(UTC)
+                reel.posted_at = reel.posted_at or now
+                reel.note = None
             else:
                 reel.note = "; ".join(r.error or "refused" for r in results)[:400]
         session.flush()
         for row in recorded:
             session.expunge(row)
     return recorded
+
+
+def retry_rate_limited(limit: int = 2) -> dict[str, Any]:
+    """Ask again on the platforms that said "not now" rather than "no".
+
+    Instagram's publishing limit is 25 posts per account per rolling 24 hours,
+    and it is spent by asking, not only by succeeding. When it ran out, every
+    reel's Instagram attempt failed - and because Facebook took the same reel,
+    the reel was marked posted and Instagram was never asked again. A limit
+    that clears by itself cost a day of Instagram posts permanently.
+
+    Only rate limits. A refused token or a broken file fails the same way
+    forever, and retrying those is what spends the limit in the first place.
+    """
+    if not (settings.autopost_enabled and settings.retry_rate_limited):
+        return {"retried": 0}
+
+    cutoff = datetime.now(UTC) - timedelta(hours=settings.retry_within_hours)
+    waited = datetime.now(UTC) - timedelta(minutes=settings.rate_limit_wait_minutes)
+    owed: list[tuple[int, str]] = []
+    with session_scope() as session:
+        rows = session.execute(
+            select(ReelPost.reel_id, ReelPost.platform, ReelPost.error,
+                   ReelPost.tried_at, ReelPost.created_at)
+            .join(Reel, Reel.id == ReelPost.reel_id)
+            .where(
+                ReelPost.status == "failed",
+                # The carousel keeps its own clock, attempts and backoff.
+                ReelPost.platform != "instagram_carousel",
+                Reel.posted_at.is_not(None),
+                Reel.posted_at >= cutoff,
+            )
+            .order_by(ReelPost.reel_id.asc())
+        ).all()
+        for reel_id, platform, error, tried, created in rows:
+            if not is_rate_limited(error):
+                continue
+            last = tried or created
+            if last is not None:
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=UTC)
+                if last > waited:
+                    continue
+            owed.append((reel_id, platform))
+
+    done = failed = 0
+    for reel_id, platform in owed[:limit]:
+        try:
+            results = publish_one(reel_id, only=[platform])
+        except Exception as exc:  # noqa: BLE001 - one bad reel is not the rest
+            log.warning("retry: reel %s on %s failed (%s)", reel_id, platform, exc)
+            failed += 1
+            continue
+        if any(r.status == "posted" for r in results):
+            log.info("retry: reel %s finally went out on %s", reel_id, platform)
+            done += 1
+        else:
+            failed += 1
+    return {"retried": done, "failed": failed, "owed": len(owed)}
 
 
 def posted_today(tz) -> tuple[int, datetime | None]:
@@ -319,6 +398,7 @@ def post_carousel(reel_id: int) -> dict[str, Any]:
         row.platform_url = result.url
         row.error = result.error
         row.status = "posted" if result.ok else "failed"
+        row.tried_at = datetime.now(UTC)
         row.posted_at = datetime.now(UTC) if result.ok else None
 
         reel = session.get(Reel, reel_id)

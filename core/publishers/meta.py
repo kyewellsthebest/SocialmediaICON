@@ -80,6 +80,30 @@ def is_rate_limited(error: str | None) -> bool:
     return any(marker in said for marker in RATE_LIMIT_MARKERS)
 
 
+#: Instagram's way of saying "that container is not ready yet". Code 9007 with
+#: subcode 2207027 is worded "Media ID is not available", which reads like a
+#: wrong id and sends you off checking the one thing that is fine.
+#:
+#: It is what a publish gets when Meta has not finished assembling the
+#: container - and container readiness is eventually consistent, so a carousel
+#: can report FINISHED and still be refused for a few seconds after. Waiting
+#: and asking again is the documented answer, not a workaround.
+NOT_READY_MARKERS = ("media id is not available", "2207027", "(code 9007")
+
+#: How many times to re-ask, and how long to leave between. Three tries over
+#: sixteen seconds; beyond that it is not a race, it is broken.
+PUBLISH_ATTEMPTS = 3
+PUBLISH_BACKOFF_S = 8.0
+
+
+def is_not_ready(error: str | None) -> bool:
+    """Whether Meta is refusing a container it has not finished building."""
+    if not error:
+        return False
+    said = error.lower()
+    return any(marker in said for marker in NOT_READY_MARKERS)
+
+
 class MetaError(RuntimeError):
     """A Graph API call came back with an error we cannot retry past."""
 
@@ -212,11 +236,24 @@ class MetaPublisher:
     def _caption(self, request: PublishRequest, platform: str) -> str:
         return request.caption[: CAPTION_LIMITS[platform]]
 
-    def _await_container(self, client: httpx.Client, target: _Target, container_id: str) -> None:
+    def _await_container(
+        self,
+        client: httpx.Client,
+        target: _Target,
+        container_id: str,
+        *,
+        may_be_silent: bool = False,
+    ) -> None:
         """Block until Meta has finished ingesting the video, or give up.
 
         Publishing a container that is still IN_PROGRESS fails, so this is not
         optional politeness - it is the handshake.
+
+        `may_be_silent` is for the carousel parent, which is assembled from
+        children rather than downloaded and which some Graph versions do not
+        report a status for at all. Polling a field that is never going to
+        appear is not patience, it is a two-minute timeout - so when nothing
+        answers, take that as done rather than as still working.
         """
         # Threads reports `status`; Instagram reports `status_code`. Ask for both
         # and read whichever comes back.
@@ -237,11 +274,55 @@ class MetaPublisher:
             if last in ("ERROR", "EXPIRED"):
                 reason = payload.get("error_message") or last
                 raise MetaError(f"Meta rejected the upload: {reason}")
+            if may_be_silent and "status_code" not in payload and "status" not in payload:
+                log.info("meta: %s reports no status; treating it as ready", container_id)
+                return
             self._sleep(POLL_INTERVAL_S)
 
         raise MetaError(
             f"Meta was still {last} after {self.timeout_s}s - "
             "raise META_PUBLISH_TIMEOUT_S or check the clip encodes to H.264/AAC"
+        )
+
+    def _publish_creation(
+        self,
+        client: httpx.Client,
+        target: _Target,
+        creation_id: str,
+        path: str,
+    ) -> str:
+        """Publish a finished container, re-asking while Meta says it is not.
+
+        Safe to repeat: a call that comes back "Media ID is not available"
+        published nothing, so there is no way for this to put the same post up
+        twice. The alternative - one try, one red pill - throws away a post
+        over a few seconds of Meta catching up with itself.
+        """
+        last: MetaError | None = None
+        for attempt in range(PUBLISH_ATTEMPTS):
+            try:
+                published = self._call(
+                    client,
+                    "POST",
+                    self._graph(target, path),
+                    data={"creation_id": creation_id, "access_token": target.token},
+                )
+            except MetaError as exc:
+                if not is_not_ready(str(exc)):
+                    raise
+                last = exc
+                log.info("meta: %s not ready yet (try %d)", creation_id, attempt + 1)
+                if attempt < PUBLISH_ATTEMPTS - 1:
+                    self._sleep(PUBLISH_BACKOFF_S)
+                continue
+            post_id = str(published.get("id") or "")
+            if not post_id:
+                raise MetaError(f"no post id in the response: {published}")
+            return post_id
+
+        raise MetaError(
+            f"{last} - the container was still not publishable after "
+            f"{PUBLISH_ATTEMPTS} tries"
         )
 
     def _permalink(self, client: httpx.Client, target: _Target, post_id: str) -> str | None:
@@ -330,8 +411,9 @@ class MetaPublisher:
         except MetaError as exc:
             return PublishResult(platform="instagram_carousel", ok=False, error=str(exc)[:300])
 
-        with httpx.Client(timeout=httpx.Timeout(settings.meta_publish_timeout_s,
-                                                connect=30.0)) as client:
+        client = self._http()
+        owns_client = self._client is None
+        try:
             try:
                 children = []
                 for body in (
@@ -349,10 +431,13 @@ class MetaPublisher:
                         raise MetaError(f"no container id for a slide: {created}")
                     children.append(child)
 
-                # Only the video needs ingesting; the image is ready as soon
-                # as Meta has fetched it. Waiting on both is a minute of
-                # polling something that is already finished.
-                self._await_container(client, target, children[1])
+                # Every slide, not just the video. An image container is
+                # usually ready in a second, but tying the carousel together
+                # while any child is still being fetched produces a parent
+                # that can never be published - and the refusal names the
+                # parent, so the half-finished child never comes up.
+                for child in children:
+                    self._await_container(client, target, child)
 
                 parent = self._call(
                     client, "POST",
@@ -368,14 +453,15 @@ class MetaPublisher:
                 if not parent_id:
                     raise MetaError(f"no carousel container id: {parent}")
 
-                published = self._call(
-                    client, "POST",
-                    self._graph(target, f"{target.account_id}/media_publish"),
-                    data={"creation_id": parent_id, "access_token": target.token},
+                # The parent is a container as well. Publishing it the
+                # instant it is created is what "Media ID is not available"
+                # means - Meta hands back an id before it has finished
+                # assembling the thing the id refers to.
+                self._await_container(client, target, parent_id, may_be_silent=True)
+
+                post_id = self._publish_creation(
+                    client, target, parent_id, f"{target.account_id}/media_publish",
                 )
-                post_id = str(published.get("id") or "")
-                if not post_id:
-                    raise MetaError(f"no post id in the response: {published}")
 
                 # Asked for inside the client block: the permalink is a
                 # separate request, and a post that went out is still a post
@@ -390,6 +476,9 @@ class MetaPublisher:
                 log.warning("meta: carousel request failed: %s", exc)
                 return PublishResult(platform="instagram_carousel", ok=False,
                                      error=f"request failed: {exc}"[:300])
+        finally:
+            if owns_client:
+                client.close()
 
         return PublishResult(
             platform="instagram_carousel", ok=True, post_id=post_id, url=link,
@@ -431,15 +520,7 @@ class MetaPublisher:
 
         self._await_container(client, target, container_id)
 
-        published = self._call(
-            client,
-            "POST",
-            self._graph(target, publish_path),
-            data={"creation_id": container_id, "access_token": target.token},
-        )
-        post_id = str(published.get("id") or "")
-        if not post_id:
-            raise MetaError(f"no post id in the response: {published}")
+        post_id = self._publish_creation(client, target, container_id, publish_path)
 
         return PublishResult(
             platform=target.platform,

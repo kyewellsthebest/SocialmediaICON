@@ -193,6 +193,14 @@ class Settings(BaseSettings):
     #: Its window is 24 hours and the allowance refills gradually, so an hour
     #: is a reasonable next look - and asking more often is what spends it.
     rate_limit_wait_minutes: int = 60
+    #: Ask again on a platform that answered "not now". A reel counts as
+    #: posted the moment any platform takes it, so without this a reel that
+    #: went to Facebook and hit Instagram's limit is finished with Instagram
+    #: still owed - and the limit clears in an hour.
+    retry_rate_limited: bool = True
+    #: How long a refused platform stays worth retrying. Past a day the clip
+    #: is no longer the clip of the day, and the queue has moved on.
+    retry_within_hours: int = 24
 
     # --- when reels go out -------------------------------------------------
     #: The clock the schedule is read against. Railway runs in UTC, so "7am"

@@ -23,6 +23,7 @@ from core.config import settings
 from core.db import session_scope
 from core.models import Reel, ReelPost
 from core.publishers import destinations, unreachable
+from core.publishers.meta import is_rate_limited
 from core.storage import get_storage
 
 log = logging.getLogger(__name__)
@@ -125,7 +126,11 @@ def posted(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
             items.append(_reel(reel) | {
                 "went_to": [
                     {"platform": a.platform, "status": a.status,
-                     "url": a.platform_url, "error": a.error}
+                     "url": a.platform_url, "error": a.error,
+                     # A rate limit is not a failure, it is a queue. Shown
+                     # apart so "Instagram is full until this evening" does
+                     # not read the same as "Instagram rejected this video".
+                     "waiting": a.status == "failed" and is_rate_limited(a.error)}
                     for a in attempts
                 ],
                 # Read on the page rather than hidden in a tooltip: a failure

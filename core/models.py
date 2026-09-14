@@ -121,6 +121,11 @@ class ReelPost(TimestampMixin, Base):
     """One attempt to put one reel on one platform."""
 
     __tablename__ = "reel_posts"
+    #: One row per platform, updated. A row per attempt turns the record of
+    #: what happened into a record of how often it was retried.
+    __table_args__ = (
+        UniqueConstraint("reel_id", "platform", name="uq_reel_post_platform"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     reel_id: Mapped[int] = mapped_column(
@@ -133,6 +138,10 @@ class ReelPost(TimestampMixin, Base):
     #: refusing, and a failure nobody recorded is a failure nobody fixes.
     error: Mapped[str | None] = mapped_column(Text)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When this platform was last asked, successfully or not. Separate from
+    #: posted_at, which only ever means "it worked" - a refusal has to be
+    #: remembered too, or a retry has nothing to back off from.
+    tried_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
     reel: Mapped[Reel] = relationship(back_populates="posts")

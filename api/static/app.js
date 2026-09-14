@@ -218,8 +218,11 @@ async function loadPosted() {
   for (const reel of out.items) {
     const row = reelRow(reel, false);
     for (const went of reel.went_to || []) {
-      const pill = el("span", "pill " + (went.status === "posted" ? "ok" : "bad"),
-        went.platform);
+      // Three states, not two. A rate limit is a queue, not a rejection, and
+      // colouring it the same red as a broken render sends you looking for a
+      // fault in something that is simply waiting its turn.
+      const how = went.status === "posted" ? "ok" : went.waiting ? "wait" : "bad";
+      const pill = el("span", "pill " + how, went.platform);
       if (went.url) {
         const link = el("a");
         link.href = went.url;
@@ -239,7 +242,13 @@ async function loadPosted() {
     const failures = (reel.went_to || []).filter((w) => w.status !== "posted");
     for (const failure of failures) {
       if (!failure.error) continue;
-      postedList.append(el("div", "why", `${failure.platform}: ${failure.error}`));
+      const why = el("div", "why" + (failure.waiting ? " waiting" : ""),
+        failure.waiting
+          ? `${failure.platform}: waiting - Instagram's publishing limit is `
+            + `spent. It refills on its own and this will be asked again. `
+            + `(${failure.error})`
+          : `${failure.platform}: ${failure.error}`);
+      postedList.append(why);
     }
     if (reel.carousel_note && !failures.some((f) => f.platform.includes("carousel"))) {
       postedList.append(el("div", "why", `carousel: ${reel.carousel_note}`));

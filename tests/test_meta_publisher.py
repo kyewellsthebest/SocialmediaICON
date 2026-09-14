@@ -590,3 +590,185 @@ def test_other_exchange_errors_are_still_reported_verbatim(meta_env, monkeypatch
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(MetaError, match="Bad client secret"):
         exchange_token("instagram", "IGAAe-token", client=client)
+
+
+# --------------------------------------------------------------- carousels
+#
+# "Media ID is not available (code 9007/2207027)" is what Instagram said for
+# every carousel the queue tried. It reads as a wrong id, which is the one
+# thing it never is: the carousel parent is a container like any other, and it
+# was being published the instant Meta handed back its id, before Meta had
+# finished assembling the thing the id referred to.
+
+
+def _carousel_publisher(handler) -> MetaPublisher:
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    return MetaPublisher(client=client, sleep=lambda _s: None)
+
+
+def test_a_carousel_waits_for_every_slide_and_for_itself(meta_env):
+    calls: list[str] = []
+    made: list[str] = []
+    # The parent is IN_PROGRESS on its first look, which is exactly the window
+    # the old code published into.
+    parent_status = iter(["IN_PROGRESS", "FINISHED"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(f"{request.method} {path.rsplit('/', 1)[-1]}")
+        if request.method == "POST" and path.endswith("/media"):
+            body = dict(httpx.QueryParams(request.content.decode()))
+            if body.get("media_type") == "CAROUSEL":
+                assert body["children"] == "cover,video"
+                return httpx.Response(200, json={"id": "parent"})
+            made.append(body.get("image_url") or body.get("video_url") or "?")
+            return httpx.Response(
+                200, json={"id": "cover" if "image_url" in body else "video"}
+            )
+        if path.endswith(("/cover", "/video")):
+            return httpx.Response(200, json={"status_code": "FINISHED"})
+        if path.endswith("/parent"):
+            return httpx.Response(200, json={"status_code": next(parent_status)})
+        if path.endswith("/media_publish"):
+            return httpx.Response(200, json={"id": "post-1"})
+        if path.endswith("/post-1"):
+            return httpx.Response(200, json={"permalink": "https://instagram.com/p/x"})
+        raise AssertionError(f"unexpected call: {request.method} {path}")
+
+    result = _carousel_publisher(handler).publish_carousel(
+        "https://example.invalid/cover.jpg", "https://example.invalid/square.mp4", "A lift"
+    )
+
+    assert result.ok, result.error
+    assert result.post_id == "post-1"
+    assert result.url == "https://instagram.com/p/x"
+    assert made == ["https://example.invalid/cover.jpg", "https://example.invalid/square.mp4"]
+    # Both slides checked, the parent polled until it was ready, and only then
+    # published. The order is the whole point.
+    assert "GET cover" in calls and "GET video" in calls
+    assert calls.count("GET parent") == 2
+    assert calls.index("POST media_publish") > max(
+        i for i, c in enumerate(calls) if c == "GET parent"
+    )
+
+
+def test_a_carousel_parent_that_reports_no_status_is_not_waited_out(meta_env):
+    """Some Graph versions report nothing for a CAROUSEL container. Polling a
+    field that will never arrive is a two-minute timeout, not patience."""
+    looks = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/media"):
+            body = dict(httpx.QueryParams(request.content.decode()))
+            if body.get("media_type") == "CAROUSEL":
+                return httpx.Response(200, json={"id": "parent"})
+            return httpx.Response(200, json={"id": "cover" if "image_url" in body else "video"})
+        if path.endswith(("/cover", "/video")):
+            return httpx.Response(200, json={"status_code": "FINISHED"})
+        if path.endswith("/parent"):
+            looks["n"] += 1
+            return httpx.Response(200, json={"id": "parent"})
+        if path.endswith("/media_publish"):
+            return httpx.Response(200, json={"id": "post-2"})
+        return httpx.Response(200, json={})
+
+    result = _carousel_publisher(handler).publish_carousel("c.jpg", "v.mp4", "A lift")
+
+    assert result.ok, result.error
+    assert looks["n"] == 1
+
+
+def test_a_not_ready_publish_is_asked_again_rather_than_abandoned(meta_env):
+    """Container readiness is eventually consistent: FINISHED and still
+    refused for a few seconds is normal, and one try throws the post away."""
+    tries = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/media"):
+            body = dict(httpx.QueryParams(request.content.decode()))
+            if body.get("media_type") == "CAROUSEL":
+                return httpx.Response(200, json={"id": "parent"})
+            return httpx.Response(200, json={"id": "cover" if "image_url" in body else "video"})
+        if path.endswith(("/cover", "/video", "/parent")):
+            return httpx.Response(200, json={"status_code": "FINISHED"})
+        if path.endswith("/media_publish"):
+            tries["n"] += 1
+            if tries["n"] < 3:
+                return httpx.Response(400, json={"error": {
+                    "message": "Media ID is not available",
+                    "code": 9007, "error_subcode": 2207027}})
+            return httpx.Response(200, json={"id": "post-3"})
+        return httpx.Response(200, json={})
+
+    result = _carousel_publisher(handler).publish_carousel("c.jpg", "v.mp4", "A lift")
+
+    assert result.ok, result.error
+    assert result.post_id == "post-3"
+    assert tries["n"] == 3
+
+
+def test_a_publish_that_is_never_ready_says_so_instead_of_looping(meta_env):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/media"):
+            body = dict(httpx.QueryParams(request.content.decode()))
+            if body.get("media_type") == "CAROUSEL":
+                return httpx.Response(200, json={"id": "parent"})
+            return httpx.Response(200, json={"id": "cover" if "image_url" in body else "video"})
+        if path.endswith(("/cover", "/video", "/parent")):
+            return httpx.Response(200, json={"status_code": "FINISHED"})
+        if path.endswith("/media_publish"):
+            return httpx.Response(400, json={"error": {
+                "message": "Media ID is not available",
+                "code": 9007, "error_subcode": 2207027}})
+        return httpx.Response(200, json={})
+
+    result = _carousel_publisher(handler).publish_carousel("c.jpg", "v.mp4", "A lift")
+
+    assert not result.ok
+    assert "not publishable after" in result.error
+
+
+def test_a_broken_slide_is_named_instead_of_surfacing_as_a_bad_parent(meta_env):
+    """A child that fails to ingest used to go unnoticed until the parent was
+    refused, which blamed the parent - the one thing that was fine."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/media"):
+            body = dict(httpx.QueryParams(request.content.decode()))
+            return httpx.Response(200, json={"id": "cover" if "image_url" in body else "video"})
+        if path.endswith("/cover"):
+            return httpx.Response(200, json={"status_code": "FINISHED"})
+        if path.endswith("/video"):
+            return httpx.Response(200, json={
+                "status_code": "ERROR", "error_message": "the video is not H.264"})
+        raise AssertionError(f"should not have got as far as {path}")
+
+    result = _carousel_publisher(handler).publish_carousel("c.jpg", "v.mp4", "A lift")
+
+    assert not result.ok
+    assert "not H.264" in result.error
+
+
+@pytest.mark.parametrize("said", [
+    "Media ID is not available (code 9007/2207027)",
+    "Something went wrong (code 9007)",
+    "unknown (code 1/2207027)",
+])
+def test_metas_ways_of_saying_not_yet_are_recognised(said):
+    from core.publishers.meta import is_not_ready
+
+    assert is_not_ready(said)
+
+
+@pytest.mark.parametrize("said", [
+    "Application request limit reached (code 4/1349210)",
+    "Invalid OAuth access token (code 190)",
+    None,
+])
+def test_other_failures_are_not_mistaken_for_not_yet(said):
+    from core.publishers.meta import is_not_ready
+
+    assert not is_not_ready(said)
